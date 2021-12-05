@@ -1,0 +1,4 @@
+.chache
+__pycache__
+wandb
+data
