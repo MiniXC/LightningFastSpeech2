@@ -52,7 +52,10 @@ class MultilingualLibrispeechConfig(datasets.BuilderConfig):
           **kwargs: keyword arguments forwarded to super.
         """
         super(MultilingualLibrispeechConfig, self).__init__(
-            version=datasets.Version("2.1.0", ""), name=name, data_dir=_DL_URL_FORMAT.format(name), **kwargs
+            version=datasets.Version("2.1.0", ""),
+            name=name,
+            data_dir=_DL_URL_FORMAT.format(name),
+            **kwargs,
         )
 
 
@@ -60,13 +63,27 @@ class MultilingualLibrispeech(datasets.GeneratorBasedBuilder):
     """Multilingual Librispeech dataset."""
 
     BUILDER_CONFIGS = [
-        MultilingualLibrispeechConfig(name="german", description="German LibriSpeech dataset"),
-        MultilingualLibrispeechConfig(name="dutch", description="Dutch LibriSpeech dataset"),
-        MultilingualLibrispeechConfig(name="french", description="French LibriSpeech dataset"),
-        MultilingualLibrispeechConfig(name="spanish", description="Spanish LibriSpeech dataset"),
-        MultilingualLibrispeechConfig(name="italian", description="Italian LibriSpeech dataset"),
-        MultilingualLibrispeechConfig(name="portuguese", description="Portuguese LibriSpeech dataset"),
-        MultilingualLibrispeechConfig(name="polish", description="Polish LibriSpeech dataset"),
+        MultilingualLibrispeechConfig(
+            name="german", description="German LibriSpeech dataset"
+        ),
+        MultilingualLibrispeechConfig(
+            name="dutch", description="Dutch LibriSpeech dataset"
+        ),
+        MultilingualLibrispeechConfig(
+            name="french", description="French LibriSpeech dataset"
+        ),
+        MultilingualLibrispeechConfig(
+            name="spanish", description="Spanish LibriSpeech dataset"
+        ),
+        MultilingualLibrispeechConfig(
+            name="italian", description="Italian LibriSpeech dataset"
+        ),
+        MultilingualLibrispeechConfig(
+            name="portuguese", description="Portuguese LibriSpeech dataset"
+        ),
+        MultilingualLibrispeechConfig(
+            name="polish", description="Polish LibriSpeech dataset"
+        ),
     ]
 
     def _info(self):
@@ -85,7 +102,11 @@ class MultilingualLibrispeech(datasets.GeneratorBasedBuilder):
             supervised_keys=("file", "text"),
             homepage=_URL,
             citation=_CITATION,
-            task_templates=[AutomaticSpeechRecognition(audio_file_path_column="file", transcription_column="text")],
+            task_templates=[
+                AutomaticSpeechRecognition(
+                    audio_file_path_column="file", transcription_column="text"
+                )
+            ],
         )
 
     def _split_generators(self, dl_manager):
@@ -94,24 +115,33 @@ class MultilingualLibrispeech(datasets.GeneratorBasedBuilder):
 
         train_splits = [
             datasets.SplitGenerator(
-                name=datasets.Split.TRAIN, gen_kwargs={"data_dir": os.path.join(data_path, "train")}
+                name=datasets.Split.TRAIN,
+                gen_kwargs={"data_dir": os.path.join(data_path, "train")},
             ),
             datasets.SplitGenerator(
                 name="train.9h",
-                gen_kwargs={"data_dir": os.path.join(data_path, "train"), "sub_folder": "limited_supervision/9hr"},
+                gen_kwargs={
+                    "data_dir": os.path.join(data_path, "train"),
+                    "sub_folder": "limited_supervision/9hr",
+                },
             ),
             datasets.SplitGenerator(
                 name="train.1h",
-                gen_kwargs={"data_dir": os.path.join(data_path, "train"), "sub_folder": "limited_supervision/1hr"},
+                gen_kwargs={
+                    "data_dir": os.path.join(data_path, "train"),
+                    "sub_folder": "limited_supervision/1hr",
+                },
             ),
         ]
 
         return train_splits + [
             datasets.SplitGenerator(
-                name=datasets.Split.VALIDATION, gen_kwargs={"data_dir": os.path.join(data_path, "dev")}
+                name=datasets.Split.VALIDATION,
+                gen_kwargs={"data_dir": os.path.join(data_path, "dev")},
             ),
             datasets.SplitGenerator(
-                name=datasets.Split.TEST, gen_kwargs={"data_dir": os.path.join(data_path, "test")}
+                name=datasets.Split.TEST,
+                gen_kwargs={"data_dir": os.path.join(data_path, "test")},
             ),
         ]
 
@@ -123,7 +153,9 @@ class MultilingualLibrispeech(datasets.GeneratorBasedBuilder):
         all_ids = None
         if sub_folder != "":
             sub_path = os.path.join(data_dir, sub_folder)
-            all_ids_paths = glob.glob(sub_path + "/*/*.txt") + glob.glob(sub_path + "/*.txt")
+            all_ids_paths = glob.glob(sub_path + "/*/*.txt") + glob.glob(
+                sub_path + "/*.txt"
+            )
             all_ids = []
             for path in all_ids_paths:
                 with open(path, "r", encoding="utf-8") as f:
@@ -142,7 +174,9 @@ class MultilingualLibrispeech(datasets.GeneratorBasedBuilder):
 
                 audio_file = f"{id_}.opus"
                 speaker_id, chapter_id = [int(el) for el in id_.split("_")[:2]]
-                audio_path = os.path.join(data_dir, "audio", str(speaker_id), str(chapter_id), audio_file)
+                audio_path = os.path.join(
+                    data_dir, "audio", str(speaker_id), str(chapter_id), audio_file
+                )
                 yield key, {
                     "id": id_,
                     "speaker_id": speaker_id,

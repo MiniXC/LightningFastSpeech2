@@ -1,18 +1,26 @@
 import pandas as pd
 import numpy as np
 from unicodedata import normalize
-_df1 = pd.read_csv("https://raw.githubusercontent.com/dmort27/panphon/master/panphon/data/ipa_all.csv")
-_df2 = pd.read_csv("https://raw.githubusercontent.com/dmort27/panphon/master/panphon/data/ipa_bases.csv")
+
+_df1 = pd.read_csv(
+    "https://raw.githubusercontent.com/dmort27/panphon/master/panphon/data/ipa_all.csv"
+)
+_df2 = pd.read_csv(
+    "https://raw.githubusercontent.com/dmort27/panphon/master/panphon/data/ipa_bases.csv"
+)
 _df1["ipa"] = _df1["ipa"].apply(lambda x: normalize("NFC", x))
 _df2["ipa"] = _df2["ipa"].apply(lambda x: normalize("NFC", x))
-ipa_df = pd.concat([_df1,_df2]).set_index("ipa")
-ipa_weights_df = pd.read_csv("https://raw.githubusercontent.com/dmort27/panphon/master/panphon/data/feature_weights.csv")
+ipa_df = pd.concat([_df1, _df2]).set_index("ipa")
+ipa_weights_df = pd.read_csv(
+    "https://raw.githubusercontent.com/dmort27/panphon/master/panphon/data/feature_weights.csv"
+)
 
 for c in ipa_df.columns.tolist():
     if c not in ipa_weights_df.columns:
         ipa_weights_df[c] = [0.5]
 
 ipa_weights_df = ipa_weights_df[ipa_df.columns]
+
 
 def to_id(x):
     new_vals = []
@@ -24,6 +32,7 @@ def to_id(x):
         elif k == "-":
             new_vals += [0]
     return new_vals
+
 
 ipa_df = ipa_df.apply(to_id, axis=1, raw=True)
 
@@ -39,8 +48,10 @@ de2en_map = {
     "d": "d̪",
 }
 
+
 def get_phone_vecs(phone_list):
     return np.array([phone_vec(p) for p in phone_list])
+
 
 def phone_vec(phone):
     phone = normalize("NFC", phone)

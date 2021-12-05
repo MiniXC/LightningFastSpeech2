@@ -1,7 +1,7 @@
 import configparser
 import warnings
 
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore")
 config = configparser.ConfigParser()
 config.read("config.ini")
 
@@ -11,9 +11,11 @@ import librosa
 
 dataset = load_dataset("multilingual_librispeech_opus.py", "german", split="validation")
 
+
 def load_audio(x):
     x["audio"], _ = librosa.load(x["file"], sr=22500, res_type="kaiser_fast")
     return x
+
 
 dataset.map(
     load_audio,
@@ -27,5 +29,5 @@ dataset.map(
             "chapter_id": datasets.Value("int64"),
             "id": datasets.Value("string"),
         }
-    )
+    ),
 )
