@@ -16,12 +16,15 @@ import plotly.graph_objects as go
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader
 import torch
+from pytorch_lightning import Trainer
 
 from ipa_utils import get_phone_vecs
+from fastspeech2 import FastSpeech2
 
 pandarallel.initialize(progress_bar=True)
 tqdm.pandas()
 
+# TODO: convert to pl DataModule
 
 class ProcessedDataset(Dataset):
     def __init__(self, path, split, phone_map=None, phone_vec=False, phone2id=None):
@@ -97,10 +100,10 @@ class ProcessedDataset(Dataset):
             "speaker": speaker_id,
             "phones": phones,
             "text": text,
-            "mel": self.get_values("mel", speaker, basename),
-            "pitch": self.get_values("pitch", speaker, basename),
-            "energy": self.get_values("energy", speaker, basename),
-            "duration": self.get_values("duration", speaker, basename),
+            "mel": self.get_values("mel", speaker, basename).float(),
+            "pitch": self.get_values("pitch", speaker, basename).float(),
+            "energy": self.get_values("energy", speaker, basename).float(),
+            "duration": self.get_values("duration", speaker, basename).long(),
         }
 
         return sample
@@ -140,12 +143,8 @@ class ProcessedDataset(Dataset):
 
 if __name__ == "__main__":
     ds = ProcessedDataset("./data/GlobalPhoneGerman", "train", phone_vec=False)
-    dl = DataLoader(ds, batch_size=2, collate_fn=ds.collate_fn)
-    from fastspeech2 import FastSpeech2
+    dl = DataLoader(ds, batch_size=32, collate_fn=ds.collate_fn, num_workers=16)
 
-    model = FastSpeech2(ds.vocab_n, ds.speaker_n)
-    for b in dl:
-        model(b["phones"], b["speaker"])
-        raise
-    print(ds[100])
-    #
+    model = FastSpeech2(ds.vocab_n, ds.speaker_n, ds.stats, 32, len(ds))
+    trainer = Trainer(gpus=1)
+    trainer.fit(model, dl)
