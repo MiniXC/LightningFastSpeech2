@@ -194,7 +194,7 @@ class VariancePredictor(nn.Module):
             activation(),
             nn.LayerNorm(filter_size),
             nn.Dropout(dropout),
-            Transpose(nn.Conv1d(input_size, filter_size, kernel, padding=1)),
+            Transpose(nn.Conv1d(input_size, filter_size, kernel, padding=(kernel - 1) // 2)),
             activation(),
             nn.LayerNorm(filter_size),
             nn.Dropout(dropout),

@@ -1,7 +1,6 @@
 import configparser
 import os
 import json
-from pathlib import Path
 
 config = configparser.ConfigParser()
 config.read("config.ini")
@@ -10,21 +9,19 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 from pandarallel import pandarallel
-import wandb
 import plotly.express as px
 import plotly.graph_objects as go
 from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import torch
-from pytorch_lightning import Trainer
 
 from ipa_utils import get_phone_vecs
-from fastspeech2 import FastSpeech2
 
 pandarallel.initialize(progress_bar=True)
 tqdm.pandas()
 
 # TODO: convert to pl DataModule
+
 
 class ProcessedDataset(Dataset):
     def __init__(self, path, split, phone_map=None, phone_vec=False, phone2id=None):
@@ -139,12 +136,3 @@ class ProcessedDataset(Dataset):
             data[key] = pad_sequence(data[key], batch_first=True, padding_value=0)
         data["speaker"] = torch.tensor(data["speaker"]).long()
         return data
-
-
-if __name__ == "__main__":
-    ds = ProcessedDataset("./data/GlobalPhoneGerman", "train", phone_vec=False)
-    dl = DataLoader(ds, batch_size=32, collate_fn=ds.collate_fn, num_workers=16)
-
-    model = FastSpeech2(ds.vocab_n, ds.speaker_n, ds.stats, 32, len(ds))
-    trainer = Trainer(gpus=1)
-    trainer.fit(model, dl)

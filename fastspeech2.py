@@ -2,11 +2,17 @@ import pytorch_lightning as pl
 from torch.nn.modules.transformer import TransformerDecoder, TransformerEncoder
 from model import ConformerEncoderLayer, PositionalEncoding, VarianceAdaptor
 from torch import nn
+from torch.utils.data import DataLoader
 import torch
 import configparser
+import multiprocessing
+
+cpus = multiprocessing.cpu_count()
 
 config = configparser.ConfigParser()
 config.read("config.ini")
+
+from dataset import ProcessedDataset
 
 # TODO:
 # allow to replace with "real" conformer
@@ -41,7 +47,9 @@ class FastSpeech2Loss(nn.Module):
         if tgt_max_length is not None:
             mel_tgt = mel_tgt[:, :tgt_max_length, :]
 
-        mel_loss = FastSpeech2Loss.get_loss(mel_pred, mel_tgt, self.l1_loss, tgt_mask, unsqueeze=True)
+        mel_loss = FastSpeech2Loss.get_loss(
+            mel_pred, mel_tgt, self.l1_loss, tgt_mask, unsqueeze=True
+        )
         pitch_loss = FastSpeech2Loss.get_loss(
             pitch_pred, pitch_tgt, self.mse_loss, src_mask
         )
@@ -64,11 +72,21 @@ class FastSpeech2Loss(nn.Module):
 
 
 class FastSpeech2(pl.LightningModule):
-    def __init__(self, vocab_n, speaker_n, stats, batch_size, dataset_size):
+    def __init__(self):
         super().__init__()
 
-        self.batch_size = batch_size
-        self.dataset_size = dataset_size
+        # data
+        self.batch_size = config["train"].getint("batch_size")
+        self.epochs = config["train"].getint("epochs")
+        path = config["train"].get("path")
+        self.train_ds = ProcessedDataset(path, "train", phone_vec=False)
+        self.valid_ds = ProcessedDataset(
+            path, "val", phone_vec=False, phone2id=self.train_ds.phone2id
+        )
+
+        vocab_n = self.train_ds.vocab_n
+        speaker_n = self.train_ds.speaker_n
+        stats = self.train_ds.stats
 
         # config
         encoder_hidden = config["model"].getint("encoder_hidden")
@@ -86,9 +104,10 @@ class FastSpeech2(pl.LightningModule):
         )
         self.tgt_max_length = config["model"].getint("tgt_max_length")
         self.max_lr = config["train"].getfloat("max_lr")
-        self.epochs = config["train"].getint("epochs")
         mel_channels = config["model"].getint("mel_channels")
 
+        # modules
+        vocab_n = 363
         self.phone_embedding = nn.Embedding(vocab_n, encoder_hidden, padding_idx=0)
         self.speaker_embedding = nn.Embedding(
             speaker_n,
@@ -148,11 +167,15 @@ class FastSpeech2(pl.LightningModule):
         output = self.decoder(output, src_key_padding_mask=variance_out["tgt_mask"])
         output = self.linear(output)
         return (
-            output,
-            variance_out["pitch"],
-            variance_out["energy"],
-            variance_out["log_duration"],
-        ), src_mask, variance_out["tgt_mask"]
+            (
+                output,
+                variance_out["pitch"],
+                variance_out["energy"],
+                variance_out["log_duration"],
+            ),
+            src_mask,
+            variance_out["tgt_mask"],
+        )
 
     def training_step(self, batch):
         logits, src_mask, tgt_mask = self(
@@ -166,19 +189,53 @@ class FastSpeech2(pl.LightningModule):
         loss = self.loss(logits, truth, src_mask, tgt_mask, self.tgt_max_length)
         return loss[0]
 
+    def validation_step(self, batch, batch_idx):
+        logits, src_mask, tgt_mask = self(
+            batch["phones"],
+            batch["speaker"],
+            batch["pitch"],
+            batch["energy"],
+            batch["duration"],
+        )
+        truth = (batch["mel"], batch["pitch"], batch["energy"], batch["duration"])
+        loss = self.loss(logits, truth, src_mask, tgt_mask, self.tgt_max_length)
+        self.log_dict({
+            "total_loss": loss[0].item(),
+            "mel_loss": loss[1].item(),
+            "pitch_loss": loss[2].item(),
+            "energy_loss": loss[3].item(),
+            "duration_loss": loss[4].item(),
+        }, batch_size=self.batch_size)
+
     def configure_optimizers(self):
         self.optimizer = torch.optim.AdamW(self.parameters(), self.max_lr)
 
         self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            self.optimizer, max_lr=self.max_lr,
-            steps_per_epoch=self.dataset_size//self.batch_size,
-            epochs=self.epochs
+            self.optimizer,
+            max_lr=self.max_lr,
+            steps_per_epoch=len(self.train_ds) // self.batch_size,
+            epochs=self.epochs,
         )
 
         sched = {
-            'scheduler': self.scheduler,
-            'interval': 'step',
+            "scheduler": self.scheduler,
+            "interval": "step",
         }
 
         return [self.optimizer], [sched]
 
+    def train_dataloader(self):
+        return DataLoader(
+            self.train_ds,
+            batch_size=self.batch_size,
+            collate_fn=self.train_ds.collate_fn,
+            num_workers=cpus,
+        )
+
+    def val_dataloader(self):
+        return DataLoader(
+            self.valid_ds,
+            batch_size=self.batch_size,
+            collate_fn=self.valid_ds.collate_fn,
+            num_workers=cpus,
+        )

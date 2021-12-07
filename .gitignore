@@ -3,3 +3,4 @@ __pycache__
 wandb
 data
 lightning_logs
+LightningFastSpeech
