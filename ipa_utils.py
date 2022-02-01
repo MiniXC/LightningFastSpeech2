@@ -3,16 +3,19 @@ import numpy as np
 from unicodedata import normalize
 
 _df1 = pd.read_csv(
-    "https://raw.githubusercontent.com/dmort27/panphon/master/panphon/data/ipa_all.csv"
+    "https://raw.githubusercontent.com"
+    + "/dmort27/panphon/master/panphon/data/ipa_all.csv"
 )
 _df2 = pd.read_csv(
-    "https://raw.githubusercontent.com/dmort27/panphon/master/panphon/data/ipa_bases.csv"
+    "https://raw.githubusercontent.com"
+    + "/dmort27/panphon/master/panphon/data/ipa_bases.csv"
 )
 _df1["ipa"] = _df1["ipa"].apply(lambda x: normalize("NFC", x))
 _df2["ipa"] = _df2["ipa"].apply(lambda x: normalize("NFC", x))
 ipa_df = pd.concat([_df1, _df2]).set_index("ipa")
 ipa_weights_df = pd.read_csv(
-    "https://raw.githubusercontent.com/dmort27/panphon/master/panphon/data/feature_weights.csv"
+    "https://raw.githubusercontent.com"
+    + "/dmort27/panphon/master/panphon/data/feature_weights.csv"
 )
 
 for c in ipa_df.columns.tolist():

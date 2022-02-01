@@ -4,3 +4,7 @@ wandb
 data
 lightning_logs
 LightningFastSpeech
+notebooks
+logs
+None
+.vscode

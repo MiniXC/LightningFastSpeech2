@@ -1,18 +1,19 @@
 import pytorch_lightning as pl
-from torch.nn.modules.transformer import TransformerDecoder, TransformerEncoder
+from torch.nn.modules.transformer import TransformerEncoder
 from model import ConformerEncoderLayer, PositionalEncoding, VarianceAdaptor
 from torch import nn
 from torch.utils.data import DataLoader
 import torch
 import configparser
 import multiprocessing
+import wandb
+
+from dataset import ProcessedDataset
 
 cpus = multiprocessing.cpu_count()
 
 config = configparser.ConfigParser()
 config.read("config.ini")
-
-from dataset import ProcessedDataset
 
 # TODO:
 # allow to replace with "real" conformer
@@ -38,7 +39,7 @@ class FastSpeech2Loss(nn.Module):
         return loss(pred, truth)
 
     def forward(self, pred, truth, src_mask, tgt_mask, tgt_max_length=None):
-        mel_pred, pitch_pred, energy_pred, duration_pred = pred
+        mel_pred, pitch_pred, energy_pred, duration_pred, _ = pred
         mel_tgt, pitch_tgt, energy_tgt, duration_tgt = truth
         duration_tgt = torch.log(duration_tgt.float() + 1)
         src_mask = ~src_mask
@@ -108,7 +109,9 @@ class FastSpeech2(pl.LightningModule):
 
         # modules
         vocab_n = 363
-        self.phone_embedding = nn.Embedding(vocab_n, encoder_hidden, padding_idx=0)
+        self.phone_embedding = nn.Embedding(
+            vocab_n, encoder_hidden, padding_idx=0
+        )
         self.speaker_embedding = nn.Embedding(
             speaker_n,
             encoder_hidden,
@@ -148,7 +151,9 @@ class FastSpeech2(pl.LightningModule):
 
         self.loss = FastSpeech2Loss()
 
-    def forward(self, phones, speakers, pitch, energy, duration):
+    def forward(
+        self, phones, speakers, pitch=None, energy=None, duration=None
+    ):
         src_mask = phones.eq(0)
         output = self.phone_embedding(phones)
         output = self.positional_encoding(output)
@@ -164,7 +169,9 @@ class FastSpeech2(pl.LightningModule):
         )
         output = variance_out["x"]
         output = self.positional_encoding(output)
-        output = self.decoder(output, src_key_padding_mask=variance_out["tgt_mask"])
+        output = self.decoder(
+            output, src_key_padding_mask=variance_out["tgt_mask"]
+        )
         output = self.linear(output)
         return (
             (
@@ -172,6 +179,7 @@ class FastSpeech2(pl.LightningModule):
                 variance_out["pitch"],
                 variance_out["energy"],
                 variance_out["log_duration"],
+                variance_out["duration_rounded"],
             ),
             src_mask,
             variance_out["tgt_mask"],
@@ -185,27 +193,108 @@ class FastSpeech2(pl.LightningModule):
             batch["energy"],
             batch["duration"],
         )
-        truth = (batch["mel"], batch["pitch"], batch["energy"], batch["duration"])
-        loss = self.loss(logits, truth, src_mask, tgt_mask, self.tgt_max_length)
+        truth = (
+            batch["mel"],
+            batch["pitch"],
+            batch["energy"],
+            batch["duration"],
+        )
+        loss = self.loss(
+            logits, truth, src_mask, tgt_mask, self.tgt_max_length
+        )
+        self.log_dict(
+            {
+                "train/total_loss": loss[0].item(),
+                "train/mel_loss": loss[1].item(),
+                "train/pitch_loss": loss[2].item(),
+                "train/energy_loss": loss[3].item(),
+                "train/duration_loss": loss[4].item(),
+            },
+            batch_size=self.batch_size,
+        )
         return loss[0]
 
     def validation_step(self, batch, batch_idx):
-        logits, src_mask, tgt_mask = self(
+        preds, src_mask, tgt_mask = self(
             batch["phones"],
             batch["speaker"],
             batch["pitch"],
             batch["energy"],
             batch["duration"],
         )
-        truth = (batch["mel"], batch["pitch"], batch["energy"], batch["duration"])
-        loss = self.loss(logits, truth, src_mask, tgt_mask, self.tgt_max_length)
-        self.log_dict({
-            "total_loss": loss[0].item(),
-            "mel_loss": loss[1].item(),
-            "pitch_loss": loss[2].item(),
-            "energy_loss": loss[3].item(),
-            "duration_loss": loss[4].item(),
-        }, batch_size=self.batch_size)
+        truth = (
+            batch["mel"],
+            batch["pitch"],
+            batch["energy"],
+            batch["duration"],
+        )
+        loss = self.loss(preds, truth, src_mask, tgt_mask, self.tgt_max_length)
+        self.log_dict(
+            {
+                "eval/total_loss": loss[0].item(),
+                "eval/mel_loss": loss[1].item(),
+                "eval/pitch_loss": loss[2].item(),
+                "eval/energy_loss": loss[3].item(),
+                "eval/duration_loss": loss[4].item(),
+            },
+            batch_size=self.batch_size,
+        )
+        if batch_idx == 0:
+            old_src_mask = src_mask
+            old_tgt_mask = tgt_mask
+            preds, src_mask, tgt_mask = self(
+                batch["phones"],
+                batch["speaker"],
+            )
+            mels, pitchs, energys, _, durations = [
+                pred.cpu() for pred in preds
+            ]
+            log_data = []
+            for i in range(len(mels)):
+                if i >= 10:
+                    break
+                mel = mels[i][~tgt_mask[i]]
+                true_mel = batch["mel"][i][~old_tgt_mask[i]]
+                pred_fig = self.valid_ds.plot(
+                    {
+                        "mel": mel,
+                        "pitch": pitchs[i],
+                        "energy": energys[i],
+                        "duration": durations[i][~src_mask[i]],
+                    }
+                )
+                true_fig = self.valid_ds.plot(
+                    {
+                        "mel": true_mel.cpu(),
+                        "pitch": batch["pitch"][i].cpu(),
+                        "energy": batch["energy"][i].cpu(),
+                        "duration": batch["duration"][i].cpu()[
+                            ~old_src_mask[i]
+                        ],
+                    }
+                )
+                pred_audio = self.valid_ds.synthesise(mel)[0]
+                true_audio = self.valid_ds.synthesise(true_mel)[0]
+                log_data.append(
+                    [
+                        batch["text"][i],
+                        wandb.Image(pred_fig),
+                        wandb.Image(true_fig),
+                        wandb.Audio(pred_audio, sample_rate=22050),
+                        wandb.Audio(true_audio, sample_rate=22050),
+                    ]
+                )
+            table = wandb.Table(
+                data=log_data,
+                columns=[
+                    "text",
+                    "predicted_mel",
+                    "true_mel",
+                    "predicted_audio",
+                    "true_audio",
+                ],
+            )
+            self.logger.experiment.log({"examples": table})
 
     def configure_optimizers(self):
         self.optimizer = torch.optim.AdamW(self.parameters(), self.max_lr)
