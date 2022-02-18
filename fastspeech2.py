@@ -109,13 +109,8 @@ class FastSpeech2(pl.LightningModule):
 
         # modules
         vocab_n = 363
-        self.phone_embedding = nn.Embedding(
-            vocab_n, encoder_hidden, padding_idx=0
-        )
-        self.speaker_embedding = nn.Embedding(
-            speaker_n,
-            encoder_hidden,
-        )
+        self.phone_embedding = nn.Embedding(vocab_n, encoder_hidden, padding_idx=0)
+        self.speaker_embedding = nn.Embedding(speaker_n, encoder_hidden,)
         self.encoder = TransformerEncoder(
             ConformerEncoderLayer(
                 encoder_hidden,
@@ -144,16 +139,11 @@ class FastSpeech2(pl.LightningModule):
             ),
             decoder_layers,
         )
-        self.linear = nn.Linear(
-            decoder_hidden,
-            mel_channels,
-        )
+        self.linear = nn.Linear(decoder_hidden, mel_channels,)
 
         self.loss = FastSpeech2Loss()
 
-    def forward(
-        self, phones, speakers, pitch=None, energy=None, duration=None
-    ):
+    def forward(self, phones, speakers, pitch=None, energy=None, duration=None):
         src_mask = phones.eq(0)
         output = self.phone_embedding(phones)
         output = self.positional_encoding(output)
@@ -169,9 +159,7 @@ class FastSpeech2(pl.LightningModule):
         )
         output = variance_out["x"]
         output = self.positional_encoding(output)
-        output = self.decoder(
-            output, src_key_padding_mask=variance_out["tgt_mask"]
-        )
+        output = self.decoder(output, src_key_padding_mask=variance_out["tgt_mask"])
         output = self.linear(output)
         return (
             (
@@ -199,9 +187,7 @@ class FastSpeech2(pl.LightningModule):
             batch["energy"],
             batch["duration"],
         )
-        loss = self.loss(
-            logits, truth, src_mask, tgt_mask, self.tgt_max_length
-        )
+        loss = self.loss(logits, truth, src_mask, tgt_mask, self.tgt_max_length)
         self.log_dict(
             {
                 "train/total_loss": loss[0].item(),
@@ -242,13 +228,8 @@ class FastSpeech2(pl.LightningModule):
         if batch_idx == 0:
             old_src_mask = src_mask
             old_tgt_mask = tgt_mask
-            preds, src_mask, tgt_mask = self(
-                batch["phones"],
-                batch["speaker"],
-            )
-            mels, pitchs, energys, _, durations = [
-                pred.cpu() for pred in preds
-            ]
+            preds, src_mask, tgt_mask = self(batch["phones"], batch["speaker"],)
+            mels, pitchs, energys, _, durations = [pred.cpu() for pred in preds]
             log_data = []
             for i in range(len(mels)):
                 if i >= 10:
@@ -268,9 +249,7 @@ class FastSpeech2(pl.LightningModule):
                         "mel": true_mel.cpu(),
                         "pitch": batch["pitch"][i].cpu(),
                         "energy": batch["energy"][i].cpu(),
-                        "duration": batch["duration"][i].cpu()[
-                            ~old_src_mask[i]
-                        ],
+                        "duration": batch["duration"][i].cpu()[~old_src_mask[i]],
                     }
                 )
                 pred_audio = self.valid_ds.synthesise(mel)[0]

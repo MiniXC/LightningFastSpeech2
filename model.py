@@ -40,8 +40,7 @@ class PositionalEncoding(nn.Module):
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(
-            torch.arange(0, d_model, 2).float()
-            * (-math.log(10000.0) / d_model)
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
         )
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
@@ -96,12 +95,8 @@ class VarianceAdaptor(nn.Module):
 
         self.duration_predictor = VariancePredictor()
         self.length_regulator = LengthRegulator()
-        self.pitch_encoder = VarianceEncoder(
-            stats["pitch"][0], stats["pitch"][1]
-        )
-        self.energy_encoder = VarianceEncoder(
-            stats["energy"][0], stats["energy"][1]
-        )
+        self.pitch_encoder = VarianceEncoder(stats["pitch"][0], stats["pitch"][1])
+        self.energy_encoder = VarianceEncoder(stats["energy"][0], stats["energy"][1])
 
     def forward(
         self,
@@ -116,12 +111,8 @@ class VarianceAdaptor(nn.Module):
         c_duration=1,
     ):
         duration_pred = self.duration_predictor(x, src_mask)
-        pitch_pred, pitch_out = self.pitch_encoder(
-            x, tgt_pitch, src_mask, c_pitch
-        )
-        energy_pred, energy_out = self.energy_encoder(
-            x, tgt_energy, src_mask, c_energy
-        )
+        pitch_pred, pitch_out = self.pitch_encoder(x, tgt_pitch, src_mask, c_pitch)
+        energy_pred, energy_out = self.energy_encoder(x, tgt_energy, src_mask, c_energy)
         x = (
             x + pitch_out + energy_out
         )  # TODO: investigate if one should be applied before the other
@@ -130,9 +121,7 @@ class VarianceAdaptor(nn.Module):
             duration_rounded = tgt_duration
         else:
             duration_rounded = torch.round(torch.exp(duration_pred) - 1)
-            duration_rounded = torch.clamp(
-                duration_rounded * c_duration, min=0
-            ).int()
+            duration_rounded = torch.clamp(duration_rounded * c_duration, min=0).int()
         x, tgt_len, tgt_mask = self.length_regulator(
             x, duration_rounded, tgt_max_length
         )
@@ -174,8 +163,7 @@ class VarianceEncoder(nn.Module):
 
         self.predictor = VariancePredictor()
         self.bins = nn.Parameter(
-            torch.linspace(min, max, n_bins - 1),
-            requires_grad=False,
+            torch.linspace(min, max, n_bins - 1), requires_grad=False,
         )
         self.embedding = nn.Embedding(n_bins, encoder_hidden)
 
@@ -200,17 +188,13 @@ class VariancePredictor(nn.Module):
 
         self.layers = nn.Sequential(
             Transpose(
-                nn.Conv1d(
-                    input_size, filter_size, kernel, padding=(kernel - 1) // 2
-                )
+                nn.Conv1d(input_size, filter_size, kernel, padding=(kernel - 1) // 2)
             ),
             activation(),
             nn.LayerNorm(filter_size),
             nn.Dropout(dropout),
             Transpose(
-                nn.Conv1d(
-                    input_size, filter_size, kernel, padding=(kernel - 1) // 2
-                )
+                nn.Conv1d(input_size, filter_size, kernel, padding=(kernel - 1) // 2)
             ),
             activation(),
             nn.LayerNorm(filter_size),
@@ -229,30 +213,16 @@ class VariancePredictor(nn.Module):
 if __name__ == "__main__":
     x = torch.tensor(
         [
-            [
-                [-1, 2, 3, 4, -5, 6],
-                [6, 5, 4, 3, 2, 1],
-                [-6, -5, -4, -3, -2, -1],
-            ],
-            [
-                [-11, 12, 13, 14, -15, 16],
-                [16, 15, 14, 13, 12, 11],
-                [0, 0, 0, 0, 0, 0],
-            ],
+            [[-1, 2, 3, 4, -5, 6], [6, 5, 4, 3, 2, 1], [-6, -5, -4, -3, -2, -1],],
+            [[-11, 12, 13, 14, -15, 16], [16, 15, 14, 13, 12, 11], [0, 0, 0, 0, 0, 0],],
         ]
     )
     durations = torch.tensor([[2, 3, 1], [1, 2, 0]])
     print(
-        [
-            torch.repeat_interleave(x[i], durations[i], dim=0)
-            for i in range(x.shape[0])
-        ]
+        [torch.repeat_interleave(x[i], durations[i], dim=0) for i in range(x.shape[0])]
     )
     out = pad_sequence(
-        [
-            torch.repeat_interleave(x[i], durations[i], dim=0)
-            for i in range(x.shape[0])
-        ],
+        [torch.repeat_interleave(x[i], durations[i], dim=0) for i in range(x.shape[0])],
         batch_first=True,
         padding_value=0,
     )

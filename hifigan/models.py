@@ -121,9 +121,7 @@ class Generator(torch.nn.Module):
         resblock = ResBlock
 
         self.ups = nn.ModuleList()
-        for i, (u, k) in enumerate(
-            zip(h.upsample_rates, h.upsample_kernel_sizes)
-        ):
+        for i, (u, k) in enumerate(zip(h.upsample_rates, h.upsample_kernel_sizes)):
             self.ups.append(
                 weight_norm(
                     ConvTranspose1d(

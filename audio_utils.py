@@ -22,8 +22,8 @@ def dynamic_range_decompression(x, C=1):
 
 
 def smooth(y, box_pts):
-    box = np.ones(box_pts)/box_pts
-    y_smooth = np.convolve(y, box, mode='same')
+    box = np.ones(box_pts) / box_pts
+    y_smooth = np.convolve(y, box, mode="same")
     return y_smooth
 
 
@@ -44,9 +44,21 @@ def remove_outliers(values):
 
 def remove_outliers_new(values):
     for i, p in enumerate(values):
-        if p == 0 and i > 0 and i+1 < len(values) and values[i-1] > 0 and values[i+1] > 0:
-            values[i] = (values[i-1] + values[i+1])/2
-        if p > 0 and i > 0 and i+1 < len(values) and values[i-1] == 0 and values[i+1] == 0:
+        if (
+            p == 0
+            and i > 0
+            and i + 1 < len(values)
+            and values[i - 1] > 0
+            and values[i + 1] > 0
+        ):
+            values[i] = (values[i - 1] + values[i + 1]) / 2
+        if (
+            p > 0
+            and i > 0
+            and i + 1 < len(values)
+            and values[i - 1] == 0
+            and values[i + 1] == 0
+        ):
             values[i] = 0
     new_values = np.array(values)
     new_values = new_values[1:] - new_values[:-1]
@@ -80,9 +92,7 @@ class TacotronSTFT(torch.nn.Module):
         self.n_mel_channels = n_mel
         self.sampling_rate = sampling_rate
         self.stft_fn = torch.stfn
-        mel_basis = librosa_mel(
-            sampling_rate, filter_length, n_mel, mel_fmin, mel_fmax
-        )
+        mel_basis = librosa_mel(sampling_rate, filter_length, n_mel, mel_fmin, mel_fmax)
         mel_basis = torch.from_numpy(mel_basis).float().to("cuda")
         self.register_buffer("mel_basis", mel_basis)
 
@@ -155,4 +165,3 @@ def get_alignment(tier, sampling_rate, hop_length):
     durations = durations[:end_idx]
 
     return phones, durations, start_time, end_time
-    
