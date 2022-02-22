@@ -1,5 +1,4 @@
 import configparser
-from email.mime import audio
 import os
 
 import json
@@ -48,17 +47,11 @@ tqdm.pandas()
 
 # TODO: convert to pl DataModules
 class UnprocessedDataset(Dataset):
-    def __init__(self, audio_directory, alignment_directory):
+    def __init__(self, audio_directory, alignment_directory=None):
         super().__init__()
-        df_dict = {
-            "phones": [],
-            "durations": [],
-            "start": [],
-            "end": [],
-            "audio": [],
-            "speaker": [],
-            "transcription": [],
-        }
+
+        if alignment_directory is None:
+            alignment_directory=audio_directory
 
         self.sampling_rate = config["dataset"].getint("sampling_rate")
         self.n_fft = config["dataset"].getint("n_fft")
@@ -102,8 +95,8 @@ class UnprocessedDataset(Dataset):
         ]
 
         print(f"{self.grid_missing} textgrids not found")
-        self.data = pd.DataFrame(entries, columns=["phones", "durations", "start", "end", "audio", "speaker", "transcription"])
-        del df_dict
+        self.data = pd.DataFrame(entries, columns=["phones", "duration", "start", "end", "audio", "speaker", "text", "basename"])
+        del entries
 
         self.mel_spectrogram = T.MelSpectrogram(
             sample_rate=self.sampling_rate,
@@ -138,7 +131,7 @@ class UnprocessedDataset(Dataset):
                     add_stress = True
             if len(r_phone) > 0:
                 phone = r_phone
-            if phone != "spn":
+            if phone in ["spn", "sil"]:
                 o_phone = phone
                 if o_phone not in self.phone_cache:
                     phone = self.converter(phone, self.source_phoneset, lang=self.target_lang)[0]
@@ -147,11 +140,16 @@ class UnprocessedDataset(Dataset):
                 if add_stress:
                     phone = 'ˈ' + phone
             else:
-                phone = None
+                phone = "[SILENCE]"
             phones[i] = phone
         if start >= end:
             return None
-        transcription = open(audio_file.replace(".wav", ".lab"), "r").read()
+        try:
+            with open(audio_file.replace(".wav", ".lab"), "r") as f:
+                transcription = f.read()
+        except UnicodeDecodeError:
+            print("failed to read")
+            return None
         return (
             phones,
             durations,
@@ -160,6 +158,7 @@ class UnprocessedDataset(Dataset):
             audio_file,
             extract_speaker(audio_file),
             transcription,
+            audio_name
         )
 
     def __len__(self):
@@ -198,13 +197,16 @@ class UnprocessedDataset(Dataset):
         if self.pitch_smooth > 1:
             pitch = smooth(pitch, self.pitch_smooth)
         # pitch = pitch_n
+
         return {
             "mel": mel,
             "pitch": pitch,
+            "pitch_stats": (0, 0),
             "energy": energy,
+            "duration": row["duration"]
         }
 
-    def plot(self, sample):
+    def plot(self, sample, show=False):
         mel = sample["mel"]
         pitch = sample["pitch"]
         energy = sample["energy"]
@@ -217,7 +219,8 @@ class UnprocessedDataset(Dataset):
         )
         plt.ylim(0,80)
         plt.yticks(range(0, 81, 10))
-        plt.show()
+        if show:
+            plt.show()
         buf = io.BytesIO()
         plt.savefig(buf, format="png")
         plt.clf()
@@ -226,18 +229,39 @@ class UnprocessedDataset(Dataset):
 
 
 class ProcessedDataset(Dataset):
-    def __init__(self, path, split, phone_map=None, phone_vec=False, phone2id=None):
+    def __init__(self, path=None, split=None, phone_map=None, phone_vec=False, phone2id=None, unprocessed_ds=None):
         super().__init__()
-        self.path = path
-        self.data = pd.read_csv(
-            os.path.join(path, split) + ".txt",
-            sep="|",
-            names=["basename", "speaker", "phones", "text"],
-            dtype={"speaker": str},
-        )
-        self.data["phones"] = self.data["phones"].apply(
-            lambda x: x.replace("{", "").replace("}", "").strip().split()
-        )
+        if unprocessed_ds is None:
+            self.path = path
+            self.data = pd.read_csv(
+                os.path.join(path, split) + ".txt",
+                sep="|",
+                names=["basename", "speaker", "phones", "text"],
+                dtype={"speaker": str},
+            )
+            self.data["phones"] = self.data["phones"].apply(
+                lambda x: x.replace("{", "").replace("}", "").strip().split()
+            )
+            
+            with open(os.path.join(self.path, "speakers.json")) as f:
+                self.speaker_map = json.load(f)
+                self.speaker_n = len(self.speaker_map)
+            with open(os.path.join(self.path, "stats.json")) as f:
+                self.stats = json.load(f)
+        else:
+            self.ds = unprocessed_ds
+            self.data = unprocessed_ds.data
+            speakers = self.data["speaker"].unique()
+            self.speaker_map = {s: i for s, i in zip(speakers, range(len(speakers)))}
+            self.speaker_n = len(self.speaker_map)
+            maxs = []
+            for i, x in enumerate(self.ds):
+                maxs.append(np.max(x["energy"]))
+                if i > 100:
+                    break
+            print(np.max(maxs))
+            raise
+
         self.data["text"] = self.data["text"].apply(lambda x: x.strip())
         self.phone_map = phone_map
         if phone_map is not None:
@@ -254,13 +278,8 @@ class ProcessedDataset(Dataset):
             self.data["phones"] = self.data["phones"].apply(
                 lambda x: torch.tensor([self.phone2id[p] for p in x]).long()
             )
-        with open(os.path.join(self.path, "speakers.json")) as f:
-            self.speaker_map = json.load(f)
-            self.speaker_n = len(self.speaker_map)
-        with open(os.path.join(self.path, "stats.json")) as f:
-            self.stats = json.load(f)
 
-        if split == "val":
+        if split in ["val", "validation", "dev"]:
             with open("hifigan/config.json", "r") as f:
                 config = json.load(f)
             config["sampling_rate"] = 22050
@@ -305,15 +324,17 @@ class ProcessedDataset(Dataset):
         text = self.data.iloc[idx]["text"]
         phones = self.data.iloc[idx]["phones"]
 
+        entry = self.ds[idx]
+
         sample = {
             "id": basename,
             "speaker": speaker_id,
             "phones": phones,
             "text": text,
-            "mel": self.get_values("mel", speaker, basename).float(),
-            "pitch": self.get_values("pitch", speaker, basename).float(),
-            "energy": self.get_values("energy", speaker, basename).float(),
-            "duration": self.get_values("duration", speaker, basename).long(),
+            "mel": entry["mel"],
+            "pitch": entry["pitch"],
+            "energy": entry["energy"],
+            "duration": entry["duration"],
         }
 
         return sample
@@ -343,7 +364,7 @@ class ProcessedDataset(Dataset):
             hue=["Pitch"] * len(mel) + ["Energy"] * len(mel),
             palette="inferno",
         )
-        plt.ylim(0)
+        plt.ylim(0, 80)
         plt.yticks(range(0, 81, 10))
         buf = io.BytesIO()
         plt.savefig(buf, format="png")
@@ -366,5 +387,7 @@ class ProcessedDataset(Dataset):
 
 
 if __name__ == "__main__":
-    ds = UnprocessedDataset("/mnt/D4C0-9435/libritts/LibriTTS/train-clean-100", "/mnt/D4C0-9435/libritts/LibriTTS/train-clean-100-aligned")
-    ds.plot(ds[0])
+    ds = UnprocessedDataset("/media/cdminix/Datasets/LibriTTS/train-clean-100-aligned")
+    ds.plot(ds[0], show=True)
+    ps = ProcessedDataset(unprocessed_ds=ds)
+    print(ps[0])

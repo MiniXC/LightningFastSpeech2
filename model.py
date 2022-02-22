@@ -111,12 +111,7 @@ class VarianceAdaptor(nn.Module):
         c_duration=1,
     ):
         duration_pred = self.duration_predictor(x, src_mask)
-        pitch_pred, pitch_out = self.pitch_encoder(x, tgt_pitch, src_mask, c_pitch)
-        energy_pred, energy_out = self.energy_encoder(x, tgt_energy, src_mask, c_energy)
-        x = (
-            x + pitch_out + energy_out
-        )  # TODO: investigate if one should be applied before the other
-        # ming implementation has pitch predicted first
+
         if tgt_duration is not None:  # training
             duration_rounded = tgt_duration
         else:
@@ -125,6 +120,20 @@ class VarianceAdaptor(nn.Module):
         x, tgt_len, tgt_mask = self.length_regulator(
             x, duration_rounded, tgt_max_length
         )
+
+        if config["dataset"].get("variance_level") == "phoneme":
+            pitch_pred, pitch_out = self.pitch_encoder(x, tgt_pitch, src_mask, c_pitch)
+            energy_pred, energy_out = self.energy_encoder(x, tgt_energy, src_mask, c_energy)
+        elif config["dataset"].get("variance_level") == "frame":
+            pitch_pred, pitch_out = self.pitch_encoder(x, tgt_pitch, tgt_mask, c_pitch)
+            energy_pred, energy_out = self.energy_encoder(x, tgt_energy, tgt_mask, c_energy)
+        else:
+            raise ValueError("variance_level has to be frame or phoneme")
+        x = (
+            x + pitch_out + energy_out
+        ) 
+        # TODO: investigate if one should be applied before the other
+        # ming implementation has pitch predicted first
 
         return {
             "x": x,
