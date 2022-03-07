@@ -8,7 +8,7 @@ import configparser
 import multiprocessing
 import wandb
 
-from dataset import ProcessedDataset
+from dataset import ProcessedDataset, UnprocessedDataset
 
 cpus = multiprocessing.cpu_count()
 
@@ -42,21 +42,33 @@ class FastSpeech2Loss(nn.Module):
         mel_pred, pitch_pred, energy_pred, duration_pred, _ = pred
         mel_tgt, pitch_tgt, energy_tgt, duration_tgt = truth
         duration_tgt = torch.log(duration_tgt.float() + 1)
+
         src_mask = ~src_mask
         tgt_mask = ~tgt_mask
 
         if tgt_max_length is not None:
             mel_tgt = mel_tgt[:, :tgt_max_length, :]
+            #tgt_mask = tgt_mask[:, :tgt_max_length]
+            if config["dataset"].get("variance_level") == "frame":
+                pitch_tgt = pitch_tgt[:, :tgt_max_length]
+                energy_tgt = energy_tgt[:, :tgt_max_length]
 
         mel_loss = FastSpeech2Loss.get_loss(
             mel_pred, mel_tgt, self.l1_loss, tgt_mask, unsqueeze=True
         )
+
+        if config["dataset"].get("variance_level") == "frame":
+            pitch_energy_mask = tgt_mask
+        elif config["dataset"].get("variance_level") == "phoneme":
+            pitch_energy_mask = src_mask
+
         pitch_loss = FastSpeech2Loss.get_loss(
-            pitch_pred, pitch_tgt, self.mse_loss, src_mask
+            pitch_pred, pitch_tgt, self.mse_loss, pitch_energy_mask
         )
         energy_loss = FastSpeech2Loss.get_loss(
-            energy_pred, energy_tgt, self.mse_loss, src_mask
+            energy_pred, energy_tgt, self.mse_loss, pitch_energy_mask
         )
+
         duration_loss = FastSpeech2Loss.get_loss(
             duration_pred, duration_tgt, self.mse_loss, src_mask
         )
@@ -73,16 +85,29 @@ class FastSpeech2Loss(nn.Module):
 
 
 class FastSpeech2(pl.LightningModule):
-    def __init__(self):
+    def __init__(self, learning_rate):
         super().__init__()
+
+        self.lr = learning_rate
 
         # data
         self.batch_size = config["train"].getint("batch_size")
         self.epochs = config["train"].getint("epochs")
-        path = config["train"].get("path")
-        self.train_ds = ProcessedDataset(path, "train", phone_vec=False)
+        train_path = config["train"].get("train_path")
+        valid_path = config["train"].get("valid_path")
+        train_ud = UnprocessedDataset(train_path)
+        valid_ud = UnprocessedDataset(valid_path)
+        self.train_ds = ProcessedDataset(
+            unprocessed_ds=train_ud,
+            split="train",
+            phone_vec=False
+        )
         self.valid_ds = ProcessedDataset(
-            path, "val", phone_vec=False, phone2id=self.train_ds.phone2id
+            unprocessed_ds=valid_ud,
+            split="val",
+            phone_vec=False,
+            phone2id=self.train_ds.phone2id,
+            stats=self.train_ds.stats
         )
 
         vocab_n = self.train_ds.vocab_n
@@ -144,6 +169,14 @@ class FastSpeech2(pl.LightningModule):
         self.loss = FastSpeech2Loss()
 
     def forward(self, phones, speakers, pitch=None, energy=None, duration=None):
+        phones = phones.to(self.device)
+        speakers = speakers.to(self.device)
+        if pitch is not None:
+            pitch = pitch.to(self.device)
+        if energy is not None:
+            energy = energy.to(self.device)
+        if duration is not None:
+            duration = duration.to(self.device)
         src_mask = phones.eq(0)
         output = self.phone_embedding(phones)
         output = self.positional_encoding(output)
@@ -228,7 +261,7 @@ class FastSpeech2(pl.LightningModule):
         if batch_idx == 0:
             old_src_mask = src_mask
             old_tgt_mask = tgt_mask
-            preds, src_mask, tgt_mask = self(batch["phones"], batch["speaker"],)
+            preds, src_mask, tgt_mask = self(batch["phones"], batch["speaker"])
             mels, pitchs, energys, _, durations = [pred.cpu() for pred in preds]
             log_data = []
             for i in range(len(mels)):
@@ -236,12 +269,16 @@ class FastSpeech2(pl.LightningModule):
                     break
                 mel = mels[i][~tgt_mask[i]]
                 true_mel = batch["mel"][i][~old_tgt_mask[i]]
+                if len(mel) == 0:
+                    print('predicted 0 length output, this is normal at the beginning of training')
+                    continue
                 pred_fig = self.valid_ds.plot(
                     {
                         "mel": mel,
                         "pitch": pitchs[i],
                         "energy": energys[i],
                         "duration": durations[i][~src_mask[i]],
+                        "phones": batch["phones"][i]
                     }
                 )
                 true_fig = self.valid_ds.plot(
@@ -250,10 +287,11 @@ class FastSpeech2(pl.LightningModule):
                         "pitch": batch["pitch"][i].cpu(),
                         "energy": batch["energy"][i].cpu(),
                         "duration": batch["duration"][i].cpu()[~old_src_mask[i]],
+                        "phones": batch["phones"][i],
                     }
                 )
-                pred_audio = self.valid_ds.synthesise(mel)[0]
-                true_audio = self.valid_ds.synthesise(true_mel)[0]
+                pred_audio = self.valid_ds.synthesise(mel.to("cuda:0"))[0]
+                true_audio = self.valid_ds.synthesise(true_mel.to("cuda:0"))[0]
                 log_data.append(
                     [
                         batch["text"][i],
@@ -274,13 +312,13 @@ class FastSpeech2(pl.LightningModule):
                 ],
             )
             self.logger.experiment.log({"examples": table})
-
+        
     def configure_optimizers(self):
-        self.optimizer = torch.optim.AdamW(self.parameters(), self.max_lr)
+        self.optimizer = torch.optim.AdamW(self.parameters(), self.lr)
 
         self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
             self.optimizer,
-            max_lr=self.max_lr,
+            max_lr=self.lr,
             steps_per_epoch=len(self.train_ds) // self.batch_size,
             epochs=self.epochs,
         )

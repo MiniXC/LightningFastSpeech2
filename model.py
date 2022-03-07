@@ -95,8 +95,8 @@ class VarianceAdaptor(nn.Module):
 
         self.duration_predictor = VariancePredictor()
         self.length_regulator = LengthRegulator()
-        self.pitch_encoder = VarianceEncoder(stats["pitch"][0], stats["pitch"][1])
-        self.energy_encoder = VarianceEncoder(stats["energy"][0], stats["energy"][1])
+        self.pitch_encoder = VarianceEncoder()#(stats["pitch_min"], stats["pitch_max"])
+        self.energy_encoder = VarianceEncoder()#(stats["energy_min"], stats["energy_max"])
 
     def forward(
         self,
@@ -112,6 +112,12 @@ class VarianceAdaptor(nn.Module):
     ):
         duration_pred = self.duration_predictor(x, src_mask)
 
+        if config["dataset"].get("variance_level") == "phoneme":
+            pitch_pred, pitch_out = self.pitch_encoder(x, tgt_pitch, src_mask, c_pitch)
+            x = x + pitch_out
+            energy_pred, energy_out = self.energy_encoder(x, tgt_energy, src_mask, c_energy)
+            x = x + energy_out
+
         if tgt_duration is not None:  # training
             duration_rounded = tgt_duration
         else:
@@ -121,17 +127,21 @@ class VarianceAdaptor(nn.Module):
             x, duration_rounded, tgt_max_length
         )
 
-        if config["dataset"].get("variance_level") == "phoneme":
-            pitch_pred, pitch_out = self.pitch_encoder(x, tgt_pitch, src_mask, c_pitch)
-            energy_pred, energy_out = self.energy_encoder(x, tgt_energy, src_mask, c_energy)
-        elif config["dataset"].get("variance_level") == "frame":
+        if config["dataset"].get("variance_level") == "frame":
             pitch_pred, pitch_out = self.pitch_encoder(x, tgt_pitch, tgt_mask, c_pitch)
             energy_pred, energy_out = self.energy_encoder(x, tgt_energy, tgt_mask, c_energy)
-        else:
+            if pitch_out.shape[1] > tgt_max_length:
+                print("sample too long...")
+            pitch_out = pitch_out[:,:tgt_max_length]
+            energy_out = energy_out[:,:tgt_max_length]
+            pitch_pred = pitch_pred[:,:tgt_max_length]
+            energy_pred = energy_pred[:,:tgt_max_length]
+            x = (
+                x + pitch_out + energy_out
+            ) 
+        elif config["dataset"].get("variance_level") != "phoneme":
             raise ValueError("variance_level has to be frame or phoneme")
-        x = (
-            x + pitch_out + energy_out
-        ) 
+
         # TODO: investigate if one should be applied before the other
         # ming implementation has pitch predicted first
 
@@ -164,7 +174,7 @@ class LengthRegulator(nn.Module):
 
 
 class VarianceEncoder(nn.Module):
-    def __init__(self, min, max):
+    def __init__(self, min=-1, max=1):
         super().__init__()
 
         n_bins = config["model"].getint("variance_nbins")
