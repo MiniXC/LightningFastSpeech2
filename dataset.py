@@ -44,10 +44,7 @@ from audio_utils import (
 
 from librosa.filters import mel as librosa_mel
 
-# todo: remove
-from audio_utils import TacotronSTFT
-
-#matplotlib.use('AGG', force=True)
+matplotlib.use('AGG', force=True)
 
 config = configparser.ConfigParser()
 config.read("config.ini")
