@@ -259,8 +259,8 @@ def get_alignment(tier, sampling_rate, hop_length):
     for t in tier._objects:
         s, e, p = t.start_time, t.end_time, t.text
 
-        # add silence phone if timestamp gap occurs, except if it's the first one
-        if s != end_time and start_time != 0:
+        # add silence phone if timestamp gap occurs
+        if s != end_time and len(phones) > 0:
             phones.append("sil")
             durations.append(
                 int(

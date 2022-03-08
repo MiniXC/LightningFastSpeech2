@@ -85,7 +85,7 @@ class FastSpeech2Loss(nn.Module):
 
 
 class FastSpeech2(pl.LightningModule):
-    def __init__(self, learning_rate):
+    def __init__(self, learning_rate=config["train"].getfloat("lr")):
         super().__init__()
 
         self.lr = learning_rate

@@ -47,7 +47,7 @@ from librosa.filters import mel as librosa_mel
 # todo: remove
 from audio_utils import TacotronSTFT
 
-matplotlib.use('AGG', force=True)
+#matplotlib.use('AGG', force=True)
 
 config = configparser.ConfigParser()
 config.read("config.ini")
@@ -255,7 +255,7 @@ class UnprocessedDataset(Dataset):
         plt.imshow(mel, origin="lower")
         sns.lineplot(
             x=list(range(len(pitch))) + list(range(len(energy))),
-            y=list(pitch/pitch.max()*40+40) + list(energy/energy.max()*40+40),
+            y=list((pitch-pitch.min())*70) + list((energy-energy.min())+70),
             hue=["Pitch"] * len(pitch) + ["Energy"] * len(energy),
             palette="inferno",
         )
@@ -463,7 +463,7 @@ class ProcessedDataset(Dataset):
         ax.imshow(mel.T, origin="lower")
         sns.lineplot(
             x=list(range(len(pitch))) + list(range(len(energy))),
-            y=[float(p) for p in pitch] + [float(e) for e in energy],
+            y=list((pitch-pitch.min())*70) + list((energy-energy.min())*70),
             hue=["Pitch"] * len(pitch) + ["Energy"] * len(energy),
             palette="inferno",
             ax=ax,
@@ -514,8 +514,27 @@ class ProcessedDataset(Dataset):
 
 
 if __name__ == "__main__":
-    ds = UnprocessedDataset(config["train"].get("train_path"), max_entries=5000)
-    ps = ProcessedDataset(unprocessed_ds=ds, recompute_stats=False)
-    for i in range(100):
-        print(ps[i]['duration'])
-    ps.plot(ps[6], show=True)
+    # ds = UnprocessedDataset(config["train"].get("train_path"), max_entries=5000)
+    # ps = ProcessedDataset(unprocessed_ds=ds, recompute_stats=False)
+    # for i in range(100):
+    #     print(ps[i]['duration'])
+    # ps.plot(ps[6], show=True)
+
+    train_path = config["train"].get("train_path")
+    valid_path = config["train"].get("valid_path")
+    train_ud = UnprocessedDataset(train_path)
+    valid_ud = UnprocessedDataset(valid_path)
+    train_ds = ProcessedDataset(
+        unprocessed_ds=train_ud,
+        split="train",
+        phone_vec=False
+    )
+    valid_ds = ProcessedDataset(
+        unprocessed_ds=valid_ud,
+        split="val",
+        phone_vec=False,
+        phone2id=train_ds.phone2id,
+        stats=train_ds.stats
+    )
+    valid_ds.plot(valid_ds[0], show=True)
+    #print(valid_ds[0])

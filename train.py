@@ -19,10 +19,10 @@ if __name__ == "__main__":
     epochs = config["train"].getint("epochs")
     validation_step = config["train"].getint("validation_step")
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    model = FastSpeech2(
-        learning_rate=config["train"].getfloat("lr"),
-        checkpoint='models/10epochs_baseline.ckpt',
-    )
+    # model = FastSpeech2(
+    #     learning_rate=config["train"].getfloat("lr"),
+    # )
+    model = FastSpeech2.load_from_checkpoint('models/10epochs_baseline.ckpt')
     trainer = Trainer(
         default_root_dir="logs",
         min_epochs=epochs,
