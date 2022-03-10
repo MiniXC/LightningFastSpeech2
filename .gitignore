@@ -9,3 +9,5 @@ logs
 None
 .vscode
 models
+__pypackages__
+.pdm.toml

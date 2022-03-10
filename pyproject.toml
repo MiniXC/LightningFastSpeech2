@@ -1,0 +1,31 @@
+[project]
+name = ""
+version = ""
+description = ""
+authors = [
+    {name = "Christoph Minixhofer", email = "christoph.minixhofer@gmail.com"},
+]
+dependencies = [
+    "pytorch-lightning>=1.5.10",
+    "torchaudio>=0.10.2",
+    "wandb>=0.12.11",
+    "pillow>=9.0.1",
+    "matplotlib>=3.5.1",
+    "scikit-learn>=1.0.2",
+    "seaborn>=0.11.2",
+    "phones>=0.0.2",
+    "pandarallel>=1.5.7",
+    "tgt>=1.4.4",
+    "pyworld>=0.3.0",
+    "llvmlite>=0.38.0",
+    "librosa>=0.9.1",
+]
+license = {text = "MIT"}
+requires-python = ">=3.7,<3.11"
+[project.urls]
+Homepage = ""
+[tool.pdm]
+
+[build-system]
+requires = ["pdm-pep517"]
+build-backend = "pdm.pep517.api"
