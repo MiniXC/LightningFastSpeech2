@@ -11,7 +11,6 @@ import matplotlib
 import scipy
 import seaborn as sns
 import torchaudio
-import hifigan
 from glob import glob
 from phones.convert import Converter
 from phones import PhoneCollection
@@ -343,19 +342,6 @@ class ProcessedDataset(Dataset):
 
         self.id2phone = {v:k for k,v in self.phone2id.items()}
 
-        if split in ["val", "validation", "dev"]:
-            with open("hifigan/config.json", "r") as f:
-                config = json.load(f)
-            config["sampling_rate"] = 22050
-            config = hifigan.AttrDict(config)
-            vocoder = hifigan.Generator(config)
-            ckpt = torch.load("hifigan/generator_universal.pth.tar")
-            vocoder.load_state_dict(ckpt["generator"])
-            vocoder.eval()
-            vocoder.remove_weight_norm()
-            vocoder.to("cuda:0")
-            self.vocoder = vocoder
-
     def _get_stats(self, idx):
         x = self.ds[idx]
         return {
@@ -489,10 +475,6 @@ class ProcessedDataset(Dataset):
         plt.close()
         return Image.open(buf)
 
-    def synthesise(self, mel):
-        mel = torch.unsqueeze(mel.T, 0)
-        return (self.vocoder(mel.to("cuda:0")).squeeze(1).cpu().numpy() * 32768.0).astype("int16")
-
     def collate_fn(self, data):
         # list-of-dict -> dict-of-lists
         # (see https://stackoverflow.com/a/33046935)
@@ -511,11 +493,6 @@ class ProcessedDataset(Dataset):
 
 
 if __name__ == "__main__":
-    # ds = UnprocessedDataset(config["train"].get("train_path"), max_entries=5000)
-    # ps = ProcessedDataset(unprocessed_ds=ds, recompute_stats=False)
-    # for i in range(100):
-    #     print(ps[i]['duration'])
-    # ps.plot(ps[6], show=True)
 
     train_path = config["train"].get("train_path")
     valid_path = config["train"].get("valid_path")
@@ -534,4 +511,3 @@ if __name__ == "__main__":
         stats=train_ds.stats
     )
     valid_ds.plot(valid_ds[0], show=True)
-    #print(valid_ds[0])

@@ -7,6 +7,7 @@ import torch
 import configparser
 import multiprocessing
 import wandb
+from synthesiser import Synthesiser
 
 from dataset import ProcessedDataset, UnprocessedDataset
 
@@ -18,7 +19,6 @@ config.read("config.ini")
 # TODO:
 # allow to replace with "real" conformer
 # allow to replace with linear FFN with same number of params
-# allow controls to be set to curves/arrays
 # preprocess on frame level and allow phoneme level
 # add option for postnet
 
@@ -109,6 +109,8 @@ class FastSpeech2(pl.LightningModule):
             phone2id=self.train_ds.phone2id,
             stats=self.train_ds.stats
         )
+
+        self.synth = Synthesiser(22050)
 
         vocab_n = self.train_ds.vocab_n
         speaker_n = self.train_ds.speaker_n
@@ -290,8 +292,8 @@ class FastSpeech2(pl.LightningModule):
                         "phones": batch["phones"][i],
                     }
                 )
-                pred_audio = self.valid_ds.synthesise(mel.to("cuda:0"))[0]
-                true_audio = self.valid_ds.synthesise(true_mel.to("cuda:0"))[0]
+                pred_audio = self.synth(mel.to("cuda:0"))[0]
+                true_audio = self.synth(true_mel.to("cuda:0"))[0]
                 log_data.append(
                     [
                         batch["text"][i],

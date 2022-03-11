@@ -123,6 +123,7 @@ class VarianceAdaptor(nn.Module):
         else:
             duration_rounded = torch.round(torch.exp(duration_pred) - 1)
             duration_rounded = torch.clamp(duration_rounded * c_duration, min=0).int()
+
         x, tgt_len, tgt_mask = self.length_regulator(
             x, duration_rounded, tgt_max_length
         )

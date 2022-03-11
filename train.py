@@ -22,7 +22,7 @@ if __name__ == "__main__":
     # model = FastSpeech2(
     #     learning_rate=config["train"].getfloat("lr"),
     # )
-    model = FastSpeech2.load_from_checkpoint('models/10epochs_baseline.ckpt')
+    model = FastSpeech2.load_from_checkpoint('models/31_epochs.ckpt')
     trainer = Trainer(
         default_root_dir="logs",
         min_epochs=epochs,
@@ -32,8 +32,9 @@ if __name__ == "__main__":
         accumulate_grad_batches=config["train"].getint("gradient_accumulation"),
         callbacks=[lr_monitor],
         gradient_clip_val=config["train"].getint("gradient_clipping"),
-        gpus=1,
-        #strategy="ddp",
+        gpus=-1,
+        precision=16,
+        strategy="dp",
         #auto_select_gpus=True,
     )
     trainer.fit(model)
