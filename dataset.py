@@ -31,6 +31,7 @@ import pyworld as pw
 from torchaudio import transforms
 import multiprocessing
 from random import Random
+from copy import deepcopy
 
 from ipa_utils import get_phone_vecs
 from audio_utils import (
@@ -385,7 +386,7 @@ class ProcessedDataset(Dataset):
         speaker = self.data.iloc[idx]["speaker"]
         speaker_id = self.speaker_map[speaker]
         text = self.data.iloc[idx]["text"]
-        phones = self.data.iloc[idx]["phones"]
+        phones = deepcopy(self.data.iloc[idx]["phones"])
 
         entry = self.ds[idx]
 

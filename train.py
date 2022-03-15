@@ -13,11 +13,11 @@ config.read("config.ini")
 
 os.environ["WANDB_MODE"] = config["train"].get("wandb_mode")
 
-wandb_logger = WandbLogger(project="LightningFastSpeech",)
+wandb_logger = WandbLogger(project="LightningFastSpeech", group="DDP", log_model="all")
 
 if __name__ == "__main__":
     epochs = config["train"].getint("epochs")
-    validation_step = config["train"].getint("validation_step")
+    validation_step = config["train"].getfloat("validation_step")
     lr_monitor = LearningRateMonitor(logging_interval='step')
     # model = FastSpeech2(
     #     learning_rate=config["train"].getfloat("lr"),
@@ -33,8 +33,6 @@ if __name__ == "__main__":
         callbacks=[lr_monitor],
         gradient_clip_val=config["train"].getint("gradient_clipping"),
         gpus=-1,
-        precision=16,
-        strategy="dp",
-        #auto_select_gpus=True,
+        strategy="ddp",
     )
     trainer.fit(model)

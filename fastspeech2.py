@@ -8,6 +8,7 @@ import configparser
 import multiprocessing
 import wandb
 from synthesiser import Synthesiser
+from postnet import PostNet
 
 from dataset import ProcessedDataset, UnprocessedDataset
 
@@ -24,10 +25,11 @@ config.read("config.ini")
 
 
 class FastSpeech2Loss(nn.Module):
-    def __init__(self):
+    def __init__(self, postnet):
         super().__init__()
         self.mse_loss = nn.MSELoss()
         self.l1_loss = nn.L1Loss()
+        self.postnet = postnet
 
     @staticmethod
     def get_loss(pred, truth, loss, mask, unsqueeze=False):
@@ -39,7 +41,7 @@ class FastSpeech2Loss(nn.Module):
         return loss(pred, truth)
 
     def forward(self, pred, truth, src_mask, tgt_mask, tgt_max_length=None):
-        mel_pred, pitch_pred, energy_pred, duration_pred, _ = pred
+        mel_pred, pitch_pred, energy_pred, duration_pred, _, postnet_pred = pred
         mel_tgt, pitch_tgt, energy_tgt, duration_tgt = truth
         duration_tgt = torch.log(duration_tgt.float() + 1)
 
@@ -56,6 +58,11 @@ class FastSpeech2Loss(nn.Module):
         mel_loss = FastSpeech2Loss.get_loss(
             mel_pred, mel_tgt, self.l1_loss, tgt_mask, unsqueeze=True
         )
+
+        if self.postnet:
+            postnet_loss = FastSpeech2Loss.get_loss(
+                postnet_pred, mel_tgt, self.l1_loss, tgt_mask, unsqueeze=True
+            )
 
         if config["dataset"].get("variance_level") == "frame":
             pitch_energy_mask = tgt_mask
@@ -75,13 +82,21 @@ class FastSpeech2Loss(nn.Module):
 
         total_loss = mel_loss + pitch_loss + energy_loss + duration_loss
 
-        return (
+        if self.postnet:
+            total_loss = total_loss + postnet_loss
+
+        result = [
             total_loss,
             mel_loss,
             pitch_loss,
             energy_loss,
             duration_loss,
-        )
+        ]
+
+        if self.postnet:
+            result.append(postnet_loss) 
+        
+        return result
 
 
 class FastSpeech2(pl.LightningModule):
@@ -166,9 +181,17 @@ class FastSpeech2(pl.LightningModule):
             ),
             decoder_layers,
         )
+
         self.linear = nn.Linear(decoder_hidden, mel_channels,)
 
-        self.loss = FastSpeech2Loss()
+        self.has_postnet = config["model"].getboolean("postnet")
+
+        if self.has_postnet:
+            self.postnet = PostNet()
+
+        self.loss = FastSpeech2Loss(postnet=self.has_postnet)
+
+        self.is_wandb_init = False
 
     def forward(self, phones, speakers, pitch=None, energy=None, duration=None):
         phones = phones.to(self.device)
@@ -196,6 +219,12 @@ class FastSpeech2(pl.LightningModule):
         output = self.positional_encoding(output)
         output = self.decoder(output, src_key_padding_mask=variance_out["tgt_mask"])
         output = self.linear(output)
+
+        if self.has_postnet:
+            postnet_output = self.postnet(output) + output
+        else:
+            postnet_output = None
+
         return (
             (
                 output,
@@ -203,6 +232,7 @@ class FastSpeech2(pl.LightningModule):
                 variance_out["energy"],
                 variance_out["log_duration"],
                 variance_out["duration_rounded"],
+                postnet_output,
             ),
             src_mask,
             variance_out["tgt_mask"],
@@ -223,15 +253,19 @@ class FastSpeech2(pl.LightningModule):
             batch["duration"],
         )
         loss = self.loss(logits, truth, src_mask, tgt_mask, self.tgt_max_length)
+        log_dict = {
+            "train/total_loss": loss[0].item(),
+            "train/mel_loss": loss[1].item(),
+            "train/pitch_loss": loss[2].item(),
+            "train/energy_loss": loss[3].item(),
+            "train/duration_loss": loss[4].item(),
+        }
+        if self.has_postnet:
+            log_dict['train/postnet_loss'] = loss[5].item()
         self.log_dict(
-            {
-                "train/total_loss": loss[0].item(),
-                "train/mel_loss": loss[1].item(),
-                "train/pitch_loss": loss[2].item(),
-                "train/energy_loss": loss[3].item(),
-                "train/duration_loss": loss[4].item(),
-            },
+            log_dict,
             batch_size=self.batch_size,
+            sync_dist=True,
         )
         return loss[0]
 
@@ -250,21 +284,28 @@ class FastSpeech2(pl.LightningModule):
             batch["duration"],
         )
         loss = self.loss(preds, truth, src_mask, tgt_mask, self.tgt_max_length)
+        log_dict = {
+            "eval/total_loss": loss[0].item(),
+            "eval/mel_loss": loss[1].item(),
+            "eval/pitch_loss": loss[2].item(),
+            "eval/energy_loss": loss[3].item(),
+            "eval/duration_loss": loss[4].item(),
+        }
+        if self.has_postnet:
+            log_dict['eval/postnet_loss'] = loss[5].item()
         self.log_dict(
-            {
-                "eval/total_loss": loss[0].item(),
-                "eval/mel_loss": loss[1].item(),
-                "eval/pitch_loss": loss[2].item(),
-                "eval/energy_loss": loss[3].item(),
-                "eval/duration_loss": loss[4].item(),
-            },
+            log_dict,
             batch_size=self.batch_size,
+            sync_dist=True,
         )
-        if batch_idx == 0:
+        if batch_idx == 0 and self.trainer.is_global_zero:
+            if not self.is_wandb_init:
+                wandb.init(project='LightningFastSpeech', group='DDP')
+                self.is_wandb_init = True
             old_src_mask = src_mask
             old_tgt_mask = tgt_mask
             preds, src_mask, tgt_mask = self(batch["phones"], batch["speaker"])
-            mels, pitchs, energys, _, durations = [pred.cpu() for pred in preds]
+            mels, pitchs, energys, _, durations, _ = [pred.cpu() for pred in preds]
             log_data = []
             for i in range(len(mels)):
                 if i >= 10:
@@ -313,7 +354,7 @@ class FastSpeech2(pl.LightningModule):
                     "true_audio",
                 ],
             )
-            self.logger.experiment.log({"examples": table})
+            wandb.log({"examples": table})
         
     def configure_optimizers(self):
         self.optimizer = torch.optim.AdamW(self.parameters(), self.lr)

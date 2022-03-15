@@ -19,6 +19,7 @@ dependencies = [
     "pyworld>=0.3.0",
     "llvmlite>=0.38.0",
     "librosa>=0.9.1",
+    "click>=8.0.4",
 ]
 license = {text = "MIT"}
 requires-python = ">=3.7,<3.11"
