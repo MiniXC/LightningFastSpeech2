@@ -12,3 +12,4 @@ models
 __pypackages__
 .pdm.toml
 *.log
+run_longjob.sh

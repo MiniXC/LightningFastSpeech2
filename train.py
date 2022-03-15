@@ -19,10 +19,22 @@ if __name__ == "__main__":
     epochs = config["train"].getint("epochs")
     validation_step = config["train"].getfloat("validation_step")
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    # model = FastSpeech2(
-    #     learning_rate=config["train"].getfloat("lr"),
-    # )
-    model = FastSpeech2.load_from_checkpoint('models/31_epochs.ckpt')
+
+    model_path = config["train"].get('model_path')
+    if model_path == "None":
+        model = FastSpeech2(
+            learning_rate=config["train"].getfloat("lr"),
+        )
+    else:
+        model = FastSpeech2.load_from_checkpoint(model_path, strict=False)
+        
+    if config["train"].getboolean('distributed'):
+        strategy = "ddp"
+        gpus = -1
+    else:
+        strategy = None
+        gpus = 1
+
     trainer = Trainer(
         default_root_dir="logs",
         min_epochs=epochs,
@@ -32,7 +44,7 @@ if __name__ == "__main__":
         accumulate_grad_batches=config["train"].getint("gradient_accumulation"),
         callbacks=[lr_monitor],
         gradient_clip_val=config["train"].getint("gradient_clipping"),
-        gpus=-1,
-        strategy="ddp",
+        gpus=gpus,
+        strategy=strategy,
     )
     trainer.fit(model)

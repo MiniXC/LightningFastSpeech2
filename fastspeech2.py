@@ -305,12 +305,15 @@ class FastSpeech2(pl.LightningModule):
             old_src_mask = src_mask
             old_tgt_mask = tgt_mask
             preds, src_mask, tgt_mask = self(batch["phones"], batch["speaker"])
-            mels, pitchs, energys, _, durations, _ = [pred.cpu() for pred in preds]
+            mels, pitchs, energys, _, durations, postnet_mels = [pred.cpu() for pred in preds]
             log_data = []
             for i in range(len(mels)):
                 if i >= 10:
                     break
-                mel = mels[i][~tgt_mask[i]]
+                if postnet_mels is not None:
+                    mel = postnet_mels[i][~tgt_mask[i]]
+                else:
+                    mel = mels[i][~tgt_mask[i]]
                 true_mel = batch["mel"][i][~old_tgt_mask[i]]
                 if len(mel) == 0:
                     print('predicted 0 length output, this is normal at the beginning of training')

@@ -107,6 +107,7 @@ def synth(
         preds, src_mask, tgt_mask = model(batch["phones"], batch["speaker"], pitch, energy, duration)
 
         for i in range(len(batch['speaker'])):
+            # TODO: use postnet!!!
             audio = synthesiser(preds[0][i][~tgt_mask[i]])
             total_len += audio.shape[1] / float(config['model'].getint('sampling_rate'))
             torchaudio.save(
