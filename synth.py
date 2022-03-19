@@ -54,6 +54,8 @@ def synth(
     Path(destination).mkdir(exist_ok=True)
     for f in glob(f'{destination}/*.wav'):
         os.remove(f)
+    for f in glob(f'{destination}/*.lab'):
+        os.remove(f)
 
     model = FastSpeech2.load_from_checkpoint(config['model'].get('path')).to("cuda:0")
     synthesiser = Synthesiser(config['model'].getint('sampling_rate'), device='cuda:1')
@@ -107,7 +109,7 @@ def synth(
         preds, src_mask, tgt_mask = model(batch["phones"], batch["speaker"], pitch, energy, duration)
 
         for i in range(len(batch['speaker'])):
-            # TODO: use postnet!!!
+
             audio = synthesiser(preds[0][i][~tgt_mask[i]])
             total_len += audio.shape[1] / float(config['model'].getint('sampling_rate'))
             torchaudio.save(
@@ -115,6 +117,8 @@ def synth(
                 torch.tensor(audio),
                 config['model'].getint('sampling_rate'),
             )
+            with open(os.path.join(destination,f'{batch["id"][i]}').replace(".wav",".lab")) as lab:
+                lab.write(batch["text"][i])
 
         print(f'{round(total_len / 60 / 60, 3)} / {round(max_len / 60 / 60, 3)} h')
 
