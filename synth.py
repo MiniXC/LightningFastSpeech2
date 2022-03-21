@@ -14,6 +14,7 @@ from scipy.signal import argrelextrema
 import matplotlib.pyplot as plt
 import seaborn as sns
 from glob import glob
+import shutil
 
 config = configparser.ConfigParser()
 config.read("synth.ini")
@@ -22,7 +23,7 @@ diversity_choice = click.Choice(['increase', 'decrease'])
 
 def segment1d(x):
     kde = KernelDensity(kernel='gaussian', bandwidth=1).fit(x.reshape(-1, 1))
-    s = np.linspace(0, x.max()+1)
+    s = np.linspace(x.min()*1.1, x.max()*1.1)
     e = kde.score_samples(s.reshape(-1, 1))
     mi, ma = argrelextrema(e, np.less)[0], argrelextrema(e, np.greater)[0]
     result = []
@@ -42,6 +43,7 @@ def segment1d(x):
 @click.option('--duration_diversity', type=diversity_choice)
 @click.option('--speaker_diversity', type=diversity_choice)
 @click.option('--lexical_diversity', type=diversity_choice)
+@click.option('--copy', is_flag=True)
 def synth(
     destination,
     size,
@@ -49,13 +51,14 @@ def synth(
     energy_diversity=None,
     duration_diversity=None,
     speaker_diversity=None,
-    lexical_diversity=None
+    lexical_diversity=None,
+    copy=False,
 ):
+    try:
+        shutil.rmtree(destination)
+    except FileNotFoundError:
+        pass
     Path(destination).mkdir(exist_ok=True)
-    for f in glob(f'{destination}/*.wav'):
-        os.remove(f)
-    for f in glob(f'{destination}/*.lab'):
-        os.remove(f)
 
     model = FastSpeech2.load_from_checkpoint(config['model'].get('path')).to("cuda:0")
     synthesiser = Synthesiser(config['model'].getint('sampling_rate'), device='cuda:1')
@@ -70,7 +73,22 @@ def synth(
             print(f'only using speaker {single_speaker}')
 
     for batch in tqdm(model.train_dataloader()):
-        #print(batch)
+        if copy:
+            for i in range(len(batch['speaker'])):
+                wav_file = glob(os.path.join('../Data/LibriTTS/train-clean-100-aligned','**',batch["id"][i]), recursive=True)[0]
+                lab_file = wav_file.replace(".wav", ".lab")
+                speaker_str = batch['id'][i].split('_')[0]
+                Path(os.path.join(destination,speaker_str)).mkdir(  exist_ok=True)
+                shutil.copyfile(wav_file, os.path.join(destination,speaker_str,batch['id'][i]))
+                shutil.copyfile(lab_file, os.path.join(destination,speaker_str,batch['id'][i].replace(".wav", ".lab")))
+                audio, sampling_rate = torchaudio.load(wav_file)
+                total_len += len(audio[0]) / sampling_rate
+                print(f'{round(total_len / 60 / 60, 3)} / {round(max_len / 60 / 60, 3)} h')
+
+            if total_len >= max_len:
+                break
+            continue
+
         preds, src_mask, tgt_mask = model(batch["phones"], batch["speaker"])
         i = 0
         pitch, energy, duration = preds[1], preds[2], preds[4]
@@ -88,15 +106,15 @@ def synth(
             pitch = pitch.float().detach().cpu()
             if pitch_diversity == 'increase':
                 pitch *= np.random.uniform(0.5, 1.5)
-            if pitch_diversity == 'decrease':   
-                pitch[~src_mask] = pitch.mean()
+            if pitch_diversity == 'decrease':  
+                pitch[~src_mask] = segment1d(pitch[~src_mask])
         
         if energy_diversity is not None:
             energy = energy.float().detach().cpu()
             if energy_diversity == 'increase':
                 energy *= np.random.uniform(0.5, 1.5)
             if energy_diversity == 'decrease':
-                energy *= 0.1
+                energy[~src_mask] = segment1d(energy[~src_mask])
 
         if lexical_diversity is not None:
             raise NotImplementedError()
@@ -112,12 +130,16 @@ def synth(
 
             audio = synthesiser(preds[0][i][~tgt_mask[i]])
             total_len += audio.shape[1] / float(config['model'].getint('sampling_rate'))
+
+            speaker_str = batch['id'][i].split('_')[0]
+            Path(os.path.join(destination,speaker_str)).mkdir(exist_ok=True)
+
             torchaudio.save(
-                os.path.join(destination,f'{batch["id"][i]}'),
+                os.path.join(destination,speaker_str,f'{batch["id"][i]}'),
                 torch.tensor(audio),
                 config['model'].getint('sampling_rate'),
             )
-            with open(os.path.join(destination,f'{batch["id"][i]}').replace(".wav",".lab")) as lab:
+            with open(os.path.join(destination,speaker_str,f'{batch["id"][i]}').replace(".wav",".lab"), 'w') as lab:
                 lab.write(batch["text"][i])
 
         print(f'{round(total_len / 60 / 60, 3)} / {round(max_len / 60 / 60, 3)} h')

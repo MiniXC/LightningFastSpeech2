@@ -497,12 +497,13 @@ if __name__ == "__main__":
 
     train_path = config["train"].get("train_path")
     valid_path = config["train"].get("valid_path")
-    train_ud = UnprocessedDataset(train_path)
+    train_ud = UnprocessedDataset(train_path, max_entries=1000)
     valid_ud = UnprocessedDataset(valid_path)
     train_ds = ProcessedDataset(
         unprocessed_ds=train_ud,
         split="train",
-        phone_vec=False
+        phone_vec=False,
+        recompute_stats=True,
     )
     valid_ds = ProcessedDataset(
         unprocessed_ds=valid_ud,
