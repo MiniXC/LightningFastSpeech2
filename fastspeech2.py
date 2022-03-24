@@ -108,10 +108,11 @@ class FastSpeech2(pl.LightningModule):
         # data
         self.batch_size = config["train"].getint("batch_size")
         self.epochs = config["train"].getint("epochs")
+        self.has_dvector = config["model"].getboolean("dvector")
         train_path = config["train"].get("train_path")
         valid_path = config["train"].get("valid_path")
-        train_ud = UnprocessedDataset(train_path)
-        valid_ud = UnprocessedDataset(valid_path)
+        train_ud = UnprocessedDataset(train_path, dvector=self.has_dvector)
+        valid_ud = UnprocessedDataset(valid_path, dvector=self.has_dvector)
         self.train_ds = ProcessedDataset(
             unprocessed_ds=train_ud,
             split="train",
@@ -150,9 +151,12 @@ class FastSpeech2(pl.LightningModule):
         mel_channels = config["model"].getint("mel_channels")
 
         # modules
-        vocab_n = 363
+
         self.phone_embedding = nn.Embedding(vocab_n, encoder_hidden, padding_idx=0)
-        self.speaker_embedding = nn.Embedding(speaker_n, encoder_hidden,)
+
+        if not self.has_dvector:
+            self.speaker_embedding = nn.Embedding(speaker_n, encoder_hidden,)
+
         self.encoder = TransformerEncoder(
             ConformerEncoderLayer(
                 encoder_hidden,
@@ -206,11 +210,20 @@ class FastSpeech2(pl.LightningModule):
         output = self.phone_embedding(phones)
         output = self.positional_encoding(output)
         output = self.encoder(output, src_key_padding_mask=src_mask)
-        speaker_out = (
-            self.speaker_embedding(speakers)
-            .reshape(-1, 1, output.shape[-1])
-            .repeat_interleave(phones.shape[1], dim=1)
-        )
+
+        if not self.has_dvector:
+            speaker_out = (
+                self.speaker_embedding(speakers)
+                .reshape(-1, 1, output.shape[-1])
+                .repeat_interleave(phones.shape[1], dim=1)
+            )
+        else:
+            speaker_out = (
+                speakers
+                .reshape(-1, 1, output.shape[-1])
+                .repeat_interleave(phones.shape[1], dim=1)
+            )
+
         output = output + speaker_out
         variance_out = self.variance_adaptor(
             output, src_mask, pitch, energy, duration, self.tgt_max_length
@@ -305,7 +318,7 @@ class FastSpeech2(pl.LightningModule):
             old_src_mask = src_mask
             old_tgt_mask = tgt_mask
             preds, src_mask, tgt_mask = self(batch["phones"], batch["speaker"])
-            mels, pitchs, energys, _, durations, postnet_mels = [pred.cpu() for pred in preds]
+            mels, pitchs, energys, _, durations, postnet_mels = [pred.cpu() if pred is not None else None for pred in preds]
             log_data = []
             for i in range(len(mels)):
                 if i >= 10:

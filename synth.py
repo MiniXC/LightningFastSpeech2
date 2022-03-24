@@ -105,7 +105,7 @@ def synth(
         if pitch_diversity is not None:
             pitch = pitch.float().detach().cpu()
             if pitch_diversity == 'increase':
-                pitch *= np.random.uniform(0.5, 1.5)
+                pitch *= np.random.uniform(0.5, 1.5, size=pitch.shape)
             if pitch_diversity == 'decrease':  
                 pitch[~src_mask] = segment1d(pitch[~src_mask])
         

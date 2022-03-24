@@ -130,6 +130,12 @@ requires_python = ">=2.7, !=3.0.*"
 summary = "serialize all of python"
 
 [[package]]
+name = "diskcache"
+version = "5.4.0"
+requires_python = ">=3"
+summary = "Disk Cache -- Disk and file backed persistent cache."
+
+[[package]]
 name = "docker-pycreds"
 version = "0.4.0"
 summary = "Python bindings for the docker credentials store API"
@@ -776,7 +782,7 @@ summary = "Backport of pathlib-compatible object wrapper for zip files"
 
 [metadata]
 lock_version = "3.1"
-content_hash = "sha256:e3f45cab263ad34c7ab3cdcbf8a9c0ae0fb62a472ecc42c99ff7c7a6ccb8d83b"
+content_hash = "sha256:649370002c2181ab8a9cf30f8947b9fc2df55a93cf69d77f8df54a626505916b"
 
 [metadata.files]
 "absl-py 1.0.0" = [
@@ -1001,6 +1007,10 @@ content_hash = "sha256:e3f45cab263ad34c7ab3cdcbf8a9c0ae0fb62a472ecc42c99ff7c7a6c
 "dill 0.3.4" = [
     {file = "dill-0.3.4-py2.py3-none-any.whl", hash = "sha256:7e40e4a70304fd9ceab3535d36e58791d9c4a776b38ec7f7ec9afc8d3dca4d4f"},
     {file = "dill-0.3.4.zip", hash = "sha256:9f9734205146b2b353ab3fec9af0070237b6ddae78452af83d2fca84d739e675"},
+]
+"diskcache 5.4.0" = [
+    {file = "diskcache-5.4.0-py3-none-any.whl", hash = "sha256:af3ec6d7f167bbef7b6c33d9ee22f86d3e8f2dd7131eb7c4703d8d91ccdc0cc4"},
+    {file = "diskcache-5.4.0.tar.gz", hash = "sha256:8879eb8c9b4a2509a5e633d2008634fb2b0b35c2b36192d89655dbde02419644"},
 ]
 "docker-pycreds 0.4.0" = [
     {file = "docker_pycreds-0.4.0-py2.py3-none-any.whl", hash = "sha256:7266112468627868005106ec19cd0d722702d2b7d5912a28e19b826c3d37af49"},
