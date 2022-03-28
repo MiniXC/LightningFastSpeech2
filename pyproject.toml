@@ -7,7 +7,7 @@ authors = [
 ]
 dependencies = [
     "pytorch-lightning>=1.5.10",
-    "torchaudio>=0.10.2",
+    "torchaudio>=0.11.0",
     "wandb>=0.12.11",
     "pillow>=9.0.1",
     "matplotlib>=3.5.1",
@@ -21,6 +21,7 @@ dependencies = [
     "librosa>=0.9.1",
     "click>=8.0.4",
     "diskcache>=5.4.0",
+    "torchvision>=0.12.0",
 ]
 license = {text = "MIT"}
 requires-python = ">=3.7,<3.11"

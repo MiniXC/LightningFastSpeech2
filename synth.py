@@ -72,18 +72,23 @@ def synth(
             single_speaker = speakers[np.random.randint(0, len(speakers))]
             print(f'only using speaker {single_speaker}')
 
+    num_speakers = 100
+    speaker_set = set()
+
     for batch in tqdm(model.train_dataloader()):
         if copy:
             for i in range(len(batch['speaker'])):
-                wav_file = glob(os.path.join('../Data/LibriTTS/train-clean-100-aligned','**',batch["id"][i]), recursive=True)[0]
-                lab_file = wav_file.replace(".wav", ".lab")
                 speaker_str = batch['id'][i].split('_')[0]
-                Path(os.path.join(destination,speaker_str)).mkdir(  exist_ok=True)
-                shutil.copyfile(wav_file, os.path.join(destination,speaker_str,batch['id'][i]))
-                shutil.copyfile(lab_file, os.path.join(destination,speaker_str,batch['id'][i].replace(".wav", ".lab")))
-                audio, sampling_rate = torchaudio.load(wav_file)
-                total_len += len(audio[0]) / sampling_rate
-                print(f'{round(total_len / 60 / 60, 3)} / {round(max_len / 60 / 60, 3)} h')
+                if len(speaker_set) < num_speakers or speaker_str in speaker_set:
+                    speaker_set.add(speaker_str)
+                    wav_file = glob(os.path.join('../Data/LibriTTS/train-clean-100-aligned','**',batch["id"][i]), recursive=True)[0]
+                    lab_file = wav_file.replace(".wav", ".lab")
+                    Path(os.path.join(destination,speaker_str)).mkdir(  exist_ok=True)
+                    shutil.copyfile(wav_file, os.path.join(destination,speaker_str,batch['id'][i]))
+                    shutil.copyfile(lab_file, os.path.join(destination,speaker_str,batch['id'][i].replace(".wav", ".lab")))
+                    audio, sampling_rate = torchaudio.load(wav_file)
+                    total_len += len(audio[0]) / sampling_rate
+                    print(f'{round(total_len / 60 / 60, 3)} / {round(max_len / 60 / 60, 3)} h')
 
             if total_len >= max_len:
                 break

@@ -24,6 +24,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 from tqdm.contrib.concurrent import process_map
 import torchaudio.transforms as T
+import torchvision.transforms as VT
 import torchaudio.functional as F
 import torch
 import tgt
@@ -45,7 +46,7 @@ from audio_utils import (
 
 from librosa.filters import mel as librosa_mel
 
-matplotlib.use('AGG', force=True)
+# matplotlib.use('AGG', force=True)
 
 config = configparser.ConfigParser()
 config.read("config.ini")
@@ -55,10 +56,12 @@ tqdm.pandas()
 
 # TODO: convert to pl DataModules
 class UnprocessedDataset(Dataset):
-    def __init__(self, audio_directory, alignment_directory=None, max_entries=None, dvector=False, cache=True):
+    def __init__(self, audio_directory, alignment_directory=None, max_entries=None, dvector=False, cache=True, blur=False, treshold=0.5):
         super().__init__()
 
         self.dir = audio_directory
+
+        self.treshold = treshold
 
         if alignment_directory is None:
             alignment_directory=audio_directory
@@ -147,6 +150,8 @@ class UnprocessedDataset(Dataset):
         self.do_cache = cache
         if cache:
             self.cache = {}
+
+        self.blur = blur
                 
 
     def create_entry(self, audio_file):
@@ -162,6 +167,10 @@ class UnprocessedDataset(Dataset):
         phones, durations, start, end = get_alignment(
             textgrid.get_tier_by_name("phones"), self.sampling_rate, self.hop_length,
         )
+
+        if end - start < self.treshold:
+            return None
+
         for i, phone in enumerate(phones):
             add_stress = False
             if self.remove_stress:
@@ -226,6 +235,10 @@ class UnprocessedDataset(Dataset):
         mel = torch.matmul(self.mel_basis, mel)
         mel = dynamic_range_compression(mel).cpu()
 
+        if self.blur:
+            gaussian = VT.GaussianBlur(kernel_size=(31,3))
+            mel_blur = gaussian(mel.unsqueeze(0)).squeeze()
+
         pitch_cache_key = f'{row["basename"]}_{self.dio_speed}_pitch'
         if not self.do_cache or pitch_cache_key not in self.cache:
             pitch, t = pw.dio(
@@ -265,6 +278,9 @@ class UnprocessedDataset(Dataset):
             "energy": np.array(energy),
             "duration": np.array(duration),
         }
+
+        if self.blur:
+            result['mel_blur'] = np.array(mel_blur.T)[:sum(duration)]
 
         if self.has_dvector:
             if not self.do_cache or f'speaker_{row["speaker"]}' not in self.cache:
@@ -463,6 +479,9 @@ class ProcessedDataset(Dataset):
         if 'dvector' in entry:
             sample['speaker'] = entry['dvector']
 
+        if 'mel_blur' in entry:
+            sample['mel_blur'] = entry['mel_blur']
+
         return sample
 
     @staticmethod
@@ -528,11 +547,10 @@ class ProcessedDataset(Dataset):
         # list-of-dict -> dict-of-lists
         # (see https://stackoverflow.com/a/33046935)
         data = {k: [dic[k] for dic in data] for k in data[0]}
-        for key in ["phones", "mel", "pitch", "energy", "duration"]:
-            for t in data[key]:
-                if isinstance(t, list):
-                    print(t)
-                # print(key, t.shape)
+        keys = ["phones", "mel", "pitch", "energy", "duration"]
+        if "mel_blur" in data:
+            keys.append("mel_blur")
+        for key in keys:
             if torch.is_tensor(data[key][0]):
                 data[key] = pad_sequence(data[key], batch_first=True, padding_value=0)
             else:
@@ -554,7 +572,7 @@ if __name__ == "__main__":
         unprocessed_ds=train_ud,
         split="train",
         phone_vec=False,
-        recompute_stats=True,
+        recompute_stats=False,
     )
     valid_ds = ProcessedDataset(
         unprocessed_ds=valid_ud,
@@ -563,4 +581,4 @@ if __name__ == "__main__":
         phone2id=train_ds.phone2id,
         stats=train_ds.stats
     )
-    print(valid_ds[0]['speaker'])
+    valid_ds.plot(valid_ds[0], show=True)
