@@ -2,7 +2,7 @@ import pytorch_lightning as pl
 from torch.nn.modules.transformer import TransformerEncoder
 from model import ConformerEncoderLayer, PositionalEncoding, VarianceAdaptor
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
 import torch
 import configparser
 import multiprocessing
@@ -74,9 +74,14 @@ class FastSpeech2Loss(nn.Module):
             )
 
         if self.postnet:
-            postnet_loss = FastSpeech2Loss.get_loss(
-                postnet_pred, mel_tgt-mel_blur, self.l1_loss, tgt_mask, unsqueeze=True
-            )
+            if not self.blur:
+                postnet_loss = FastSpeech2Loss.get_loss(
+                    mel_pred+postnet_pred, mel_tgt, self.l1_loss, tgt_mask, unsqueeze=True
+                )
+            else:
+                postnet_loss = FastSpeech2Loss.get_loss(
+                    mel_blur+postnet_pred, mel_tgt, self.l1_loss, tgt_mask, unsqueeze=True
+                )
 
         if config["dataset"].get("variance_level") == "frame":
             pitch_energy_mask = tgt_mask
@@ -126,13 +131,18 @@ class FastSpeech2(pl.LightningModule):
         self.has_blur = config["model"].getboolean("blur")
         train_path = config["train"].get("train_path")
         valid_path = config["train"].get("valid_path")
-        train_ud = UnprocessedDataset(train_path, dvector=self.has_dvector, blur=self.has_blur)
+        if '+' in train_path:
+            train_uds = [UnprocessedDataset(x, dvector=self.has_dvector, blur=self.has_blur) for x in train_path.split('+')]
+            train_dss = [ProcessedDataset(unprocessed_ds=x, split="train", phone_vec=False) for x in train_uds]
+            self.train_ds = ConcatDataset(train_dss)
+        else:
+            train_ud = UnprocessedDataset(train_path, dvector=self.has_dvector, blur=self.has_blur)
+            self.train_ds = ProcessedDataset(
+                unprocessed_ds=train_ud,
+                split="train",
+                phone_vec=False
+            )
         valid_ud = UnprocessedDataset(valid_path, dvector=self.has_dvector, blur=self.has_blur)
-        self.train_ds = ProcessedDataset(
-            unprocessed_ds=train_ud,
-            split="train",
-            phone_vec=False
-        )
         self.valid_ds = ProcessedDataset(
             unprocessed_ds=valid_ud,
             split="val",

@@ -44,6 +44,8 @@ def segment1d(x):
 @click.option('--speaker_diversity', type=diversity_choice)
 @click.option('--lexical_diversity', type=diversity_choice)
 @click.option('--copy', is_flag=True)
+@click.option('--copy-prob', type=float, default = 0)
+@click.option('--oracle', type=str)
 def synth(
     destination,
     size,
@@ -53,6 +55,8 @@ def synth(
     speaker_diversity=None,
     lexical_diversity=None,
     copy=False,
+    copy_prob=0,
+    oracle=None,
 ):
     try:
         shutil.rmtree(destination)
@@ -72,18 +76,18 @@ def synth(
             single_speaker = speakers[np.random.randint(0, len(speakers))]
             print(f'only using speaker {single_speaker}')
 
-    num_speakers = 100
+    num_speakers = 1000
     speaker_set = set()
 
     for batch in tqdm(model.train_dataloader()):
-        if copy:
+        if copy or np.random.uniform() < copy_prob:
             for i in range(len(batch['speaker'])):
                 speaker_str = batch['id'][i].split('_')[0]
                 if len(speaker_set) < num_speakers or speaker_str in speaker_set:
                     speaker_set.add(speaker_str)
                     wav_file = glob(os.path.join('../Data/LibriTTS/train-clean-100-aligned','**',batch["id"][i]), recursive=True)[0]
                     lab_file = wav_file.replace(".wav", ".lab")
-                    Path(os.path.join(destination,speaker_str)).mkdir(  exist_ok=True)
+                    Path(os.path.join(destination,speaker_str)).mkdir(exist_ok=True)
                     shutil.copyfile(wav_file, os.path.join(destination,speaker_str,batch['id'][i]))
                     shutil.copyfile(lab_file, os.path.join(destination,speaker_str,batch['id'][i].replace(".wav", ".lab")))
                     audio, sampling_rate = torchaudio.load(wav_file)
@@ -128,6 +132,16 @@ def synth(
             batch['speaker'] = torch.Tensor([speakers[np.random.randint(0, len(speakers))] for _ in batch['speaker']]).int()
         if speaker_diversity == 'decrease':
             batch['speaker'] = torch.Tensor([single_speaker for _ in batch['speaker']]).int()
+
+
+        # batch["pitch"], batch["energy"], batch["duration"],
+
+        if oracle == 'duration' or oracle == 'all':
+            duration = batch["duration"]
+        if oracle == 'energy' or oracle == 'all':
+            energy = batch["energy"]
+        if oracle == 'pitch' or oracle == 'all':
+            pitch = batch["pitch"]
 
         preds, src_mask, tgt_mask = model(batch["phones"], batch["speaker"], pitch, energy, duration)
 

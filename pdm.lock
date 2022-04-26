@@ -252,6 +252,11 @@ requires_python = ">=3.6"
 summary = "Lightweight pipelining with Python functions"
 
 [[package]]
+name = "kaleido"
+version = "0.2.1"
+summary = "Static image export for web-based visualization libraries with zero dependencies"
+
+[[package]]
 name = "kiwisolver"
 version = "1.3.2"
 requires_python = ">=3.7"
@@ -387,6 +392,16 @@ name = "pillow"
 version = "9.0.1"
 requires_python = ">=3.7"
 summary = "Python Imaging Library (Fork)"
+
+[[package]]
+name = "plotly"
+version = "5.7.0"
+requires_python = ">=3.6"
+summary = "An open-source, interactive data visualization library for Python"
+dependencies = [
+    "six",
+    "tenacity>=6.2.0",
+]
 
 [[package]]
 name = "pooch"
@@ -622,6 +637,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tenacity"
+version = "8.0.1"
+requires_python = ">=3.6"
+summary = "Retry code until it succeeds"
+
+[[package]]
 name = "tensorboard"
 version = "2.8.0"
 requires_python = ">=3.6"
@@ -795,7 +816,7 @@ summary = "Backport of pathlib-compatible object wrapper for zip files"
 
 [metadata]
 lock_version = "3.1"
-content_hash = "sha256:18dc0f91d2ef60f97b6e0a3df2f0bed69c94a2161c88ab21f467970b2ed6bf67"
+content_hash = "sha256:c0c8f69a42a9502c887268122ea95a07e2f4db11b27dd5d5a937adbe22e1e118"
 
 [metadata.files]
 "absl-py 1.0.0" = [
@@ -1175,6 +1196,14 @@ content_hash = "sha256:18dc0f91d2ef60f97b6e0a3df2f0bed69c94a2161c88ab21f467970b2
     {file = "joblib-1.1.0-py2.py3-none-any.whl", hash = "sha256:f21f109b3c7ff9d95f8387f752d0d9c34a02aa2f7060c2135f465da0e5160ff6"},
     {file = "joblib-1.1.0.tar.gz", hash = "sha256:4158fcecd13733f8be669be0683b96ebdbbd38d23559f54dca7205aea1bf1e35"},
 ]
+"kaleido 0.2.1" = [
+    {file = "kaleido-0.2.1-py2.py3-none-macosx_10_11_x86_64.whl", hash = "sha256:ca6f73e7ff00aaebf2843f73f1d3bacde1930ef5041093fe76b83a15785049a7"},
+    {file = "kaleido-0.2.1-py2.py3-none-macosx_11_0_arm64.whl", hash = "sha256:bb9a5d1f710357d5d432ee240ef6658a6d124c3e610935817b4b42da9c787c05"},
+    {file = "kaleido-0.2.1-py2.py3-none-manylinux1_x86_64.whl", hash = "sha256:aa21cf1bf1c78f8fa50a9f7d45e1003c387bd3d6fe0a767cfbbf344b95bdc3a8"},
+    {file = "kaleido-0.2.1-py2.py3-none-manylinux2014_aarch64.whl", hash = "sha256:845819844c8082c9469d9c17e42621fbf85c2b237ef8a86ec8a8527f98b6512a"},
+    {file = "kaleido-0.2.1-py2.py3-none-win32.whl", hash = "sha256:ecc72635860be616c6b7161807a65c0dbd9b90c6437ac96965831e2e24066552"},
+    {file = "kaleido-0.2.1-py2.py3-none-win_amd64.whl", hash = "sha256:4670985f28913c2d063c5734d125ecc28e40810141bdb0a46f15b76c1d45f23c"},
+]
 "kiwisolver 1.3.2" = [
     {file = "kiwisolver-1.3.2-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:1d819553730d3c2724582124aee8a03c846ec4362ded1034c16fb3ef309264e6"},
     {file = "kiwisolver-1.3.2-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:8d93a1095f83e908fc253f2fb569c2711414c0bfd451cab580466465b235b470"},
@@ -1492,6 +1521,10 @@ content_hash = "sha256:18dc0f91d2ef60f97b6e0a3df2f0bed69c94a2161c88ab21f467970b2
     {file = "Pillow-9.0.1-pp38-pypy38_pp73-win_amd64.whl", hash = "sha256:a9f44cd7e162ac6191491d7249cceb02b8116b0f7e847ee33f739d7cb1ea1f70"},
     {file = "Pillow-9.0.1.tar.gz", hash = "sha256:6c8bc8238a7dfdaf7a75f5ec5a663f4173f8c367e5a39f87e720495e1eed75fa"},
 ]
+"plotly 5.7.0" = [
+    {file = "plotly-5.7.0-py2.py3-none-any.whl", hash = "sha256:3a35131762c6567813012462e1d496e1d3898f56ab3d386b32f103f7f0c79cf1"},
+    {file = "plotly-5.7.0.tar.gz", hash = "sha256:15ab20e9ed8b55f669b3d35e186eb48f9e1fe07321a1337b8b7df8d3573d265a"},
+]
 "pooch 1.6.0" = [
     {file = "pooch-1.6.0-py3-none-any.whl", hash = "sha256:3bf0e20027096836b8dbce0152dbb785a269abeb621618eb4bdd275ff1e23c9c"},
     {file = "pooch-1.6.0.tar.gz", hash = "sha256:57d20ec4b10dd694d2b05bb64bc6b109c6e85a6c1405794ce87ed8b341ab3f44"},
@@ -1757,6 +1790,10 @@ content_hash = "sha256:18dc0f91d2ef60f97b6e0a3df2f0bed69c94a2161c88ab21f467970b2
     {file = "SoundFile-0.10.3.post1-py2.py3.cp26.cp27.cp32.cp33.cp34.cp35.cp36.pp27.pp32.pp33-none-win32.whl", hash = "sha256:4555438c2c4f02b39fea2ed40f6ddeda88a80cd1ee9dd129be4d5f5134698cc2"},
     {file = "SoundFile-0.10.3.post1-py2.py3.cp26.cp27.cp32.cp33.cp34.cp35.cp36.pp27.pp32.pp33-none-win_amd64.whl", hash = "sha256:b361d4ac1519a2e516cabafa6bf7e93492f999f35d7d25350cd87fdc3e5cb27e"},
     {file = "SoundFile-0.10.3.post1.tar.gz", hash = "sha256:490cff42650733d1832728b937fe99fa1802896f5ef4d61bcf78cf7ebecb107b"},
+]
+"tenacity 8.0.1" = [
+    {file = "tenacity-8.0.1-py3-none-any.whl", hash = "sha256:f78f4ea81b0fabc06728c11dc2a8c01277bfc5181b321a4770471902e3eb844a"},
+    {file = "tenacity-8.0.1.tar.gz", hash = "sha256:43242a20e3e73291a28bcbcacfd6e000b02d3857a9a9fff56b297a27afdc932f"},
 ]
 "tensorboard 2.8.0" = [
     {file = "tensorboard-2.8.0-py3-none-any.whl", hash = "sha256:65a338e4424e9079f2604923bdbe301792adce2ace1be68da6b3ddf005170def"},

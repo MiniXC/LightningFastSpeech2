@@ -22,7 +22,7 @@ from tqdm.auto import tqdm
 from pandarallel import pandarallel
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
-from tqdm.contrib.concurrent import process_map
+from tqdm.contrib.concurrent import process_map, thread_map
 import torchaudio.transforms as T
 import torchvision.transforms as VT
 import torchaudio.functional as F
@@ -34,6 +34,13 @@ import multiprocessing
 from random import Random
 from copy import deepcopy
 import diskcache as dc
+from wav2mel.wav2mel import Wav2Mel
+from time import time
+from pathlib import Path
+
+#torch.multiprocessing.set_start_method("spawn")
+
+from multiprocessing import Pool, get_context
 
 from ipa_utils import get_phone_vecs
 from audio_utils import (
@@ -54,14 +61,32 @@ config.read("config.ini")
 pandarallel.initialize(progress_bar=True)
 tqdm.pandas()
 
+class Timer():
+    def __init__(self, name):
+        self.name = name
+        self.duration = 0
+
+    def __enter__(self):
+        self.start = time()
+
+    def __exit__(self, type, value, traceback):
+        self.duration = time() - self.start
+        print(f'{self.duration} - {self.name}')
+
+
 # TODO: convert to pl DataModules
 class UnprocessedDataset(Dataset):
-    def __init__(self, audio_directory, alignment_directory=None, max_entries=None, dvector=False, cache=True, blur=False, treshold=0.5):
+    def __init__(self, audio_directory, alignment_directory=None, max_entries=None, dvector=False, dvector_mean=False, cache=True, blur=False, treshold=0.5, treshold_max=32, no_alignments=False, augment_duration=0.1):
         super().__init__()
+
+        self.augment_duration = augment_duration
+
+        self.dvector_mean = dvector_mean
 
         self.dir = audio_directory
 
         self.treshold = treshold
+        self.treshold_max = treshold_max
 
         if alignment_directory is None:
             alignment_directory=audio_directory
@@ -90,13 +115,15 @@ class UnprocessedDataset(Dataset):
 
         self.phone_cache = {}
 
-        self.grid_files = {
-            Path(file).name.replace(".TextGrid", ".wav"): file
-            for file
-            in glob(os.path.join(alignment_directory, "**/*.TextGrid"), recursive=True)
-        }
+        self.no_alignments = no_alignments
+        if not no_alignments:
+            self.grid_files = {
+                Path(file).name.replace(".TextGrid", ".wav"): file
+                for file
+                in glob(os.path.join(alignment_directory, "**/*.TextGrid"), recursive=True)
+            }
 
-        self.grid_missing = 0
+            self.grid_missing = 0
 
         if max_entries is not None:
             entry_list = list(glob(os.path.join(audio_directory, "**", "*.wav")))[:max_entries]
@@ -117,9 +144,19 @@ class UnprocessedDataset(Dataset):
             if entry is not None
         ]
 
-        print(f"{self.grid_missing} textgrids not found")
+        if not no_alignments:
+            print(f"{self.grid_missing} textgrids not found")
         self.data = pd.DataFrame(entries, columns=["phones", "duration", "start", "end", "audio", "speaker", "text", "basename"])
         del entries
+
+        if self.has_dvector:
+            dvecs = []
+            for i, row in self.data.iterrows():
+                if not self.dvector_mean:
+                    dvecs.append(row["audio"].replace('.wav', '.npy'))
+                else:
+                    dvecs.append(Path(row["audio"]).parent / "speaker.npy")
+            self.data['dvector'] = dvecs
 
         self.mel_spectrogram = T.Spectrogram(
             n_fft=self.n_fft,
@@ -141,60 +178,99 @@ class UnprocessedDataset(Dataset):
         )
         self.mel_basis = torch.from_numpy(self.mel_basis).float()
 
-        self.dvector_cache = {}
+        self.blur = blur
 
         if self.has_dvector:
-            self.wav2mel = torch.jit.load("dvector/wav2mel.pt")
-            self.dvector = torch.jit.load("dvector/dvector.pt").eval()
-        
-        self.do_cache = cache
-        if cache:
-            self.cache = {}
+            self.create_dvectors()
 
-        self.blur = blur
-                
+    def create_dvectors(self):
+        wav2mel = Wav2Mel()
+        dvector_gen = torch.jit.load("dvector/dvector.pt").eval()
+
+        for idx, row in tqdm(self.data.iterrows(), desc='creating dvectors', total=len(self.data)):
+            dvec_path = Path(row["audio"].replace('.wav','.npy'))
+            if not dvec_path.exists():
+                audio, sampling_rate = torchaudio.load(row["audio"])
+                start = int(self.sampling_rate * row["start"])
+                end = int(self.sampling_rate * (row["start"] + 1))
+                audio = audio[0][start:end]
+                audio = audio / torch.max(torch.abs(audio)) # might not be necessary
+        
+                if 16_000 != self.sampling_rate:
+                    transform = transforms.Resample(sampling_rate, self.sampling_rate)
+                    audio = transform(audio)
+                dvector_mel = wav2mel(
+                    torch.unsqueeze(audio, 0).cpu(),
+                    16_000
+                )
+                dvec_result = dvector_gen.embed_utterance(
+                    dvector_mel
+                ).detach()
+
+                np.save(dvec_path, dvec_result.numpy())
+
+        speaker_dvecs = []
+        for speaker in tqdm(self.data["speaker"].unique(), desc="creating speaker dvectors"):
+            speaker_df = self.data[self.data["speaker"]==speaker]
+            speaker_path = Path(speaker_df.iloc[0]["audio"]).parent / 'speaker.npy'
+            if not speaker_path.exists():
+                dvecs = []
+                for idx, row in speaker_df.iterrows():  
+                    dvecs.append(np.load(row["audio"].replace('.wav', '.npy')))
+                dvec = np.mean(dvecs, axis=0)
+                np.save(speaker_path, dvec)
+        
 
     def create_entry(self, audio_file):
         extract_speaker = lambda x: x.split("/")[-2]
+        audio_name = Path(audio_file).name
+        
+        if not self.no_alignments:
+            try:
+                grid_file = self.grid_files[audio_name]
+                textgrid = tgt.io.read_textgrid(grid_file)
+            except KeyError:
+                self.grid_missing += 1
+                return None
+            phones, durations, start, end = get_alignment(
+                textgrid.get_tier_by_name("phones"), self.sampling_rate, self.hop_length,
+            )
 
-        try:
-            audio_name = Path(audio_file).name
-            grid_file = self.grid_files[audio_name]
-            textgrid = tgt.io.read_textgrid(grid_file)
-        except KeyError:
-            self.grid_missing += 1
-            return None
-        phones, durations, start, end = get_alignment(
-            textgrid.get_tier_by_name("phones"), self.sampling_rate, self.hop_length,
-        )
+            if end - start < self.treshold or end - start > self.treshold_max:
+                return None
 
-        if end - start < self.treshold:
-            return None
+            for i, phone in enumerate(phones):
+                add_stress = False
+                phone.replace('ˌ', '')
+                if self.remove_stress:
+                    r_phone = phone.replace('0', '').replace('1', '')
+                else:
+                    # TODO: this does not work properly yet, we'd need the syllable boundary
+                    r_phone = phone.replace('0', '').replace('1', 'ˈ')
+                    if 'ˈ' in r_phone:
+                        add_stress = True
+                if len(r_phone) > 0:
+                    phone = r_phone
+                if phone not in ["spn", "sil"]:
+                    o_phone = phone
+                    if o_phone not in self.phone_cache:
+                        phone = self.converter(phone, self.source_phoneset, lang=self.target_lang)[0]
+                        self.phone_cache[o_phone] = phone
+                    phone = self.phone_cache[o_phone]
+                    if add_stress:
+                        phone = 'ˈ' + phone
+                else:
+                    phone = "[SILENCE]"
+                phones[i] = phone
+            if start >= end:
+                return None
+        else:
+            phones = None
+            durations = None
+            start = 0
+            audio, sampling_rate = torchaudio.load(audio_file)
+            end = len(audio[0]) / sampling_rate
 
-        for i, phone in enumerate(phones):
-            add_stress = False
-            if self.remove_stress:
-                r_phone = phone.replace('0', '').replace('1', '')
-            else:
-                # TODO: this does not work properly yet, we'd need the syllable boundary
-                r_phone = phone.replace('0', '').replace('1', 'ˈ')
-                if 'ˈ' in r_phone:
-                    add_stress = True
-            if len(r_phone) > 0:
-                phone = r_phone
-            if phone not in ["spn", "sil"]:
-                o_phone = phone
-                if o_phone not in self.phone_cache:
-                    phone = self.converter(phone, self.source_phoneset, lang=self.target_lang)[0]
-                    self.phone_cache[o_phone] = phone
-                phone = self.phone_cache[o_phone]
-                if add_stress:
-                    phone = 'ˈ' + phone
-            else:
-                phone = "[SILENCE]"
-            phones[i] = phone
-        if start >= end:
-            return None
         try:
             with open(audio_file.replace(".wav", ".lab"), "r") as f:
                 transcription = f.read()
@@ -239,19 +315,13 @@ class UnprocessedDataset(Dataset):
             gaussian = VT.GaussianBlur(kernel_size=(31,3))
             mel_blur = gaussian(mel.unsqueeze(0)).squeeze()
 
-        pitch_cache_key = f'{row["basename"]}_{self.dio_speed}_pitch'
-        if not self.do_cache or pitch_cache_key not in self.cache:
-            pitch, t = pw.dio(
-                audio.cpu().numpy().astype(np.float64),
-                self.sampling_rate,
-                frame_period=self.hop_length / self.sampling_rate * 1000,
-                speed=self.dio_speed,
-            )
-            pitch = pw.stonemask(audio.cpu().numpy().astype(np.float64), pitch, t, self.sampling_rate)
-            if self.do_cache:
-                self.cache[pitch_cache_key] = pitch
-        else:
-            pitch = self.cache[pitch_cache_key]
+        pitch, t = pw.dio(
+            audio.cpu().numpy().astype(np.float64),
+            self.sampling_rate,
+            frame_period=self.hop_length / self.sampling_rate * 1000,
+            speed=self.dio_speed,
+        )
+        pitch = pw.stonemask(audio.cpu().numpy().astype(np.float64), pitch, t, self.sampling_rate)
 
         if self.new_outlier_method:
             old_pitch = pitch
@@ -267,40 +337,38 @@ class UnprocessedDataset(Dataset):
             pitch = smooth(pitch, self.pitch_smooth)
 
         duration = row["duration"]
+        if self.augment_duration > 0:
+            truth_vals = np.random.uniform(size=len(duration)) > self.augment_duration
+            rand_vals = np.random.normal(0, 1, size=len(duration)).round()
+            rand_vals[truth_vals] = 0
+            rand_vals_shifted = rand_vals[:-1] * -1
+            rand_vals[1:] += rand_vals_shifted
+            rand_vals = rand_vals.astype(int)
+            duration += rand_vals
+            duration[duration<0] = 0
+            
+
+        if self.no_alignments:
+            dur_sum = -1
+        else:
+            dur_sum = sum(duration)
         
         # TODO: investigate why this is necessary
-        pitch = torch.tensor(pitch.astype(np.float32))[:sum(duration)]
-        energy = energy[:sum(duration)]
+        pitch = torch.tensor(pitch.astype(np.float32))[:dur_sum]
+        energy = energy[:dur_sum]
 
         result = {
-            "mel": np.array(mel.T)[:sum(duration)],
+            "mel": np.array(mel.T)[:dur_sum],
             "pitch": np.array(pitch),
             "energy": np.array(energy),
             "duration": np.array(duration),
         }
 
         if self.blur:
-            result['mel_blur'] = np.array(mel_blur.T)[:sum(duration)]
+            result['mel_blur'] = np.array(mel_blur.T)[:dur_sum]
 
         if self.has_dvector:
-            if not self.do_cache or f'speaker_{row["speaker"]}' not in self.cache:
-                try:
-                    dvector_mel = self.wav2mel(
-                        torch.unsqueeze(audio, 0),
-                        self.sampling_rate
-                    )
-                    dvector = self.dvector.embed_utterance(
-                        dvector_mel
-                    ).detach()
-                except:
-                    print(audio.shape)
-                    dvector = torch.zeros(256)
-                if self.do_cache:
-                    self.cache[f'speaker_{row["speaker"]}'] = dvector
-            if self.do_cache:
-                result['dvector'] = self.cache[f'speaker_{row["speaker"]}']
-            else:
-                result['dvector'] = dvector
+            result['dvector'] = row["dvector"]
             
         return result
 
@@ -391,17 +459,18 @@ class ProcessedDataset(Dataset):
         if phone_vec:
             print("vectorizing phones")
             self.data["phones"] = self.data["phones"].parallel_apply(get_phone_vecs)
-        else:
+        elif not self.ds.no_alignments:
             if phone2id is not None:
                 self.phone2id = phone2id
             else:
                 self.create_phone2id()
             self.vocab_n = len(self.phone2id)
             self.data["phones"] = self.data["phones"].apply(
-                lambda x: torch.tensor([self.phone2id[p] for p in x]).long()
+                lambda x: torch.tensor([self.phone2id[p.replace('ˌ', '')] for p in x]).long()
             )
 
-        self.id2phone = {v:k for k,v in self.phone2id.items()}
+        if not self.ds.no_alignments:
+            self.id2phone = {v:k for k,v in self.phone2id.items()}
 
     def _get_stats(self, idx):
         x = self.ds[idx]
@@ -477,12 +546,22 @@ class ProcessedDataset(Dataset):
         }
 
         if 'dvector' in entry:
-            sample['speaker'] = entry['dvector']
+            sample['speaker'] = torch.from_numpy(np.load(entry['dvector']))
 
         if 'mel_blur' in entry:
             sample['mel_blur'] = entry['mel_blur']
 
         return sample
+
+    def get_speaker_dvectors(self):
+        speaker_dvecs = []
+        speakers = []
+        for speaker in tqdm(self.data["speaker"].unique()):
+            speaker_df = self.data[self.data["speaker"]==speaker]
+            dvec_path = Path(speaker_df.iloc[0]["audio"]).parent / "speaker.npy"
+            speaker_dvecs.append(np.load(dvec_path))
+            speakers.append(speaker)
+        return speaker_dvecs, speakers
 
     @staticmethod
     def expand(values, durations):
@@ -566,19 +645,53 @@ if __name__ == "__main__":
 
     train_path = config["train"].get("train_path")
     valid_path = config["train"].get("valid_path")
-    train_ud = UnprocessedDataset(train_path, max_entries=1000, dvector=False)
-    valid_ud = UnprocessedDataset(valid_path, dvector=False)
+    train_orig = UnprocessedDataset("../Data/LibriTTS/train-clean-360-aligned", max_entries=500)
+    train_orig[0]
+    train_orig_p = ProcessedDataset(unprocessed_ds=train_orig, split="train", phone_vec=False, recompute_stats=False)
+    train_ud = UnprocessedDataset(train_path, dvector=True, no_alignments=True)
+    train_ud_synth = UnprocessedDataset('../Data/Synthesised/real_p0', dvector=True, no_alignments=True)
+    valid_ud = UnprocessedDataset(valid_path, dvector=True)
     train_ds = ProcessedDataset(
         unprocessed_ds=train_ud,
         split="train",
         phone_vec=False,
         recompute_stats=False,
+        stats=train_orig_p.stats
+    )
+    train_ds_synth = ProcessedDataset(
+        unprocessed_ds=train_ud_synth,
+        split="train",
+        phone_vec=False,
+        recompute_stats=False,
+        stats=train_orig_p.stats
     )
     valid_ds = ProcessedDataset(
         unprocessed_ds=valid_ud,
         split="val",
         phone_vec=False,
-        phone2id=train_ds.phone2id,
-        stats=train_ds.stats
+        phone2id=train_orig_p.phone2id,
+        stats=train_orig_p.stats
     )
-    valid_ds.plot(valid_ds[0], show=True)
+    real_dvecs, real_text = train_ds.get_speaker_dvectors()
+    synth_dvecs, synth_text = train_ds_synth.get_speaker_dvectors()
+    all_dvecs = np.array(real_dvecs + synth_dvecs)
+    from sklearn.decomposition import PCA
+    from sklearn.manifold import TSNE
+    pca = TSNE(n_components=2, learning_rate='auto',init='pca',random_state=42)
+    labels = len(real_dvecs) * ['real'] + len(real_dvecs) * ['synthesised']
+    dvecs_2d = pca.fit_transform(all_dvecs)
+
+    import plotly.express as px
+    import plotly.io as pio
+    df = px.data.iris()
+    fig = px.scatter(x=dvecs_2d[:,0], y=dvecs_2d[:,1], color=labels, text=(real_text + synth_text))
+    fig.update_layout(
+        autosize=False,
+        width=1600,
+        height=1600,)
+    pio.write_image(fig, "dvecs.png", engine="kaleido")
+
+    # sns.scatterplot(x=dvecs_2d[:,0], y=dvecs_2d[:,1], hue=labels)
+    # plt.title("d-vector T-SNE")
+    # plt.show()
+    #valid_ds.plot(valid_ds[0], show=True)
