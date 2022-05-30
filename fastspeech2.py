@@ -1,3 +1,6 @@
+import os
+import json
+
 import pytorch_lightning as pl
 from torch.nn.modules.transformer import TransformerEncoder
 from model import ConformerEncoderLayer, PositionalEncoding, VarianceAdaptor
@@ -17,20 +20,14 @@ cpus = multiprocessing.cpu_count()
 config = configparser.ConfigParser()
 config.read("config.ini")
 
-# TODO:
-# allow to replace with "real" conformer
-# allow to replace with linear FFN with same number of params
-# preprocess on frame level and allow phoneme level
-# add option for postnet
-
 
 class FastSpeech2Loss(nn.Module):
-    def __init__(self, postnet, blur):
+    def __init__(self, postnet, use_snr=False):
         super().__init__()
         self.mse_loss = nn.MSELoss()
         self.l1_loss = nn.L1Loss()
         self.postnet = postnet
-        self.blur = blur
+        self.use_snr = use_snr
 
     @staticmethod
     def get_loss(pred, truth, loss, mask, unsqueeze=False):
@@ -43,12 +40,20 @@ class FastSpeech2Loss(nn.Module):
 
     def forward(self, pred, truth, src_mask, tgt_mask, tgt_max_length=None):
         # TODO: do this via keys
-        mel_pred, pitch_pred, energy_pred, duration_pred, _, postnet_pred, _ = pred
+        mel_pred = pred["mel"]
+        pitch_pred = pred["pitch"]
+        energy_pred = pred["energy"]
+        duration_pred = pred["log_duration"]
+        snr_pred = pred["snr"]
+        postnet_pred = pred["postnet_output"]
 
-        if not self.blur:
-            mel_tgt, pitch_tgt, energy_tgt, duration_tgt = truth
-        else:
-            mel_tgt, pitch_tgt, energy_tgt, duration_tgt, mel_blur = truth
+        mel_tgt = truth["mel"]
+        pitch_tgt = truth["pitch"]
+        energy_tgt = truth["energy"]
+        duration_tgt = truth["duration"]
+
+        if self.use_snr:
+            snr_tgt = truth["snr"]
 
         duration_tgt = torch.log(duration_tgt.float() + 1)
 
@@ -57,31 +62,20 @@ class FastSpeech2Loss(nn.Module):
 
         if tgt_max_length is not None:
             mel_tgt = mel_tgt[:, :tgt_max_length, :]
-            if self.blur:
-                mel_blur = mel_blur[:, :tgt_max_length, :]
-            #tgt_mask = tgt_mask[:, :tgt_max_length]
             if config["dataset"].get("variance_level") == "frame":
                 pitch_tgt = pitch_tgt[:, :tgt_max_length]
                 energy_tgt = energy_tgt[:, :tgt_max_length]
+                if self.use_snr:
+                    snr_tgt = snr_tgt[:, :tgt_max_length]
 
-        if not self.blur:
-            mel_loss = FastSpeech2Loss.get_loss(
-                mel_pred, mel_tgt, self.l1_loss, tgt_mask, unsqueeze=True
-            )
-        else:
-            mel_loss = FastSpeech2Loss.get_loss(
-                mel_pred, mel_blur, self.l1_loss, tgt_mask, unsqueeze=True
-            )
+        mel_loss = FastSpeech2Loss.get_loss(
+            mel_pred, mel_tgt, self.l1_loss, tgt_mask, unsqueeze=True
+        )
 
         if self.postnet:
-            if not self.blur:
-                postnet_loss = FastSpeech2Loss.get_loss(
-                    mel_pred+postnet_pred, mel_tgt, self.l1_loss, tgt_mask, unsqueeze=True
-                )
-            else:
-                postnet_loss = FastSpeech2Loss.get_loss(
-                    mel_blur+postnet_pred, mel_tgt, self.l1_loss, tgt_mask, unsqueeze=True
-                )
+            postnet_loss = FastSpeech2Loss.get_loss(
+                mel_pred + postnet_pred, mel_tgt, self.l1_loss, tgt_mask, unsqueeze=True
+            )
 
         if config["dataset"].get("variance_level") == "frame":
             pitch_energy_mask = tgt_mask
@@ -94,6 +88,10 @@ class FastSpeech2Loss(nn.Module):
         energy_loss = FastSpeech2Loss.get_loss(
             energy_pred, energy_tgt, self.mse_loss, pitch_energy_mask
         )
+        if self.use_snr:
+            snr_loss = FastSpeech2Loss.get_loss(
+                snr_pred, snr_tgt, self.mse_loss, pitch_energy_mask
+            )
 
         duration_loss = FastSpeech2Loss.get_loss(
             duration_pred, duration_tgt, self.mse_loss, src_mask
@@ -104,6 +102,9 @@ class FastSpeech2Loss(nn.Module):
         if self.postnet:
             total_loss = total_loss + postnet_loss
 
+        if self.use_snr:
+            total_loss = total_loss + snr_loss
+
         result = [
             total_loss,
             mel_loss,
@@ -113,8 +114,11 @@ class FastSpeech2Loss(nn.Module):
         ]
 
         if self.postnet:
-            result.append(postnet_loss) 
-        
+            result.append(postnet_loss)
+
+        if self.use_snr:
+            result.append(snr_loss)
+
         return result
 
 
@@ -128,27 +132,56 @@ class FastSpeech2(pl.LightningModule):
         self.batch_size = config["train"].getint("batch_size")
         self.epochs = config["train"].getint("epochs")
         self.has_dvector = config["model"].getboolean("dvector")
-        self.has_blur = config["model"].getboolean("blur")
+        self.use_snr = config["model"].getboolean("snr")
         train_path = config["train"].get("train_path")
         valid_path = config["train"].get("valid_path")
-        if '+' in train_path:
-            train_uds = [UnprocessedDataset(x, dvector=self.has_dvector, blur=self.has_blur) for x in train_path.split('+')]
-            train_dss = [ProcessedDataset(unprocessed_ds=x, split="train", phone_vec=False) for x in train_uds]
+        augment_duration = config["train"].getfloat("augment_duration")
+        stats_path = config["train"].get("stats_path")
+        with open(stats_path) as f:
+            stats = json.load(f)
+
+        if "+" in train_path:
+            train_uds = [
+                UnprocessedDataset(
+                    x,
+                    dvector=self.has_dvector,
+                    augment_duration=augment_duration,
+                    use_snr=self.use_snr,
+                )
+                for x in train_path.split("+")
+            ]
+            train_dss = [
+                ProcessedDataset(
+                    unprocessed_ds=x, split="train", phone_vec=False, stats=stats
+                )
+                for x in train_uds
+            ]
             self.train_ds = ConcatDataset(train_dss)
         else:
-            train_ud = UnprocessedDataset(train_path, dvector=self.has_dvector, blur=self.has_blur)
+            train_ud = UnprocessedDataset(
+                train_path,
+                dvector=self.has_dvector,
+                augment_duration=augment_duration,
+                use_snr=self.use_snr,
+            )
             self.train_ds = ProcessedDataset(
                 unprocessed_ds=train_ud,
                 split="train",
-                phone_vec=False
+                phone_vec=False,
+                stats=stats,
             )
-        valid_ud = UnprocessedDataset(valid_path, dvector=self.has_dvector, blur=self.has_blur)
+        valid_ud = UnprocessedDataset(
+            valid_path,
+            dvector=self.has_dvector,
+            augment_duration=0,
+            use_snr=self.use_snr,
+        )
         self.valid_ds = ProcessedDataset(
             unprocessed_ds=valid_ud,
             split="val",
             phone_vec=False,
             phone2id=self.train_ds.phone2id,
-            stats=self.train_ds.stats
+            stats=stats,
         )
 
         self.synth = Synthesiser(22050)
@@ -181,7 +214,10 @@ class FastSpeech2(pl.LightningModule):
         self.phone_embedding = nn.Embedding(vocab_n, encoder_hidden, padding_idx=0)
 
         if not self.has_dvector:
-            self.speaker_embedding = nn.Embedding(speaker_n, encoder_hidden,)
+            self.speaker_embedding = nn.Embedding(
+                speaker_n,
+                encoder_hidden,
+            )
 
         self.encoder = TransformerEncoder(
             ConformerEncoderLayer(
@@ -193,12 +229,12 @@ class FastSpeech2(pl.LightningModule):
                 batch_first=True,
                 dropout=encoder_dropout,
             ),
-            encoder_layers,
+            num_layers=encoder_layers,
         )
         self.positional_encoding = PositionalEncoding(
             encoder_hidden, dropout=encoder_dropout
         )
-        self.variance_adaptor = VarianceAdaptor(stats)
+        self.variance_adaptor = VarianceAdaptor(stats, use_snr=self.use_snr)
         self.decoder = TransformerEncoder(
             ConformerEncoderLayer(
                 decoder_hidden,
@@ -209,32 +245,45 @@ class FastSpeech2(pl.LightningModule):
                 batch_first=True,
                 dropout=decoder_dropout,
             ),
-            decoder_layers,
+            num_layers=decoder_layers,
         )
 
-        self.linear = nn.Linear(decoder_hidden, mel_channels,)
+        self.linear = nn.Linear(
+            decoder_hidden,
+            mel_channels,
+        )
 
         if self.has_postnet:
             self.postnet = PostNet()
 
-        self.loss = FastSpeech2Loss(postnet=self.has_postnet, blur=self.has_blur)
+        self.loss = FastSpeech2Loss(postnet=self.has_postnet, use_snr=self.use_snr)
 
         self.is_wandb_init = False
 
-    def forward(self, phones, speakers, pitch=None, energy=None, duration=None):
-        phones = phones.to(self.device)
-        speakers = speakers.to(self.device)
-        if pitch is not None:
-            pitch = pitch.to(self.device)
-        if energy is not None:
-            energy = energy.to(self.device)
-        if duration is not None:
-            duration = duration.to(self.device)
+    def forward(self, targets):
+        phones = targets["phones"].to(self.device)
+        speakers = targets["speaker"].to(self.device)
+        if targets["pitch"] is not None:
+            pitch = targets["pitch"].to(self.device)
+        else:
+            pitch = None
+        if targets["energy"] is not None:
+            energy = targets["energy"].to(self.device)
+        else:
+            energy = None
+        if targets["duration"] is not None:
+            duration = targets["duration"].to(self.device)
+        else:
+            duration = None
+        if targets["snr"] is not None:
+            snr = targets["snr"].to(self.device)
+        else:
+            snr = None
+
         src_mask = phones.eq(0)
         output = self.phone_embedding(phones)
-        output = self.positional_encoding(output)
-        output = self.encoder(output, src_key_padding_mask=src_mask)
 
+        speakers = targets["speaker"]
         if not self.has_dvector:
             speaker_out = (
                 self.speaker_embedding(speakers)
@@ -242,19 +291,34 @@ class FastSpeech2(pl.LightningModule):
                 .repeat_interleave(phones.shape[1], dim=1)
             )
         else:
-            speaker_out = (
-                speakers
+            speaker_out = speakers.reshape(-1, 1, output.shape[-1]).repeat_interleave(
+                phones.shape[1], dim=1
+            )
+        output = output + speaker_out
+
+        output = self.positional_encoding(output)
+        output = self.encoder(output, src_key_padding_mask=src_mask)
+
+        if not self.has_dvector:
+            speaker_out2 = (
+                self.speaker_embedding(speakers)
                 .reshape(-1, 1, output.shape[-1])
                 .repeat_interleave(phones.shape[1], dim=1)
             )
+        else:
+            speaker_out2 = speakers.reshape(-1, 1, output.shape[-1]).repeat_interleave(
+                phones.shape[1], dim=1
+            )
+        output = output + speaker_out2
+        # speaker embedding addition was here
 
-        output = output + speaker_out
         variance_out = self.variance_adaptor(
-            output, src_mask, pitch, energy, duration, self.tgt_max_length
+            output, src_mask, pitch, energy, duration, snr, self.tgt_max_length
         )
         output = variance_out["x"]
         output = self.positional_encoding(output)
         output = self.decoder(output, src_key_padding_mask=variance_out["tgt_mask"])
+
         output = self.linear(output)
 
         if self.has_postnet:
@@ -264,44 +328,28 @@ class FastSpeech2(pl.LightningModule):
             postnet_output = None
             final_output = output
 
+        result = {
+            "mel": output,
+            "pitch": variance_out["pitch"],
+            "energy": variance_out["energy"],
+            "log_duration": variance_out["log_duration"],
+            "duration_rounded": variance_out["duration_rounded"],
+            "postnet_output": postnet_output,
+            "final_output": final_output,
+        }
+
+        if self.use_snr:
+            result["snr"] = variance_out["snr"]
+
         return (
-            (
-                output,
-                variance_out["pitch"],
-                variance_out["energy"],
-                variance_out["log_duration"],
-                variance_out["duration_rounded"],
-                postnet_output,
-                final_output,
-            ),
+            result,
             src_mask,
             variance_out["tgt_mask"],
         )
 
     def training_step(self, batch):
-        logits, src_mask, tgt_mask = self(
-            batch["phones"],
-            batch["speaker"],
-            batch["pitch"],
-            batch["energy"],
-            batch["duration"],
-        )
-        if not self.has_blur:
-            truth = (
-                batch["mel"],
-                batch["pitch"],
-                batch["energy"],
-                batch["duration"],
-            )
-        else:
-            truth = (
-                batch["mel"],
-                batch["pitch"],
-                batch["energy"],
-                batch["duration"],
-                batch["mel_blur"],
-            )
-        loss = self.loss(logits, truth, src_mask, tgt_mask, self.tgt_max_length)
+        logits, src_mask, tgt_mask = self(batch)
+        loss = self.loss(logits, batch, src_mask, tgt_mask, self.tgt_max_length)
         log_dict = {
             "train/total_loss": loss[0].item(),
             "train/mel_loss": loss[1].item(),
@@ -310,7 +358,9 @@ class FastSpeech2(pl.LightningModule):
             "train/duration_loss": loss[4].item(),
         }
         if self.has_postnet:
-            log_dict['train/postnet_loss'] = loss[5].item()
+            log_dict["train/postnet_loss"] = loss[5].item()
+        if self.use_snr:
+            log_dict["train/snr_loss"] = loss[-1].item()
         self.log_dict(
             log_dict,
             batch_size=self.batch_size,
@@ -319,29 +369,8 @@ class FastSpeech2(pl.LightningModule):
         return loss[0]
 
     def validation_step(self, batch, batch_idx):
-        preds, src_mask, tgt_mask = self(
-            batch["phones"],
-            batch["speaker"],
-            batch["pitch"],
-            batch["energy"],
-            batch["duration"],
-        )
-        if not self.has_blur:
-            truth = (
-                batch["mel"],
-                batch["pitch"],
-                batch["energy"],
-                batch["duration"],
-            )
-        else:
-            truth = (
-                batch["mel"],
-                batch["pitch"],
-                batch["energy"],
-                batch["duration"],
-                batch["mel_blur"],
-            )
-        loss = self.loss(preds, truth, src_mask, tgt_mask, self.tgt_max_length)
+        preds, src_mask, tgt_mask = self(batch)
+        loss = self.loss(preds, batch, src_mask, tgt_mask, self.tgt_max_length)
         log_dict = {
             "eval/total_loss": loss[0].item(),
             "eval/mel_loss": loss[1].item(),
@@ -350,50 +379,70 @@ class FastSpeech2(pl.LightningModule):
             "eval/duration_loss": loss[4].item(),
         }
         if self.has_postnet:
-            log_dict['eval/postnet_loss'] = loss[5].item()
+            log_dict["eval/postnet_loss"] = loss[5].item()
+        if self.use_snr:
+            log_dict["eval/snr_loss"] = loss[-1].item()
         self.log_dict(
             log_dict,
             batch_size=self.batch_size,
             sync_dist=True,
         )
-        if batch_idx == 0 and self.trainer.is_global_zero:
+        if batch_idx == 0:
+            self.eval_log_data = []
+        if (
+            self.eval_log_data is not None
+            and len(self.eval_log_data) < 10
+            and self.trainer.is_global_zero
+        ):
             if not self.is_wandb_init:
-                wandb.init(project='LightningFastSpeech', group='DDP')
+                wandb.init(project="LightningFastSpeech", group="DDP")
                 self.is_wandb_init = True
             old_src_mask = src_mask
             old_tgt_mask = tgt_mask
-            preds, src_mask, tgt_mask = self(batch["phones"], batch["speaker"])
-            mels, pitchs, energys, _, durations, postnet_mels, final_mels = [pred.cpu() if pred is not None else None for pred in preds]
-            log_data = []
+            preds, src_mask, tgt_mask = self(batch)
+                # mels, pitchs, energys, _, durations, postnet_mels, final_mels = [
+                #     pred.cpu() if pred is not None else None for pred in preds
+                # ]
+            mels = preds['mel'].cpu()
+            pitchs = preds['pitch'].cpu()
+            energys = preds['energy'].cpu()
+            durations = preds['duration_rounded'].cpu()
+            postnet_mels = preds['postnet_output'].cpu()
+            final_mels = preds['final_output'].cpu()
+            if self.use_snr:
+                snrs = preds['snr'].cpu()
             for i in range(len(mels)):
-                if i >= 10:
+                if len(self.eval_log_data) >= 10:
                     break
                 mel = final_mels[i][~tgt_mask[i]]
                 true_mel = batch["mel"][i][~old_tgt_mask[i]]
                 if len(mel) == 0:
-                    print('predicted 0 length output, this is normal at the beginning of training')
+                    print(
+                        "predicted 0 length output, this is normal at the beginning of training"
+                    )
                     continue
-                pred_fig = self.valid_ds.plot(
-                    {
-                        "mel": mel,
-                        "pitch": pitchs[i],
-                        "energy": energys[i],
-                        "duration": durations[i][~src_mask[i]],
-                        "phones": batch["phones"][i]
-                    }
-                )
-                true_fig = self.valid_ds.plot(
-                    {
-                        "mel": true_mel.cpu(),
-                        "pitch": batch["pitch"][i].cpu(),
-                        "energy": batch["energy"][i].cpu(),
-                        "duration": batch["duration"][i].cpu()[~old_src_mask[i]],
-                        "phones": batch["phones"][i],
-                    }
-                )
+                pred_dict = {
+                    "mel": mel,
+                    "pitch": pitchs[i],
+                    "energy": energys[i],
+                    "duration": durations[i][~src_mask[i]],
+                    "phones": batch["phones"][i],
+                }
+                true_dict = {
+                    "mel": true_mel.cpu(),
+                    "pitch": batch["pitch"][i].cpu(),
+                    "energy": batch["energy"][i].cpu(),
+                    "duration": batch["duration"][i].cpu()[~old_src_mask[i]],
+                    "phones": batch["phones"][i],
+                }
+                if self.use_snr:
+                    pred_dict['snr'] = snrs[i]
+                    true_dict['snr'] = batch['snr'].cpu()[i]
+                pred_fig = self.valid_ds.plot(pred_dict)
+                true_fig = self.valid_ds.plot(true_dict)
                 pred_audio = self.synth(mel.to("cuda:0"))[0]
                 true_audio = self.synth(true_mel.to("cuda:0"))[0]
-                log_data.append(
+                self.eval_log_data.append(
                     [
                         batch["text"][i],
                         wandb.Image(pred_fig),
@@ -402,18 +451,20 @@ class FastSpeech2(pl.LightningModule):
                         wandb.Audio(true_audio, sample_rate=22050),
                     ]
                 )
-            table = wandb.Table(
-                data=log_data,
-                columns=[
-                    "text",
-                    "predicted_mel",
-                    "true_mel",
-                    "predicted_audio",
-                    "true_audio",
-                ],
-            )
-            wandb.log({"examples": table})
-        
+            if len(self.eval_log_data) >= 10:
+                table = wandb.Table(
+                    data=self.eval_log_data,
+                    columns=[
+                        "text",
+                        "predicted_mel",
+                        "true_mel",
+                        "predicted_audio",
+                        "true_audio",
+                    ],
+                )
+                wandb.log({"examples": table})
+                self.eval_log_data = None
+
     def configure_optimizers(self):
         self.optimizer = torch.optim.AdamW(self.parameters(), self.lr)
 

@@ -7,6 +7,7 @@ import torch.nn.functional as F
 
 # TODO: greaty simplify this by porting it to nnAudio or similar
 
+
 def dynamic_range_compression(x, C=1, clip_val=1e-7):
     """
     PARAMS
@@ -30,11 +31,6 @@ def smooth(y, box_pts):
     y_smooth = np.convolve(y, box, mode="same")
     return y_smooth
 
-
-def nan_helper(y):
-    return np.isnan(y), lambda z: z.nonzero()[0]
-
-
 def remove_outliers(values):
     values = np.array(values)
     p25 = np.percentile(values, 25)
@@ -44,45 +40,6 @@ def remove_outliers(values):
     normal_indices = np.logical_and(values > lower, values < upper)
     values[~normal_indices] = 0
     return values
-
-
-def remove_outliers_new(values):
-    for i, p in enumerate(values):
-        if (
-            p == 0
-            and i > 0
-            and i + 1 < len(values)
-            and values[i - 1] > 0
-            and values[i + 1] > 0
-        ):
-            values[i] = (values[i - 1] + values[i + 1]) / 2
-        if (
-            p > 0
-            and i > 0
-            and i + 1 < len(values)
-            and values[i - 1] == 0
-            and values[i + 1] == 0
-        ):
-            values[i] = 0
-    new_values = np.array(values)
-    new_values = new_values[1:] - new_values[:-1]
-    new_values_abs = abs(new_values)
-    p25 = np.percentile(new_values_abs, 25)
-    p75 = np.percentile(new_values_abs, 75)
-    lower = p25 - 1.5 * (p75 - p25)
-    upper = p75 + 1.5 * (p75 - p25)
-    normal_indices = np.logical_and(new_values_abs > lower, new_values_abs < upper, new_values_abs != 0)
-    normal_indices = np.array([True] + list(normal_indices))
-    new_values = np.array(values)
-    new_values[~normal_indices] = np.nan
-    new_values[new_values == 0] = np.nan
-    nans, x = nan_helper(new_values)
-    try:
-        new_values[nans] = np.interp(x(nans), x(~nans), new_values[~nans])
-    except ValueError:
-        print(new_values)
-        return None
-    return new_values
 
 def get_alignment(tier, sampling_rate, hop_length):
     sil_phones = ["sil", "sp", "spn", ""]

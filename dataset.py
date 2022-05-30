@@ -16,6 +16,7 @@ from phones.convert import Converter
 from phones import PhoneCollection
 from scipy import signal
 
+
 import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
@@ -33,12 +34,10 @@ from torchaudio import transforms
 import multiprocessing
 from random import Random
 from copy import deepcopy
-import diskcache as dc
 from wav2mel.wav2mel import Wav2Mel
 from time import time
 from pathlib import Path
-
-#torch.multiprocessing.set_start_method("spawn")
+from snr import WADA
 
 from multiprocessing import Pool, get_context
 
@@ -46,14 +45,11 @@ from ipa_utils import get_phone_vecs
 from audio_utils import (
     dynamic_range_compression,
     remove_outliers,
-    remove_outliers_new,
     smooth,
     get_alignment,
 )
 
 from librosa.filters import mel as librosa_mel
-
-# matplotlib.use('AGG', force=True)
 
 config = configparser.ConfigParser()
 config.read("config.ini")
@@ -61,7 +57,8 @@ config.read("config.ini")
 pandarallel.initialize(progress_bar=True)
 tqdm.pandas()
 
-class Timer():
+
+class Timer:
     def __init__(self, name):
         self.name = name
         self.duration = 0
@@ -71,15 +68,28 @@ class Timer():
 
     def __exit__(self, type, value, traceback):
         self.duration = time() - self.start
-        print(f'{self.duration} - {self.name}')
+        print(f"{self.duration} - {self.name}")
 
 
 # TODO: convert to pl DataModules
 class UnprocessedDataset(Dataset):
-    def __init__(self, audio_directory, alignment_directory=None, max_entries=None, dvector=False, dvector_mean=False, cache=True, blur=False, treshold=0.5, treshold_max=32, no_alignments=False, augment_duration=0.1):
+    def __init__(
+        self,
+        audio_directory,
+        alignment_directory=None,
+        max_entries=None,
+        dvector=False,
+        dvector_mean=True,
+        treshold=0.5,
+        treshold_max=32,
+        no_alignments=False,
+        augment_duration=0.1,
+        use_snr=False,
+    ):
         super().__init__()
 
         self.augment_duration = augment_duration
+        self.use_snr = use_snr
 
         self.dvector_mean = dvector_mean
 
@@ -89,7 +99,7 @@ class UnprocessedDataset(Dataset):
         self.treshold_max = treshold_max
 
         if alignment_directory is None:
-            alignment_directory=audio_directory
+            alignment_directory = audio_directory
 
         self.sampling_rate = config["dataset"].getint("sampling_rate")
         self.n_fft = config["dataset"].getint("n_fft")
@@ -100,7 +110,8 @@ class UnprocessedDataset(Dataset):
         self.f_max = config["dataset"].getint("f_max")
         self.dio_speed = config["dataset"].getint("dio_speed")
         self.pitch_smooth = config["dataset"].getint("pitch_smooth")
-        self.new_outlier_method = config["dataset"].getboolean("new_outlier_method")
+        self.remove_outliers = config["dataset"].getboolean("remove_outliers")
+        self.pitch_type = config["dataset"].get("pitch_type")
 
         self.target_lang = config["dataset"].get("target_lang")
         if self.target_lang == "None":
@@ -119,14 +130,17 @@ class UnprocessedDataset(Dataset):
         if not no_alignments:
             self.grid_files = {
                 Path(file).name.replace(".TextGrid", ".wav"): file
-                for file
-                in glob(os.path.join(alignment_directory, "**/*.TextGrid"), recursive=True)
+                for file in glob(
+                    os.path.join(alignment_directory, "**/*.TextGrid"), recursive=True
+                )
             }
 
             self.grid_missing = 0
 
         if max_entries is not None:
-            entry_list = list(glob(os.path.join(audio_directory, "**", "*.wav")))[:max_entries]
+            entry_list = list(glob(os.path.join(audio_directory, "**", "*.wav")))[
+                :max_entries
+            ]
         else:
             entry_list = list(glob(os.path.join(audio_directory, "**", "*.wav")))
 
@@ -139,24 +153,36 @@ class UnprocessedDataset(Dataset):
                 entry_list,
                 chunksize=100,
                 max_workers=multiprocessing.cpu_count(),
-                desc="collecting textgrid and audio files"
+                desc="collecting textgrid and audio files",
             )
             if entry is not None
         ]
 
         if not no_alignments:
             print(f"{self.grid_missing} textgrids not found")
-        self.data = pd.DataFrame(entries, columns=["phones", "duration", "start", "end", "audio", "speaker", "text", "basename"])
+        self.data = pd.DataFrame(
+            entries,
+            columns=[
+                "phones",
+                "duration",
+                "start",
+                "end",
+                "audio",
+                "speaker",
+                "text",
+                "basename",
+            ],
+        )
         del entries
 
         if self.has_dvector:
             dvecs = []
             for i, row in self.data.iterrows():
                 if not self.dvector_mean:
-                    dvecs.append(row["audio"].replace('.wav', '.npy'))
+                    dvecs.append(row["audio"].replace(".wav", ".npy"))
                 else:
                     dvecs.append(Path(row["audio"]).parent / "speaker.npy")
-            self.data['dvector'] = dvecs
+            self.data["dvector"] = dvecs
 
         self.mel_spectrogram = T.Spectrogram(
             n_fft=self.n_fft,
@@ -168,63 +194,62 @@ class UnprocessedDataset(Dataset):
             normalized=False,
             center=True,
             pad_mode="reflect",
-            onesided=True)
+            onesided=True,
+        )
         self.mel_basis = librosa_mel(
             sr=self.sampling_rate,
             n_fft=self.n_fft,
             n_mels=self.n_mels,
             fmin=self.f_min,
-            fmax=self.f_max
+            fmax=self.f_max,
         )
         self.mel_basis = torch.from_numpy(self.mel_basis).float()
 
-        self.blur = blur
-
         if self.has_dvector:
             self.create_dvectors()
+
+        self.wada = WADA()
 
     def create_dvectors(self):
         wav2mel = Wav2Mel()
         dvector_gen = torch.jit.load("dvector/dvector.pt").eval()
 
-        for idx, row in tqdm(self.data.iterrows(), desc='creating dvectors', total=len(self.data)):
-            dvec_path = Path(row["audio"].replace('.wav','.npy'))
+        for idx, row in tqdm(
+            self.data.iterrows(), desc="creating dvectors", total=len(self.data)
+        ):
+            dvec_path = Path(row["audio"].replace(".wav", ".npy"))
             if not dvec_path.exists():
                 audio, sampling_rate = torchaudio.load(row["audio"])
                 start = int(self.sampling_rate * row["start"])
                 end = int(self.sampling_rate * (row["start"] + 1))
                 audio = audio[0][start:end]
-                audio = audio / torch.max(torch.abs(audio)) # might not be necessary
-        
+                audio = audio / torch.max(torch.abs(audio))  # might not be necessary
+
                 if 16_000 != self.sampling_rate:
                     transform = transforms.Resample(sampling_rate, self.sampling_rate)
                     audio = transform(audio)
-                dvector_mel = wav2mel(
-                    torch.unsqueeze(audio, 0).cpu(),
-                    16_000
-                )
-                dvec_result = dvector_gen.embed_utterance(
-                    dvector_mel
-                ).detach()
+                dvector_mel = wav2mel(torch.unsqueeze(audio, 0).cpu(), 16_000)
+                dvec_result = dvector_gen.embed_utterance(dvector_mel).detach()
 
                 np.save(dvec_path, dvec_result.numpy())
 
         speaker_dvecs = []
-        for speaker in tqdm(self.data["speaker"].unique(), desc="creating speaker dvectors"):
-            speaker_df = self.data[self.data["speaker"]==speaker]
-            speaker_path = Path(speaker_df.iloc[0]["audio"]).parent / 'speaker.npy'
+        for speaker in tqdm(
+            self.data["speaker"].unique(), desc="creating speaker dvectors"
+        ):
+            speaker_df = self.data[self.data["speaker"] == speaker]
+            speaker_path = Path(speaker_df.iloc[0]["audio"]).parent / "speaker.npy"
             if not speaker_path.exists():
                 dvecs = []
-                for idx, row in speaker_df.iterrows():  
-                    dvecs.append(np.load(row["audio"].replace('.wav', '.npy')))
+                for idx, row in speaker_df.iterrows():
+                    dvecs.append(np.load(row["audio"].replace(".wav", ".npy")))
                 dvec = np.mean(dvecs, axis=0)
                 np.save(speaker_path, dvec)
-        
 
     def create_entry(self, audio_file):
         extract_speaker = lambda x: x.split("/")[-2]
         audio_name = Path(audio_file).name
-        
+
         if not self.no_alignments:
             try:
                 grid_file = self.grid_files[audio_name]
@@ -233,7 +258,9 @@ class UnprocessedDataset(Dataset):
                 self.grid_missing += 1
                 return None
             phones, durations, start, end = get_alignment(
-                textgrid.get_tier_by_name("phones"), self.sampling_rate, self.hop_length,
+                textgrid.get_tier_by_name("phones"),
+                self.sampling_rate,
+                self.hop_length,
             )
 
             if end - start < self.treshold or end - start > self.treshold_max:
@@ -241,24 +268,26 @@ class UnprocessedDataset(Dataset):
 
             for i, phone in enumerate(phones):
                 add_stress = False
-                phone.replace('ˌ', '')
+                phone.replace("ˌ", "")
                 if self.remove_stress:
-                    r_phone = phone.replace('0', '').replace('1', '')
+                    r_phone = phone.replace("0", "").replace("1", "")
                 else:
                     # TODO: this does not work properly yet, we'd need the syllable boundary
-                    r_phone = phone.replace('0', '').replace('1', 'ˈ')
-                    if 'ˈ' in r_phone:
+                    r_phone = phone.replace("0", "").replace("1", "ˈ")
+                    if "ˈ" in r_phone:
                         add_stress = True
                 if len(r_phone) > 0:
                     phone = r_phone
                 if phone not in ["spn", "sil"]:
                     o_phone = phone
                     if o_phone not in self.phone_cache:
-                        phone = self.converter(phone, self.source_phoneset, lang=self.target_lang)[0]
+                        phone = self.converter(
+                            phone, self.source_phoneset, lang=self.target_lang
+                        )[0]
                         self.phone_cache[o_phone] = phone
                     phone = self.phone_cache[o_phone]
                     if add_stress:
-                        phone = 'ˈ' + phone
+                        phone = "ˈ" + phone
                 else:
                     phone = "[SILENCE]"
                 phones[i] = phone
@@ -285,7 +314,7 @@ class UnprocessedDataset(Dataset):
             audio_file,
             extract_speaker(audio_file),
             transcription,
-            audio_name
+            audio_name,
         )
 
     def __len__(self):
@@ -302,35 +331,43 @@ class UnprocessedDataset(Dataset):
 
         audio = audio[0][start:end]
         audio = audio / torch.max(torch.abs(audio))
-        #audio = torch.clip(audio, -1, 1)
-        
+
+        if self.use_snr:
+            snrs = np.clip(
+                (self.wada.snr_windowed(audio, self.hop_length, self.win_length) - 40)
+                / 60,
+                -1.1,
+                1.1,
+            )
+
+        # audio = torch.clip(audio, -1, 1)
+
         mel = self.mel_spectrogram(audio.unsqueeze(0))
         mel = torch.sqrt(mel[0])
         energy = torch.norm(mel, dim=0).cpu()
-        
+
         mel = torch.matmul(self.mel_basis, mel)
         mel = dynamic_range_compression(mel).cpu()
 
-        if self.blur:
-            gaussian = VT.GaussianBlur(kernel_size=(31,3))
-            mel_blur = gaussian(mel.unsqueeze(0)).squeeze()
-
-        pitch, t = pw.dio(
-            audio.cpu().numpy().astype(np.float64),
-            self.sampling_rate,
-            frame_period=self.hop_length / self.sampling_rate * 1000,
-            speed=self.dio_speed,
-        )
-        pitch = pw.stonemask(audio.cpu().numpy().astype(np.float64), pitch, t, self.sampling_rate)
-
-        if self.new_outlier_method:
-            old_pitch = pitch
-            pitch = remove_outliers_new(pitch)
-            energy = remove_outliers_new(energy)
-            if pitch is None:
-                # TODO: maybe drop instead?
-                pitch = old_pitch
+        if str(self.pitch_type) == "pyworld":
+            pitch, t = pw.dio(
+                audio.cpu().numpy().astype(np.float64),
+                self.sampling_rate,
+                frame_period=self.hop_length / self.sampling_rate * 1000,
+                speed=self.dio_speed,
+            )
+            pitch = pw.stonemask(
+                audio.cpu().numpy().astype(np.float64), pitch, t, self.sampling_rate
+            )
         else:
+            pitch = F.compute_kaldi_pitch(
+                audio.unsqueeze(0),
+                self.sampling_rate,
+                self.win_length / self.sampling_rate * 1000,
+                self.hop_length / self.sampling_rate * 1000,
+            )[..., 0][0]
+        
+        if self.remove_outliers:
             pitch = remove_outliers(pitch)
             energy = remove_outliers(energy)
         if self.pitch_smooth > 1:
@@ -338,21 +375,31 @@ class UnprocessedDataset(Dataset):
 
         duration = row["duration"]
         if self.augment_duration > 0:
-            truth_vals = np.random.uniform(size=len(duration)) > self.augment_duration
+            truth_vals = np.random.uniform(size=len(duration)) >= self.augment_duration
             rand_vals = np.random.normal(0, 1, size=len(duration)).round()
             rand_vals[truth_vals] = 0
             rand_vals_shifted = rand_vals[:-1] * -1
             rand_vals[1:] += rand_vals_shifted
             rand_vals = rand_vals.astype(int)
+            rand_vals[(duration + rand_vals) < 0] = 0
+            if rand_vals.sum() != 0:
+                rand_vals[-1] -= rand_vals.sum()
+                i = -1
+                while True:
+                    if rand_vals[i] < 0:
+                        rand_vals[i - 1] += rand_vals[i]
+                        rand_vals[i] = 0
+                        i -= 1
+                    else:
+                        break
             duration += rand_vals
-            duration[duration<0] = 0
-            
+            duration[duration < 0] = 0
 
         if self.no_alignments:
             dur_sum = -1
         else:
             dur_sum = sum(duration)
-        
+
         # TODO: investigate why this is necessary
         pitch = torch.tensor(pitch.astype(np.float32))[:dur_sum]
         energy = energy[:dur_sum]
@@ -364,38 +411,27 @@ class UnprocessedDataset(Dataset):
             "duration": np.array(duration),
         }
 
-        if self.blur:
-            result['mel_blur'] = np.array(mel_blur.T)[:dur_sum]
+        if self.use_snr:
+            result["snr"] = snrs[:dur_sum].astype(np.float32)
 
         if self.has_dvector:
-            result['dvector'] = row["dvector"]
-            
-        return result
+            result["dvector"] = row["dvector"]
 
-    def plot(self, sample, show=False):
-        mel = sample["mel"]
-        pitch = sample["pitch"]
-        energy = sample["energy"]
-        plt.imshow(mel, origin="lower")
-        sns.lineplot(
-            x=list(range(len(pitch))) + list(range(len(energy))),
-            y=list((pitch-pitch.min())*70) + list((energy-energy.min())+70),
-            hue=["Pitch"] * len(pitch) + ["Energy"] * len(energy),
-            palette="inferno",
-        )
-        plt.ylim(0,80)
-        plt.yticks(range(0, 81, 10))
-        if show:
-            plt.show()
-        buf = io.BytesIO()
-        plt.savefig(buf, format="png")
-        plt.clf()
-        buf.seek(0)
-        return Image.open(buf)
+        return result
 
 
 class ProcessedDataset(Dataset):
-    def __init__(self, path=None, split=None, phone_map=None, phone_vec=False, phone2id=None, unprocessed_ds=None, stats=None, recompute_stats=False):
+    def __init__(
+        self,
+        path=None,
+        split=None,
+        phone_map=None,
+        phone_vec=False,
+        phone2id=None,
+        unprocessed_ds=None,
+        stats=None,
+        recompute_stats=False,
+    ):
         super().__init__()
         self.stats = None
         if unprocessed_ds is None:
@@ -410,7 +446,7 @@ class ProcessedDataset(Dataset):
             self.data["phones"] = self.data["phones"].apply(
                 lambda x: x.replace("{", "").replace("}", "").strip().split()
             )
-            
+
             with open(os.path.join(self.path, "speakers.json")) as f:
                 self.speaker_map = json.load(f)
                 self.speaker_n = len(self.speaker_map)
@@ -423,31 +459,33 @@ class ProcessedDataset(Dataset):
             self.speaker_map = {s: i for s, i in zip(speakers, range(len(speakers)))}
             self.speaker_n = len(self.speaker_map)
 
-            if recompute_stats or (not Path(self.ds.dir, 'stats.json').exists() and stats is None):
+            if recompute_stats or (
+                not Path(self.ds.dir, "stats.json").exists() and stats is None
+            ):
                 p_stats = process_map(
                     self._get_stats,
                     range(len(self.ds)),
                     chunksize=100,
                     max_workers=multiprocessing.cpu_count(),
-                    desc="computing stats (this is only done once)"
+                    desc="computing stats (this is only done once)",
                 )
 
                 stat_json = {
-                    'pitch_min': np.min([s['pitch_min'] for s in p_stats]),
-                    'pitch_max': np.max([s['pitch_max'] for s in p_stats]),
-                    'pitch_mean': np.mean([s['pitch_mean'] for s in p_stats]),
-                    'pitch_std': np.mean([s['pitch_std'] for s in p_stats]),
-                    'energy_min': np.min([s['energy_min'] for s in p_stats]),
-                    'energy_max': np.max([s['energy_max'] for s in p_stats]),
-                    'energy_mean': np.mean([s['energy_mean'] for s in p_stats]),
-                    'energy_std': np.mean([s['energy_std'] for s in p_stats]),
+                    "pitch_min": np.min([s["pitch_min"] for s in p_stats]),
+                    "pitch_max": np.max([s["pitch_max"] for s in p_stats]),
+                    "pitch_mean": np.mean([s["pitch_mean"] for s in p_stats]),
+                    "pitch_std": np.mean([s["pitch_std"] for s in p_stats]),
+                    "energy_min": np.min([s["energy_min"] for s in p_stats]),
+                    "energy_max": np.max([s["energy_max"] for s in p_stats]),
+                    "energy_mean": np.mean([s["energy_mean"] for s in p_stats]),
+                    "energy_std": np.mean([s["energy_std"] for s in p_stats]),
                 }
 
-                with open(os.path.join(self.ds.dir, 'stats.json'), 'w') as outfile:
+                with open(os.path.join(self.ds.dir, "stats.json"), "w") as outfile:
                     json.dump(stat_json, outfile)
-            
+
             if stats is None:
-                with open(os.path.join(self.ds.dir, 'stats.json')) as f:
+                with open(os.path.join(self.ds.dir, "stats.json")) as f:
                     self.stats = json.load(f)
             else:
                 self.stats = stats
@@ -466,23 +504,25 @@ class ProcessedDataset(Dataset):
                 self.create_phone2id()
             self.vocab_n = len(self.phone2id)
             self.data["phones"] = self.data["phones"].apply(
-                lambda x: torch.tensor([self.phone2id[p.replace('ˌ', '')] for p in x]).long()
+                lambda x: torch.tensor(
+                    [self.phone2id[p.replace("ˌ", "")] for p in x]
+                ).long()
             )
 
         if not self.ds.no_alignments:
-            self.id2phone = {v:k for k,v in self.phone2id.items()}
+            self.id2phone = {v: k for k, v in self.phone2id.items()}
 
     def _get_stats(self, idx):
         x = self.ds[idx]
         return {
-            'pitch_min': np.min(x['pitch']).astype(float),
-            'pitch_max': np.max(x['pitch']).astype(float),
-            'pitch_mean': np.mean(x['pitch']).astype(float),
-            'pitch_std':np.std(x['pitch']).astype(float),
-            'energy_min':np.min(x['energy']).astype(float),
-            'energy_max':np.max(x['energy']).astype(float),
-            'energy_mean':np.mean(x['energy']).astype(float),
-            'energy_std':np.std(x['energy']).astype(float),
+            "pitch_min": np.min(x["pitch"]).astype(float),
+            "pitch_max": np.max(x["pitch"]).astype(float),
+            "pitch_mean": np.mean(x["pitch"]).astype(float),
+            "pitch_std": np.std(x["pitch"]).astype(float),
+            "energy_min": np.min(x["energy"]).astype(float),
+            "energy_max": np.max(x["energy"]).astype(float),
+            "energy_mean": np.mean(x["energy"]).astype(float),
+            "energy_std": np.std(x["energy"]).astype(float),
         }
 
     def create_phone2id(self):
@@ -502,7 +542,9 @@ class ProcessedDataset(Dataset):
         return torch.from_numpy(
             np.load(
                 os.path.join(
-                    self.path, type, "{}-{}-{}.npy".format(speaker, type, basename),
+                    self.path,
+                    type,
+                    "{}-{}-{}.npy".format(speaker, type, basename),
                 )
             )
         )
@@ -515,24 +557,34 @@ class ProcessedDataset(Dataset):
         speaker = self.data.iloc[idx]["speaker"]
         speaker_id = self.speaker_map[speaker]
         text = self.data.iloc[idx]["text"]
-        phones = deepcopy(self.data.iloc[idx]["phones"])
+        phones = self.data.iloc[idx]["phones"]
 
         entry = self.ds[idx]
 
         if config["dataset"].get("variance_level") == "phoneme":
-            for feature in ["pitch" , "energy"]:
+            features = ["pitch", "energy"]
+            if self.ds.use_snr:
+                features.append("snr")
+            for feature in features:
                 pos = 0
                 for i, d in enumerate(entry["duration"]):
                     if d > 0:
-                        entry[feature][i] = np.mean(entry[feature][pos : pos + d])
+                        if len(entry[feature][pos : pos + d]) > 0:
+                            entry[feature][i] = np.mean(entry[feature][pos : pos + d])
+                        else:
+                            entry[feature][i] = -1.1
                     else:
                         entry[feature][i] = 0
                     pos += d
-                entry[feature] = entry[feature][:len(entry["duration"])]
+                entry[feature] = entry[feature][: len(entry["duration"])]
 
         if self.stats is not None:
-            entry["pitch"] = (entry["pitch"] - self.stats['pitch_mean']) / self.stats['pitch_std']
-            entry["energy"] = (entry["energy"] - self.stats['energy_mean']) / self.stats['energy_std']
+            entry["pitch"] = (entry["pitch"] - self.stats["pitch_mean"]) / self.stats[
+                "pitch_std"
+            ]
+            entry["energy"] = (
+                entry["energy"] - self.stats["energy_mean"]
+            ) / self.stats["energy_std"]
 
         sample = {
             "id": basename,
@@ -545,19 +597,24 @@ class ProcessedDataset(Dataset):
             "duration": entry["duration"],
         }
 
-        if 'dvector' in entry:
-            sample['speaker'] = torch.from_numpy(np.load(entry['dvector']))
+        if "dvector" in entry:
+            sample["speaker"] = torch.from_numpy(np.load(entry["dvector"]))
 
-        if 'mel_blur' in entry:
-            sample['mel_blur'] = entry['mel_blur']
+        if "snr" in entry:
+            sample["snr"] = entry["snr"]
 
-        return sample
+        sample_cp = deepcopy(sample)
+        del entry
+        del sample
+        del phones
+
+        return sample_cp
 
     def get_speaker_dvectors(self):
         speaker_dvecs = []
         speakers = []
-        for speaker in tqdm(self.data["speaker"].unique()):
-            speaker_df = self.data[self.data["speaker"]==speaker]
+        for speaker in tqdm(sorted(list(self.data["speaker"].unique()))):
+            speaker_df = self.data[self.data["speaker"] == speaker]
             dvec_path = Path(speaker_df.iloc[0]["audio"]).parent / "speaker.npy"
             speaker_dvecs.append(np.load(dvec_path))
             speakers.append(speaker)
@@ -571,47 +628,79 @@ class ProcessedDataset(Dataset):
         return np.array(out)
 
     def plot(self, sample, show=False):
+        if not show:
+            matplotlib.use("AGG", force=True)
         mel = sample["mel"]
 
         if config["dataset"].get("variance_level") == "phoneme":
-            pitch = ProcessedDataset.expand(sample["pitch"], sample["duration"])[:len(mel)]
-            energy = ProcessedDataset.expand(sample["energy"], sample["duration"])[:len(mel)]
+            pitch = ProcessedDataset.expand(sample["pitch"], sample["duration"])[
+                : len(mel)
+            ]
+            energy = ProcessedDataset.expand(sample["energy"], sample["duration"])[
+                : len(mel)
+            ]
+            if "snr" in sample:
+                snr = ProcessedDataset.expand(sample["snr"], sample["duration"])[
+                    : len(mel)
+                ]
         elif config["dataset"].get("variance_level") == "frame":
-            pitch = sample["pitch"][:len(mel)]
-            energy = sample["energy"][:len(mel)]
+            pitch = sample["pitch"][: len(mel)]
+            energy = sample["energy"][: len(mel)]
+            if "snr" in sample:
+                snr = sample["snr"][: len(mel)]
 
-        pitch_min, pitch_max = self.stats["pitch_min"], self.stats["pitch_max"]
-        pitch = (pitch - pitch_min) / (pitch_max - pitch_min) * mel.shape[1]
+        if str(self.ds.pitch_type) == "pyworld":
+            pitch_min, pitch_max = self.stats["pitch_min"], self.stats["pitch_max"]
+            pitch = (pitch - pitch_min) / (pitch_max - pitch_min) * mel.shape[1] * 80
+        else:
+            pitch_min, pitch_max = pitch.min(), pitch.max()
+            pitch = (pitch - pitch_min) / (pitch_max - pitch_min) * mel.shape[1]
+            
 
         energy_min, energy_max = self.stats["energy_min"], self.stats["energy_max"]
-        energy = (energy - energy_min) / (energy_max - energy_min) * mel.shape[1]
+        energy = (energy - energy_min) / (energy_max - energy_min) * mel.shape[1] * 80
 
-        fig = plt.figure(figsize=[6.4*(len(mel)/150), 4.8])
+        if "snr" in sample:
+            snr_min, snr_max = -1.1, 1.1
+            snr = (snr - snr_min) / (snr_max - snr_min) * mel.shape[1]
+
+        fig = plt.figure(figsize=[6.4 * (len(mel) / 150), 4.8])
         ax = fig.add_subplot()
 
-        ax.imshow(mel.T, origin="lower")
-        sns.lineplot(
-            x=list(range(len(pitch))) + list(range(len(energy))),
-            y=list((pitch-pitch.min())*70) + list((energy-energy.min())*70),
-            hue=["Pitch"] * len(pitch) + ["Energy"] * len(energy),
-            palette="inferno",
-            ax=ax,
-        )
-        plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
-        plt.ylim(0, 80)
-        plt.yticks(range(0, 81, 10))
+        ax.imshow(mel.T, origin="lower", cmap='gray')
 
-        plt.ylim(0, 80)
-        plt.yticks(range(0, 81, 10))
         last = 0
 
         for phone, duration in zip(sample["phones"], sample["duration"]):
             x = last
-            ax.axline((int(x), 0), (int(x), 80))
+            ax.axline((int(x), 0), (int(x), 80), color="white", alpha=0.3)
             phone = self.id2phone[int(phone)]
+            if phone == "[SILENCE]":
+                phone = "☐"
             # print(int(x), phone)
-            ax.text(int(x), 40, phone)
+            ax.text(int(x), 81, phone)
             last += duration
+
+        if sample["snr"] is None:
+            sns.lineplot(
+                x=list(range(len(pitch))) + list(range(len(energy))),
+                y=list(pitch) + list(energy),
+                hue=["Pitch"] * len(pitch) + ["Energy"] * len(energy),
+                ax=ax,
+                linewidth=2,
+            )
+        else:
+            sns.lineplot(
+                x=list(range(len(pitch))) + list(range(len(energy))) + list(range(len(snr))),
+                y=list(pitch) + list(energy) + list(snr),
+                hue=["Pitch"] * len(pitch) + ["Energy"] * len(energy) + ["SNR"] * len(snr),
+                ax=ax,
+                linewidth=2,
+            )
+        plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.0)
+        plt.ylim(0, 80)
+        plt.yticks(range(0, 81, 10))
+
         if show:
             plt.show()
 
@@ -627,71 +716,24 @@ class ProcessedDataset(Dataset):
         # (see https://stackoverflow.com/a/33046935)
         data = {k: [dic[k] for dic in data] for k in data[0]}
         keys = ["phones", "mel", "pitch", "energy", "duration"]
-        if "mel_blur" in data:
-            keys.append("mel_blur")
+        if "snr" in data:
+            keys.append("snr")
         for key in keys:
             if torch.is_tensor(data[key][0]):
                 data[key] = pad_sequence(data[key], batch_first=True, padding_value=0)
             else:
-                data[key] = pad_sequence([torch.tensor(x) for x in data[key]], batch_first=True, padding_value=0)
+                data[key] = pad_sequence(
+                    [torch.tensor(x) for x in data[key]],
+                    batch_first=True,
+                    padding_value=0,
+                )
         if self.ds is not None and self.ds.has_dvector:
-            data["speaker"] = torch.stack(data['speaker'])
+            data["speaker"] = torch.stack(data["speaker"])
         else:
             data["speaker"] = torch.tensor(data["speaker"]).long()
         return data
 
-
 if __name__ == "__main__":
-
-    train_path = config["train"].get("train_path")
-    valid_path = config["train"].get("valid_path")
-    train_orig = UnprocessedDataset("../Data/LibriTTS/train-clean-360-aligned", max_entries=500)
-    train_orig[0]
-    train_orig_p = ProcessedDataset(unprocessed_ds=train_orig, split="train", phone_vec=False, recompute_stats=False)
-    train_ud = UnprocessedDataset(train_path, dvector=True, no_alignments=True)
-    train_ud_synth = UnprocessedDataset('../Data/Synthesised/real_p0', dvector=True, no_alignments=True)
-    valid_ud = UnprocessedDataset(valid_path, dvector=True)
-    train_ds = ProcessedDataset(
-        unprocessed_ds=train_ud,
-        split="train",
-        phone_vec=False,
-        recompute_stats=False,
-        stats=train_orig_p.stats
-    )
-    train_ds_synth = ProcessedDataset(
-        unprocessed_ds=train_ud_synth,
-        split="train",
-        phone_vec=False,
-        recompute_stats=False,
-        stats=train_orig_p.stats
-    )
-    valid_ds = ProcessedDataset(
-        unprocessed_ds=valid_ud,
-        split="val",
-        phone_vec=False,
-        phone2id=train_orig_p.phone2id,
-        stats=train_orig_p.stats
-    )
-    real_dvecs, real_text = train_ds.get_speaker_dvectors()
-    synth_dvecs, synth_text = train_ds_synth.get_speaker_dvectors()
-    all_dvecs = np.array(real_dvecs + synth_dvecs)
-    from sklearn.decomposition import PCA
-    from sklearn.manifold import TSNE
-    pca = TSNE(n_components=2, learning_rate='auto',init='pca',random_state=42)
-    labels = len(real_dvecs) * ['real'] + len(real_dvecs) * ['synthesised']
-    dvecs_2d = pca.fit_transform(all_dvecs)
-
-    import plotly.express as px
-    import plotly.io as pio
-    df = px.data.iris()
-    fig = px.scatter(x=dvecs_2d[:,0], y=dvecs_2d[:,1], color=labels, text=(real_text + synth_text))
-    fig.update_layout(
-        autosize=False,
-        width=1600,
-        height=1600,)
-    pio.write_image(fig, "dvecs.png", engine="kaleido")
-
-    # sns.scatterplot(x=dvecs_2d[:,0], y=dvecs_2d[:,1], hue=labels)
-    # plt.title("d-vector T-SNE")
-    # plt.show()
-    #valid_ds.plot(valid_ds[0], show=True)
+    train_ud = UnprocessedDataset("../Data/LibriTTS/train-clean-360-aligned", max_entries=10_000, use_snr=True)
+    train = ProcessedDataset(unprocessed_ds=train_ud, split="train", phone_vec=False, recompute_stats=True)
+    train.plot(train[0], show=True)

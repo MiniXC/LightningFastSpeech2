@@ -2,8 +2,8 @@ import json
 import torch
 import hifigan
 
-class Synthesiser():
 
+class Synthesiser:
     def __init__(self, sampling_rate, device="cuda:0"):
         with open("hifigan/config.json", "r") as f:
             config = json.load(f)
@@ -20,5 +20,8 @@ class Synthesiser():
 
     def __call__(self, mel):
         mel = torch.unsqueeze(mel.T, 0)
-        result = (self.vocoder(mel.to(self.device)).squeeze(1).cpu().detach().numpy() * 32768.0).astype("int16")
+        result = (
+            self.vocoder(mel.to(self.device)).squeeze(1).cpu().detach().numpy()
+            * 32768.0
+        ).astype("int16")
         return result

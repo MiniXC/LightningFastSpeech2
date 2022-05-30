@@ -2,7 +2,7 @@ import math
 
 import torch
 import torch.nn as nn
-from torch.nn.modules.transformer import TransformerEncoderLayer
+from torch.nn.modules.transformer import TransformerEncoderLayer, TransformerEncoder
 from torch.nn.utils.rnn import pad_sequence
 import configparser
 
@@ -90,13 +90,23 @@ class ConformerEncoderLayer(TransformerEncoderLayer):
 
 
 class VarianceAdaptor(nn.Module):
-    def __init__(self, stats):
+    def __init__(self, stats, use_snr=False):
         super().__init__()
 
-        self.duration_predictor = VariancePredictor()
+        if config["model"].getboolean("duration_transformer"):
+            self.duration_predictor = ConformerVariancePredictor()
+        else:
+            self.duration_predictor = VariancePredictor()
         self.length_regulator = LengthRegulator()
-        self.pitch_encoder = VarianceEncoder()#(stats["pitch_min"], stats["pitch_max"])
-        self.energy_encoder = VarianceEncoder()#(stats["energy_min"], stats["energy_max"])
+        self.pitch_encoder = (
+            VarianceEncoder()
+        )
+        self.energy_encoder = (
+            VarianceEncoder()
+        )
+        if use_snr:
+            self.snr_encoder = VarianceEncoder()# TODO: VarianceEncoder(-1.1, 1.1)
+        self.use_snr = use_snr
 
     def forward(
         self,
@@ -105,18 +115,25 @@ class VarianceAdaptor(nn.Module):
         tgt_pitch=None,
         tgt_energy=None,
         tgt_duration=None,
+        tgt_snr=None,
         tgt_max_length=None,
         c_pitch=1,
         c_energy=1,
         c_duration=1,
+        c_snr=1,
     ):
         duration_pred = self.duration_predictor(x, src_mask)
 
         if config["dataset"].get("variance_level") == "phoneme":
             pitch_pred, pitch_out = self.pitch_encoder(x, tgt_pitch, src_mask, c_pitch)
             x = x + pitch_out
-            energy_pred, energy_out = self.energy_encoder(x, tgt_energy, src_mask, c_energy)
+            energy_pred, energy_out = self.energy_encoder(
+                x, tgt_energy, src_mask, c_energy
+            )
             x = x + energy_out
+            if self.use_snr:
+                snr_pred, snr_out = self.snr_encoder(x, tgt_snr, src_mask, c_snr)
+                x = x + snr_out
 
         if tgt_duration is not None:  # training
             duration_rounded = tgt_duration
@@ -130,23 +147,30 @@ class VarianceAdaptor(nn.Module):
 
         if config["dataset"].get("variance_level") == "frame":
             pitch_pred, pitch_out = self.pitch_encoder(x, tgt_pitch, tgt_mask, c_pitch)
-            energy_pred, energy_out = self.energy_encoder(x, tgt_energy, tgt_mask, c_energy)
+            energy_pred, energy_out = self.energy_encoder(
+                x, tgt_energy, tgt_mask, c_energy
+            )
+            if self.use_snr:
+                snr_pred, snr_out = self.snr_encoder(x, tgt_snr, tgt_mask, c_snr)
             if pitch_out.shape[1] > tgt_max_length:
                 print("sample too long...")
-            pitch_out = pitch_out[:,:tgt_max_length]
-            energy_out = energy_out[:,:tgt_max_length]
-            pitch_pred = pitch_pred[:,:tgt_max_length]
-            energy_pred = energy_pred[:,:tgt_max_length]
-            x = (
-                x + pitch_out + energy_out
-            ) 
+            pitch_out = pitch_out[:, :tgt_max_length]
+            energy_out = energy_out[:, :tgt_max_length]
+            pitch_pred = pitch_pred[:, :tgt_max_length]
+            energy_pred = energy_pred[:, :tgt_max_length]
+            if self.use_snr:
+                snr_out = snr_out[:, :tgt_max_length]
+                snr_pred = snr_pred[:, :tgt_max_length]
+            x = x + pitch_out + energy_out
+            if self.use_snr:
+                x = x + snr_out
         elif config["dataset"].get("variance_level") != "phoneme":
             raise ValueError("variance_level has to be frame or phoneme")
 
         # TODO: investigate if one should be applied before the other
         # ming implementation has pitch predicted first
 
-        return {
+        result = {
             "x": x,
             "pitch": pitch_pred,
             "energy": energy_pred,
@@ -154,6 +178,11 @@ class VarianceAdaptor(nn.Module):
             "duration_rounded": duration_rounded,
             "tgt_mask": tgt_mask,
         }
+
+        if self.use_snr:
+            result["snr"] = snr_pred
+
+        return result
 
 
 class LengthRegulator(nn.Module):
@@ -183,7 +212,8 @@ class VarianceEncoder(nn.Module):
 
         self.predictor = VariancePredictor()
         self.bins = nn.Parameter(
-            torch.linspace(min, max, n_bins - 1), requires_grad=False,
+            torch.linspace(min, max, n_bins - 1),
+            requires_grad=False,
         )
         self.embedding = nn.Embedding(n_bins, encoder_hidden)
 
@@ -195,6 +225,41 @@ class VarianceEncoder(nn.Module):
             prediction = prediction * control
             embedding = self.embedding(torch.bucketize(prediction, self.bins))
         return prediction, embedding
+
+
+class ConformerVariancePredictor(nn.Module):
+    def __init__(self, activation=nn.ReLU):
+        super().__init__()
+
+        input_size = config["model"].getint("encoder_hidden")
+        encoder_head = config["model"].getint("duration_transformer_head")
+        dropout = config["model"].getfloat("variance_dropout")
+        conv_filter_size = config["model"].getint("variance_filter_size")
+        kernel = (
+            config["model"].getint("conv_kernel_1"),
+            config["model"].getint("conv_kernel_2"),
+        )
+
+        self.transformer = TransformerEncoder(
+            ConformerEncoderLayer(
+                input_size,
+                encoder_head,
+                conv_in=input_size,
+                conv_filter_size=conv_filter_size,
+                conv_kernel=kernel,
+                batch_first=True,
+                dropout=dropout,
+            ),
+            num_layers=2,
+        )
+        self.linear = nn.Linear(input_size, 1)
+
+    def forward(self, x, mask=None):
+        out = self.linear(self.transformer(x))
+        out = out.squeeze(-1)
+        if mask is not None:
+            out = out.masked_fill(mask, 0)
+        return out
 
 
 class VariancePredictor(nn.Module):
@@ -233,8 +298,16 @@ class VariancePredictor(nn.Module):
 if __name__ == "__main__":
     x = torch.tensor(
         [
-            [[-1, 2, 3, 4, -5, 6], [6, 5, 4, 3, 2, 1], [-6, -5, -4, -3, -2, -1],],
-            [[-11, 12, 13, 14, -15, 16], [16, 15, 14, 13, 12, 11], [0, 0, 0, 0, 0, 0],],
+            [
+                [-1, 2, 3, 4, -5, 6],
+                [6, 5, 4, 3, 2, 1],
+                [-6, -5, -4, -3, -2, -1],
+            ],
+            [
+                [-11, 12, 13, 14, -15, 16],
+                [16, 15, 14, 13, 12, 11],
+                [0, 0, 0, 0, 0, 0],
+            ],
         ]
     )
     durations = torch.tensor([[2, 3, 1], [1, 2, 0]])
