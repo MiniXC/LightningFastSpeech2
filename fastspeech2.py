@@ -309,11 +309,11 @@ class FastSpeech2(pl.LightningModule):
                 )
 
     def get_conditioned(self, targets):
-        pitch_embedding = self.condition_pitch_embedding(torch.bucketize(targets["cond_pitch"], self.pitch_bins))
-        energy_embedding = self.condition_energy_embedding(torch.bucketize(targets["cond_energy"], self.energy_bins))
-        duration_embedding = self.condition_duration_embedding(torch.bucketize(targets["cond_duration"], self.duration_bins))
+        pitch_embedding = self.condition_pitch_embedding(torch.bucketize(targets["cond_pitch"].to(self.device), self.pitch_bins))
+        energy_embedding = self.condition_energy_embedding(torch.bucketize(targets["cond_energy"].to(self.device), self.energy_bins))
+        duration_embedding = self.condition_duration_embedding(torch.bucketize(targets["cond_duration"].to(self.device), self.duration_bins))
         if self.use_snr:
-            snr_embedding = self.condition_snr_embedding(torch.bucketize(targets["cond_snr"], self.snr_bins))
+            snr_embedding = self.condition_snr_embedding(torch.bucketize(targets["cond_snr"].to(self.device), self.snr_bins))
             return pitch_embedding + energy_embedding + duration_embedding + snr_embedding
         else:
             return pitch_embedding + energy_embedding + duration_embedding

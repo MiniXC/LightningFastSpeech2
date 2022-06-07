@@ -150,7 +150,7 @@ class VarianceAdaptor(nn.Module):
             if not self.stochastic:
                 duration_rounded = torch.round((torch.exp(duration_pred) - 1) * c_duration)
             else:
-                duration_rounded = torch.ceil((torch.exp(duration_pred+1e-9)) * c_duration)
+                duration_rounded = torch.ceil((torch.exp(duration_pred+1e-9)) * c_duration).masked_fill(duration_pred==0, 0)
             duration_rounded = torch.clamp(duration_rounded, min=0).int()
 
         x, tgt_len, tgt_mask = self.length_regulator(
@@ -299,7 +299,7 @@ class StochasticVariancePredictor(nn.Module):
             sigma = self.sigma
         out = self.sdp(x, mask, tgt, g=condition, reverse=inference, noise_scale=sigma)
         if mask is not None and inference:
-            out = out.masked_fill(mask, -1.1)
+            out = out.masked_fill(mask, 0)
             #print(out)
         return out
 

@@ -27,6 +27,9 @@ import pandas as pd
 config = configparser.ConfigParser()
 config.read("synth.ini")
 
+config_t = configparser.ConfigParser()
+config_t.read("config.ini")
+
 diversity_choice = click.Choice(["increase", "decrease"])
 
 
@@ -141,9 +144,13 @@ def synth(
 
     train_orig = UnprocessedDataset(
         "../Data/LibriTTS/train-clean-360-aligned",
+        conditioned=True,
     )
     train_orig_p = ProcessedDataset(
-        unprocessed_ds=train_orig, split="train", phone_vec=False, recompute_stats=False
+        unprocessed_ds=train_orig,
+        split="train",
+        phone_vec=False,
+        recompute_stats=False,
     )
 
     model = FastSpeech2.load_from_checkpoint(config["model"].get("path")).to("cuda:0")
@@ -183,13 +190,30 @@ def synth(
 
     p = Pool()
 
+    batch_size = config_t["train"].getint("batch_size")
+
     if copy or resynthesise:
         loader = DataLoader(
             train_orig_p,
-            batch_size=6,
+            batch_size=batch_size,
             collate_fn=train_orig_p.collate_fn,
         )
     else:
+        # train_new = UnprocessedDataset(
+        #     "../Data/LibriTTS/train-clean-360-aligned",
+        #     conditioned=True,
+        # )
+        # train_new_p = ProcessedDataset(
+        #     unprocessed_ds=train_new,
+        #     split="train",
+        #     phone_vec=False,
+        #     stats=train_orig_p.stats
+        # )
+        # loader = DataLoader(
+        #     train_orig_p,
+        #     batch_size=batch_size,
+        #     collate_fn=train_orig_p.collate_fn,
+        # )
         loader = model.train_dataloader()
 
     with tqdm(total=round(max_len / 60 / 60, 3)) as pbar:
@@ -217,6 +241,10 @@ def synth(
                 {
                     "phones": batch["phones"],
                     "speaker": batch["speaker"],
+                    "cond_pitch": batch["cond_pitch"],
+                    "cond_energy": batch["cond_energy"],
+                    "cond_duration": batch["cond_duration"],
+                    "cond_snr": batch["cond_snr"],
                 }
             )
             old_tgt_mask = tgt_mask
@@ -297,6 +325,10 @@ def synth(
                         "pitch": pitch,
                         "energy": energy,
                         "duration": duration,
+                        "cond_pitch": batch["cond_pitch"],
+                        "cond_energy": batch["cond_energy"],
+                        "cond_duration": batch["cond_duration"],
+                        "cond_snr": batch["cond_snr"],
                     }
                 )
 
@@ -305,7 +337,7 @@ def synth(
 
             for i in range(len(batch["speaker"])):
                 if not resynthesise:
-                    mel = preds[0][i][~tgt_mask[i]]
+                    mel = preds['mel'][i][~tgt_mask[i]]
                 else:
                     mel = batch["mel"][i][~tgt_mask[i]]
 
