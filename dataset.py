@@ -85,6 +85,7 @@ class UnprocessedDataset(Dataset):
         no_alignments=False,
         augment_duration=0.1,
         use_snr=False,
+        conditioned=False,
     ):
         super().__init__()
 
@@ -210,6 +211,8 @@ class UnprocessedDataset(Dataset):
 
         self.wada = WADA()
 
+        self.conditioned = conditioned
+
     def create_dvectors(self):
         wav2mel = Wav2Mel()
         dvector_gen = torch.jit.load("dvector/dvector.pt").eval()
@@ -257,11 +260,15 @@ class UnprocessedDataset(Dataset):
             except KeyError:
                 self.grid_missing += 1
                 return None
-            phones, durations, start, end = get_alignment(
+            ali = get_alignment(
                 textgrid.get_tier_by_name("phones"),
                 self.sampling_rate,
                 self.hop_length,
             )
+            if ali is None:
+                return None
+
+            phones, durations, start, end = ali
 
             if end - start < self.treshold or end - start > self.treshold_max:
                 return None
@@ -340,8 +347,6 @@ class UnprocessedDataset(Dataset):
                 1.1,
             )
 
-        # audio = torch.clip(audio, -1, 1)
-
         mel = self.mel_spectrogram(audio.unsqueeze(0))
         mel = torch.sqrt(mel[0])
         energy = torch.norm(mel, dim=0).cpu()
@@ -366,7 +371,7 @@ class UnprocessedDataset(Dataset):
                 self.win_length / self.sampling_rate * 1000,
                 self.hop_length / self.sampling_rate * 1000,
             )[..., 0][0]
-        
+
         if self.remove_outliers:
             pitch = remove_outliers(pitch)
             energy = remove_outliers(energy)
@@ -417,6 +422,17 @@ class UnprocessedDataset(Dataset):
         if self.has_dvector:
             result["dvector"] = row["dvector"]
 
+        if self.conditioned:
+            result["conditioned"] = {}
+            for var in ["pitch", "energy", "duration"]:
+                result["conditioned"][var] = np.mean(result[var])
+            result["conditioned"]["snr"] = np.clip(
+                (self.wada.snr(audio) - 40)
+                / 60,
+                -1.1,
+                1.1,
+            )
+
         return result
 
 
@@ -465,10 +481,13 @@ class ProcessedDataset(Dataset):
                 p_stats = process_map(
                     self._get_stats,
                     range(len(self.ds)),
-                    chunksize=100,
+                    chunksize=5,
                     max_workers=multiprocessing.cpu_count(),
                     desc="computing stats (this is only done once)",
                 )
+                # p_stats = []
+                # for i in tqdm(range(len(self.ds)), desc="computing stats"):
+                #     p_stats.append(self._get_stats(i))
 
                 stat_json = {
                     "pitch_min": np.min([s["pitch_min"] for s in p_stats]),
@@ -479,6 +498,12 @@ class ProcessedDataset(Dataset):
                     "energy_max": np.max([s["energy_max"] for s in p_stats]),
                     "energy_mean": np.mean([s["energy_mean"] for s in p_stats]),
                     "energy_std": np.mean([s["energy_std"] for s in p_stats]),
+                    "cond_duration_min": np.min([s["cond_duration"] for s in p_stats]),
+                    "cond_duration_max": np.max([s["cond_duration"] for s in p_stats]),
+                    "cond_pitch_min": np.min([s["cond_pitch"] for s in p_stats]),
+                    "cond_pitch_max": np.max([s["cond_pitch"] for s in p_stats]),
+                    "cond_energy_min": np.min([s["cond_energy"] for s in p_stats]),
+                    "cond_energy_max": np.max([s["cond_energy"] for s in p_stats]),
                 }
 
                 with open(os.path.join(self.ds.dir, "stats.json"), "w") as outfile:
@@ -514,7 +539,7 @@ class ProcessedDataset(Dataset):
 
     def _get_stats(self, idx):
         x = self.ds[idx]
-        return {
+        result = {
             "pitch_min": np.min(x["pitch"]).astype(float),
             "pitch_max": np.max(x["pitch"]).astype(float),
             "pitch_mean": np.mean(x["pitch"]).astype(float),
@@ -523,7 +548,13 @@ class ProcessedDataset(Dataset):
             "energy_max": np.max(x["energy"]).astype(float),
             "energy_mean": np.mean(x["energy"]).astype(float),
             "energy_std": np.std(x["energy"]).astype(float),
+            "cond_duration": x["conditioned"]["duration"].astype(float),
+            "cond_pitch": x["conditioned"]["pitch"].astype(float),
+            "cond_energy": x["conditioned"]["energy"].astype(float),
         }
+        if "snr" in x["conditioned"]:
+            result["cond_snr"] = x["conditioned"]["snr"].astype(float)
+        return result
 
     def create_phone2id(self):
         unique_phones = set()
@@ -603,6 +634,14 @@ class ProcessedDataset(Dataset):
         if "snr" in entry:
             sample["snr"] = entry["snr"]
 
+        if self.ds.conditioned:
+            if self.stats is not None:
+                sample["cond_energy"] = entry["conditioned"]["pitch"]
+                sample["cond_pitch"] = entry["conditioned"]["energy"]
+                sample["cond_duration"] = entry["conditioned"]["duration"]
+                if "snr" in entry["conditioned"]:
+                    sample["cond_snr"] = entry["conditioned"]["snr"]
+
         sample_cp = deepcopy(sample)
         del entry
         del sample
@@ -655,7 +694,6 @@ class ProcessedDataset(Dataset):
         else:
             pitch_min, pitch_max = pitch.min(), pitch.max()
             pitch = (pitch - pitch_min) / (pitch_max - pitch_min) * mel.shape[1]
-            
 
         energy_min, energy_max = self.stats["energy_min"], self.stats["energy_max"]
         energy = (energy - energy_min) / (energy_max - energy_min) * mel.shape[1] * 80
@@ -667,7 +705,7 @@ class ProcessedDataset(Dataset):
         fig = plt.figure(figsize=[6.4 * (len(mel) / 150), 4.8])
         ax = fig.add_subplot()
 
-        ax.imshow(mel.T, origin="lower", cmap='gray')
+        ax.imshow(mel.T, origin="lower", cmap="gray")
 
         last = 0
 
@@ -691,9 +729,13 @@ class ProcessedDataset(Dataset):
             )
         else:
             sns.lineplot(
-                x=list(range(len(pitch))) + list(range(len(energy))) + list(range(len(snr))),
+                x=list(range(len(pitch)))
+                + list(range(len(energy)))
+                + list(range(len(snr))),
                 y=list(pitch) + list(energy) + list(snr),
-                hue=["Pitch"] * len(pitch) + ["Energy"] * len(energy) + ["SNR"] * len(snr),
+                hue=["Pitch"] * len(pitch)
+                + ["Energy"] * len(energy)
+                + ["SNR"] * len(snr),
                 ax=ax,
                 linewidth=2,
             )
@@ -730,10 +772,21 @@ class ProcessedDataset(Dataset):
         if self.ds is not None and self.ds.has_dvector:
             data["speaker"] = torch.stack(data["speaker"])
         else:
-            data["speaker"] = torch.tensor(data["speaker"]).long()
+            data["speaker"] = torch.tensor(np.array(data["speaker"])).long()
+        if self.ds is not None and self.ds.conditioned:
+            data["cond_pitch"] = torch.tensor(np.array(data["cond_pitch"]))
+            data["cond_energy"] = torch.tensor(np.array(data["cond_energy"]))
+            data["cond_duration"] = torch.tensor(np.array(data["cond_duration"]))
+            if "snr" in data:
+                data["cond_snr"] = torch.tensor(np.array(data["cond_snr"]))
         return data
 
+
 if __name__ == "__main__":
-    train_ud = UnprocessedDataset("../Data/LibriTTS/train-clean-360-aligned", max_entries=10_000, use_snr=True)
-    train = ProcessedDataset(unprocessed_ds=train_ud, split="train", phone_vec=False, recompute_stats=True)
-    train.plot(train[0], show=True)
+    train_ud = UnprocessedDataset(
+        "../Data/LibriTTS/train-clean-360-aligned", max_entries=10_000, use_snr=True, conditioned=True,
+    )
+    train = ProcessedDataset(
+        unprocessed_ds=train_ud, split="train", phone_vec=False, recompute_stats=True
+    )
+    #train.plot(train[0], show=True)

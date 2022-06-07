@@ -5,6 +5,7 @@ import torch.nn as nn
 from torch.nn.modules.transformer import TransformerEncoderLayer, TransformerEncoder
 from torch.nn.utils.rnn import pad_sequence
 import configparser
+from stochastic_duration_predictor.sdp import StochasticDurationPredictor
 
 config = configparser.ConfigParser()
 config.read("config.ini")
@@ -93,19 +94,20 @@ class VarianceAdaptor(nn.Module):
     def __init__(self, stats, use_snr=False):
         super().__init__()
 
+        self.stochastic = False
+
         if config["model"].getboolean("duration_transformer"):
             self.duration_predictor = ConformerVariancePredictor()
+        elif config["model"].getboolean("duration_stochastic"):
+            self.duration_predictor = StochasticVariancePredictor()
+            self.stochastic = True
         else:
             self.duration_predictor = VariancePredictor()
         self.length_regulator = LengthRegulator()
-        self.pitch_encoder = (
-            VarianceEncoder()
-        )
-        self.energy_encoder = (
-            VarianceEncoder()
-        )
+        self.pitch_encoder = VarianceEncoder()
+        self.energy_encoder = VarianceEncoder()
         if use_snr:
-            self.snr_encoder = VarianceEncoder()# TODO: VarianceEncoder(-1.1, 1.1)
+            self.snr_encoder = VarianceEncoder(-1.1, 1.1)
         self.use_snr = use_snr
 
     def forward(
@@ -117,12 +119,19 @@ class VarianceAdaptor(nn.Module):
         tgt_duration=None,
         tgt_snr=None,
         tgt_max_length=None,
+        speaker_embedding=None,
         c_pitch=1,
         c_energy=1,
         c_duration=1,
         c_snr=1,
     ):
-        duration_pred = self.duration_predictor(x, src_mask)
+        if not self.stochastic:
+            duration_pred = self.duration_predictor(x, src_mask)
+        else:
+            if tgt_duration is not None:  # training
+                duration_pred = self.duration_predictor(x, src_mask, tgt_duration, speaker_embedding)
+            else:
+                duration_pred = self.duration_predictor(x, src_mask, tgt_duration, speaker_embedding, inference=True)
 
         if config["dataset"].get("variance_level") == "phoneme":
             pitch_pred, pitch_out = self.pitch_encoder(x, tgt_pitch, src_mask, c_pitch)
@@ -138,8 +147,11 @@ class VarianceAdaptor(nn.Module):
         if tgt_duration is not None:  # training
             duration_rounded = tgt_duration
         else:
-            duration_rounded = torch.round(torch.exp(duration_pred) - 1)
-            duration_rounded = torch.clamp(duration_rounded * c_duration, min=0).int()
+            if not self.stochastic:
+                duration_rounded = torch.round((torch.exp(duration_pred) - 1) * c_duration)
+            else:
+                duration_rounded = torch.ceil((torch.exp(duration_pred+1e-9)) * c_duration)
+            duration_rounded = torch.clamp(duration_rounded, min=0).int()
 
         x, tgt_len, tgt_mask = self.length_regulator(
             x, duration_rounded, tgt_max_length
@@ -261,6 +273,35 @@ class ConformerVariancePredictor(nn.Module):
             out = out.masked_fill(mask, 0)
         return out
 
+class StochasticVariancePredictor(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        input_size = config["model"].getint("encoder_hidden")
+        hidden_size = config["model"].getint("duration_stochastic_hidden")
+        kernel = config["model"].getint("duration_stochastic_kernel")
+        dropout = config["model"].getfloat("duration_stochastic_dropout")
+        num_flows = config["model"].getint("duration_stochastic_num_flows")
+        conditioning_size = config["model"].getint("duration_stochastic_conditioning_size")
+        self.sigma = config["inference"].getfloat("duration_stochastic_sigma")
+
+        self.sdp = StochasticDurationPredictor(
+            input_size,
+            hidden_size,
+            kernel,
+            dropout,
+            num_flows,
+            conditioning_size,
+        )
+
+    def forward(self, x, mask, tgt=None, condition=None, sigma=1.0, inference=False):
+        if inference:
+            sigma = self.sigma
+        out = self.sdp(x, mask, tgt, g=condition, reverse=inference, noise_scale=sigma)
+        if mask is not None and inference:
+            out = out.masked_fill(mask, -1.1)
+            #print(out)
+        return out
 
 class VariancePredictor(nn.Module):
     def __init__(self, activation=nn.ReLU):
@@ -270,22 +311,46 @@ class VariancePredictor(nn.Module):
         filter_size = config["model"].getint("variance_filter_size")
         kernel = config["model"].getint("variance_kernel")
         dropout = config["model"].getfloat("variance_dropout")
+        depthwise = config["model"].getboolean("depthwise_conv")
 
-        self.layers = nn.Sequential(
-            Transpose(
-                nn.Conv1d(input_size, filter_size, kernel, padding=(kernel - 1) // 2)
-            ),
-            activation(),
-            nn.LayerNorm(filter_size),
-            nn.Dropout(dropout),
-            Transpose(
-                nn.Conv1d(input_size, filter_size, kernel, padding=(kernel - 1) // 2)
-            ),
-            activation(),
-            nn.LayerNorm(filter_size),
-            nn.Dropout(dropout),
-            nn.Linear(filter_size, 1),
-        )
+        if not depthwise:
+            self.layers = nn.Sequential(
+                Transpose(
+                    nn.Conv1d(input_size, filter_size, kernel, padding=(kernel - 1) // 2)
+                ),
+                activation(),
+                nn.LayerNorm(filter_size),
+                nn.Dropout(dropout),
+                Transpose(
+                    nn.Conv1d(input_size, filter_size, kernel, padding=(kernel - 1) // 2)
+                ),
+                activation(),
+                nn.LayerNorm(filter_size),
+                nn.Dropout(dropout),
+                nn.Linear(filter_size, 1),
+            )
+        else:
+            self.layers = nn.Sequential(
+                Transpose(
+                    nn.Sequential(
+                        nn.Conv1d(input_size, input_size, kernel, padding=(kernel - 1) // 2),
+                        nn.Conv1d(input_size, filter_size, 1)
+                    )
+                ),
+                activation(),
+                nn.LayerNorm(filter_size),
+                nn.Dropout(dropout),
+                Transpose(
+                    nn.Sequential(
+                        nn.Conv1d(input_size, input_size, kernel, padding=(kernel - 1) // 2),
+                        nn.Conv1d(input_size, filter_size, 1)
+                    )
+                ),
+                activation(),
+                nn.LayerNorm(filter_size),
+                nn.Dropout(dropout),
+                nn.Linear(filter_size, 1),
+            )
 
     def forward(self, x, mask=None):
         out = self.layers(x)
@@ -293,30 +358,3 @@ class VariancePredictor(nn.Module):
         if mask is not None:
             out = out.masked_fill(mask, 0)
         return out
-
-
-if __name__ == "__main__":
-    x = torch.tensor(
-        [
-            [
-                [-1, 2, 3, 4, -5, 6],
-                [6, 5, 4, 3, 2, 1],
-                [-6, -5, -4, -3, -2, -1],
-            ],
-            [
-                [-11, 12, 13, 14, -15, 16],
-                [16, 15, 14, 13, 12, 11],
-                [0, 0, 0, 0, 0, 0],
-            ],
-        ]
-    )
-    durations = torch.tensor([[2, 3, 1], [1, 2, 0]])
-    print(
-        [torch.repeat_interleave(x[i], durations[i], dim=0) for i in range(x.shape[0])]
-    )
-    out = pad_sequence(
-        [torch.repeat_interleave(x[i], durations[i], dim=0) for i in range(x.shape[0])],
-        batch_first=True,
-        padding_value=0,
-    )
-    print(out)

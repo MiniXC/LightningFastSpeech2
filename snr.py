@@ -135,7 +135,7 @@ class WADA:
         ).squeeze(0)
         self.interpolate = interpolate
 
-    def snr(self, audio):
+    def _snr(self, audio):
         audio[audio < self.eps] = self.eps
         v1 = audio.mean()
         v2 = torch.log(audio).mean()
@@ -160,6 +160,13 @@ class WADA:
         noise_energy = energy / (1 + factor)  # Noise energy
         signal_energy = energy * factor / (1 + factor)  # Signal energy
         return 10 * np.log10(signal_energy / noise_energy)
+
+    def snr(self, audio):
+        wada = wada_snr(audio)
+        if not np.isnan(wada) and wada >= -20 and wada <= 100:
+            return wada
+        else:
+            return None
 
     def snr_windowed(self, audio, hop_length, win_length):
         snr_list = []

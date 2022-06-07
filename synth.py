@@ -23,7 +23,6 @@ from torch.utils.data import DataLoader
 from torch.multiprocessing import Pool
 from scipy.io.wavfile import write
 import pandas as pd
-from duration_converter import pdc
 
 config = configparser.ConfigParser()
 config.read("synth.ini")
@@ -76,8 +75,8 @@ def copy_reference(batch_id):
     augmentation = Compose(
         [
             AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.5),
-            #TimeStretch(min_rate=0.8, max_rate=1.25, p=0.5),
-            #PitchShift(min_semitones=-4, max_semitones=4, p=0.5),
+            # TimeStretch(min_rate=0.8, max_rate=1.25, p=0.5),
+            # PitchShift(min_semitones=-4, max_semitones=4, p=0.5),
         ]
     )
     speaker_str = batch_id.split("_")[0]
@@ -156,8 +155,8 @@ def synth(
     augmentation = Compose(
         [
             AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.5),
-            #TimeStretch(min_rate=0.8, max_rate=1.25, p=0.5),
-            #PitchShift(min_semitones=-4, max_semitones=4, p=0.5),
+            # TimeStretch(min_rate=0.8, max_rate=1.25, p=0.5),
+            # PitchShift(min_semitones=-4, max_semitones=4, p=0.5),
         ]
     )
 
@@ -187,7 +186,7 @@ def synth(
     if copy or resynthesise:
         loader = DataLoader(
             train_orig_p,
-            batch_size=100,
+            batch_size=6,
             collate_fn=train_orig_p.collate_fn,
         )
     else:
@@ -214,20 +213,25 @@ def synth(
                 for x in speaker_strs
             ]
             batch["speaker"] = torch.tensor([speaker_dict[x] for x in speaker_strs])
-            preds, src_mask, tgt_mask = model(batch["phones"], batch["speaker"])
+            preds, src_mask, tgt_mask = model(
+                {
+                    "phones": batch["phones"],
+                    "speaker": batch["speaker"],
+                }
+            )
+            old_tgt_mask = tgt_mask
             i = 0
-            pitch, energy, duration = preds[1], preds[2], preds[4]
+            pitch, energy, duration = (
+                preds["pitch"],
+                preds["energy"],
+                preds["duration_rounded"],
+            )
 
             if duration_augment is not None:
                 for p_i, phone_seq in enumerate(batch["phones"]):
                     phones = [model.train_ds.id2phone[int(p)] for p in phone_seq]
                     if duration_augment == "sample":
-                        duration[p_i] = torch.tensor(
-                            [
-                                d if "[PAD]" else pdc.sample(p)
-                                for p, d in zip(phones, duration[p_i])
-                            ]
-                        )
+                        raise NotImplementedError()
 
             if duration_diversity is not None:
                 duration = duration.float().cpu()
@@ -287,8 +291,17 @@ def synth(
                 ]
             ):
                 preds, src_mask, tgt_mask = model(
-                    batch["phones"], batch["speaker"], pitch, energy, duration
+                    {
+                        "phones": batch["phones"],
+                        "speaker": batch["speaker"],
+                        "pitch": pitch,
+                        "energy": energy,
+                        "duration": duration,
+                    }
                 )
+
+            if resynthesise:
+                preds, src_mask, tgt_mask = model(batch)
 
             for i in range(len(batch["speaker"])):
                 if not resynthesise:

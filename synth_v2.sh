@@ -1,5 +1,11 @@
+# FLOW
+pdm run python synth.py ../Data/Synthesised/achelous/baseline 10
+
+# CONDITIONAL
+# pdm run python synth.py ../Data/Synthesised/cassandra/baseline 10
+
 # RESYNTHESIS
-pdm run python synth.py ../Data/Synthesised/dolos/baseline 10
+#pdm run python synth.py ../Data/Synthesised/dolos/baseline 10 --resynthesise
 
 # SNR
 # pdm run python synth.py ../Data/Synthesised/homados/topline_duration 10 --oracle duration

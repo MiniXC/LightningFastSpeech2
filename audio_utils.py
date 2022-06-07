@@ -31,6 +31,7 @@ def smooth(y, box_pts):
     y_smooth = np.convolve(y, box, mode="same")
     return y_smooth
 
+
 def remove_outliers(values):
     values = np.array(values)
     p25 = np.percentile(values, 25)
@@ -40,6 +41,7 @@ def remove_outliers(values):
     normal_indices = np.logical_and(values > lower, values < upper)
     values[~normal_indices] = 0
     return values
+
 
 def get_alignment(tier, sampling_rate, hop_length):
     sil_phones = ["sil", "sp", "spn", ""]
@@ -66,6 +68,8 @@ def get_alignment(tier, sampling_rate, hop_length):
         # Trim leading silences
         if phones == []:
             if p in sil_phones:
+                # if p == "spn":
+                #     return None
                 continue
             else:
                 start_time = s
@@ -76,6 +80,8 @@ def get_alignment(tier, sampling_rate, hop_length):
             end_time = e
             end_idx = len(phones)
         else:
+            # if p == "spn":
+            #     return None
             # For silent phones
             phones.append("sil")
             end_time = e

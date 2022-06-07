@@ -12,6 +12,8 @@ import multiprocessing
 import wandb
 from synthesiser import Synthesiser
 from postnet import PostNet
+import pandas as pd
+from scipy.stats import ks_2samp
 
 from dataset import ProcessedDataset, UnprocessedDataset
 
@@ -28,6 +30,7 @@ class FastSpeech2Loss(nn.Module):
         self.l1_loss = nn.L1Loss()
         self.postnet = postnet
         self.use_snr = use_snr
+        self.stochastic = config["model"].getboolean("duration_stochastic")
 
     @staticmethod
     def get_loss(pred, truth, loss, mask, unsqueeze=False):
@@ -93,9 +96,12 @@ class FastSpeech2Loss(nn.Module):
                 snr_pred, snr_tgt, self.mse_loss, pitch_energy_mask
             )
 
-        duration_loss = FastSpeech2Loss.get_loss(
-            duration_pred, duration_tgt, self.mse_loss, src_mask
-        )
+        if not self.stochastic:
+            duration_loss = FastSpeech2Loss.get_loss(
+                duration_pred, duration_tgt, self.mse_loss, src_mask
+            )
+        else:
+            duration_loss = torch.sum(duration_pred.float()) / 6000
 
         total_loss = mel_loss + pitch_loss + energy_loss + duration_loss
 
@@ -133,6 +139,7 @@ class FastSpeech2(pl.LightningModule):
         self.epochs = config["train"].getint("epochs")
         self.has_dvector = config["model"].getboolean("dvector")
         self.use_snr = config["model"].getboolean("snr")
+        self.conditioned = config["model"].getboolean("conditioned")
         train_path = config["train"].get("train_path")
         valid_path = config["train"].get("valid_path")
         augment_duration = config["train"].getfloat("augment_duration")
@@ -147,6 +154,7 @@ class FastSpeech2(pl.LightningModule):
                     dvector=self.has_dvector,
                     augment_duration=augment_duration,
                     use_snr=self.use_snr,
+                    conditioned=self.conditioned,
                 )
                 for x in train_path.split("+")
             ]
@@ -163,6 +171,8 @@ class FastSpeech2(pl.LightningModule):
                 dvector=self.has_dvector,
                 augment_duration=augment_duration,
                 use_snr=self.use_snr,
+                #max_entries=10_000,
+                conditioned=self.conditioned,
             )
             self.train_ds = ProcessedDataset(
                 unprocessed_ds=train_ud,
@@ -175,6 +185,8 @@ class FastSpeech2(pl.LightningModule):
             dvector=self.has_dvector,
             augment_duration=0,
             use_snr=self.use_snr,
+            #max_entries=500,
+            conditioned=self.conditioned,
         )
         self.valid_ds = ProcessedDataset(
             unprocessed_ds=valid_ud,
@@ -260,25 +272,66 @@ class FastSpeech2(pl.LightningModule):
 
         self.is_wandb_init = False
 
-    def forward(self, targets):
+        if self.conditioned:
+            nbins = 256
+            self.pitch_bins = nn.Parameter(
+                torch.linspace(stats["cond_pitch_min"], stats["cond_pitch_max"], nbins - 1),
+                requires_grad=False,
+            )
+            self.condition_pitch_embedding = nn.Embedding(
+                nbins,
+                encoder_hidden,
+            )
+            self.energy_bins = nn.Parameter(
+                torch.linspace(stats["cond_energy_min"], stats["cond_energy_max"], nbins - 1),
+                requires_grad=False,
+            )
+            self.condition_energy_embedding = nn.Embedding(
+                nbins,
+                encoder_hidden,
+            )
+            self.duration_bins = nn.Parameter(
+                torch.linspace(stats["cond_duration_min"], stats["cond_duration_max"], nbins - 1),
+                requires_grad=False,
+            )
+            self.condition_duration_embedding = nn.Embedding(
+                nbins,
+                encoder_hidden,
+            )
+            if self.use_snr:
+                self.snr_bins = nn.Parameter(
+                    torch.linspace(-1.1, 1.1, nbins - 1),
+                    requires_grad=False,
+                )
+                self.condition_snr_embedding = nn.Embedding(
+                    nbins,
+                    encoder_hidden,
+                )
+
+    def get_conditioned(self, targets):
+        pitch_embedding = self.condition_pitch_embedding(torch.bucketize(targets["cond_pitch"], self.pitch_bins))
+        energy_embedding = self.condition_energy_embedding(torch.bucketize(targets["cond_energy"], self.energy_bins))
+        duration_embedding = self.condition_duration_embedding(torch.bucketize(targets["cond_duration"], self.duration_bins))
+        if self.use_snr:
+            snr_embedding = self.condition_snr_embedding(torch.bucketize(targets["cond_snr"], self.snr_bins))
+            return pitch_embedding + energy_embedding + duration_embedding + snr_embedding
+        else:
+            return pitch_embedding + energy_embedding + duration_embedding
+
+    def forward(self, targets, inference=False):
         phones = targets["phones"].to(self.device)
         speakers = targets["speaker"].to(self.device)
-        if targets["pitch"] is not None:
-            pitch = targets["pitch"].to(self.device)
-        else:
-            pitch = None
-        if targets["energy"] is not None:
-            energy = targets["energy"].to(self.device)
-        else:
-            energy = None
-        if targets["duration"] is not None:
-            duration = targets["duration"].to(self.device)
-        else:
-            duration = None
-        if targets["snr"] is not None:
-            snr = targets["snr"].to(self.device)
-        else:
-            snr = None
+
+        def get_key(key):
+            if not inference and key in targets and targets[key] is not None:
+                return targets[key].to(self.device)
+            else:
+                return None
+
+        pitch = get_key("pitch")
+        energy = get_key("energy")
+        duration = get_key("duration")
+        snr = get_key("snr")
 
         src_mask = phones.eq(0)
         output = self.phone_embedding(phones)
@@ -291,11 +344,19 @@ class FastSpeech2(pl.LightningModule):
                 .repeat_interleave(phones.shape[1], dim=1)
             )
         else:
-            speaker_out = speakers.reshape(-1, 1, output.shape[-1]).repeat_interleave(
-                phones.shape[1], dim=1
+            speaker_out = (
+                speakers.reshape(-1, 1, output.shape[-1])
+                .repeat_interleave(phones.shape[1], dim=1)
+                .to(self.device)
             )
         output = output + speaker_out
 
+        # if self.conditioned:
+        #     cond = self.get_conditioned(targets)
+        #     cond = cond.reshape(-1, 1, output.shape[-1])
+        #     cond = cond.repeat_interleave(phones.shape[1], dim=1)
+        #     output = output + cond
+        
         output = self.positional_encoding(output)
         output = self.encoder(output, src_key_padding_mask=src_mask)
 
@@ -306,15 +367,28 @@ class FastSpeech2(pl.LightningModule):
                 .repeat_interleave(phones.shape[1], dim=1)
             )
         else:
-            speaker_out2 = speakers.reshape(-1, 1, output.shape[-1]).repeat_interleave(
-                phones.shape[1], dim=1
+            speaker_out2 = (
+                speakers.reshape(-1, 1, output.shape[-1])
+                .repeat_interleave(phones.shape[1], dim=1)
+                .to(self.device)
             )
         output = output + speaker_out2
+
+        if self.conditioned:
+            cond = self.get_conditioned(targets)
+            cond = cond.reshape(-1, 1, output.shape[-1])
+            cond = cond.repeat_interleave(phones.shape[1], dim=1)
+            output = output + cond
         # speaker embedding addition was here
 
-        variance_out = self.variance_adaptor(
-            output, src_mask, pitch, energy, duration, snr, self.tgt_max_length
-        )
+        if not self.has_dvector:
+            variance_out = self.variance_adaptor(
+                output, src_mask, pitch, energy, duration, snr, self.tgt_max_length, speaker_out2
+            )
+        else:
+            variance_out = self.variance_adaptor(
+                output, src_mask, pitch, energy, duration, snr, self.tgt_max_length, speaker_out2
+            )
         output = variance_out["x"]
         output = self.positional_encoding(output)
         output = self.decoder(output, src_key_padding_mask=variance_out["tgt_mask"])
@@ -370,6 +444,7 @@ class FastSpeech2(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         preds, src_mask, tgt_mask = self(batch)
+        old_tgt_mask = tgt_mask
         loss = self.loss(preds, batch, src_mask, tgt_mask, self.tgt_max_length)
         log_dict = {
             "eval/total_loss": loss[0].item(),
@@ -387,8 +462,38 @@ class FastSpeech2(pl.LightningModule):
             batch_size=self.batch_size,
             sync_dist=True,
         )
+
         if batch_idx == 0:
             self.eval_log_data = []
+            self.phone_dict = {
+                "phone": [],
+                "variance": [],  # can be duration, pitch, energy, snr
+                "real_val": [],
+                "synth_val": [],
+            }
+
+        preds, src_mask, tgt_mask = self(batch, inference=True)
+
+        # get the real and synthesised values for each phone and add to phone_dict
+        for i in range(len(batch["phones"])):
+            phones = batch["phones"][i]
+            for j, phone in enumerate(phones):
+                variances = ["duration", "pitch", "energy"]
+                if self.use_snr:
+                    variances.append("snr")
+                for var in variances:
+                    self.phone_dict["phone"].append(
+                        self.train_ds.id2phone[phone.item()]
+                    )
+                    self.phone_dict["variance"].append(var)
+                    self.phone_dict["real_val"].append(batch[var][i][j].item())
+                    if var == "duration":
+                        var = "log_duration"
+                        synth_val = torch.round(torch.exp(preds[var][i][j]) - 1).item()
+                    else:
+                        synth_val = preds[var][i][j].item()
+                    self.phone_dict["synth_val"].append(synth_val)
+
         if (
             self.eval_log_data is not None
             and len(self.eval_log_data) < 10
@@ -398,19 +503,14 @@ class FastSpeech2(pl.LightningModule):
                 wandb.init(project="LightningFastSpeech", group="DDP")
                 self.is_wandb_init = True
             old_src_mask = src_mask
-            old_tgt_mask = tgt_mask
-            preds, src_mask, tgt_mask = self(batch)
-                # mels, pitchs, energys, _, durations, postnet_mels, final_mels = [
-                #     pred.cpu() if pred is not None else None for pred in preds
-                # ]
-            mels = preds['mel'].cpu()
-            pitchs = preds['pitch'].cpu()
-            energys = preds['energy'].cpu()
-            durations = preds['duration_rounded'].cpu()
-            postnet_mels = preds['postnet_output'].cpu()
-            final_mels = preds['final_output'].cpu()
+            # no teacher forcing here
+            mels = preds["mel"].cpu()
+            pitchs = preds["pitch"].cpu()
+            energys = preds["energy"].cpu()
+            durations = preds["duration_rounded"].cpu()
+            final_mels = preds["final_output"].cpu()
             if self.use_snr:
-                snrs = preds['snr'].cpu()
+                snrs = preds["snr"].cpu()
             for i in range(len(mels)):
                 if len(self.eval_log_data) >= 10:
                     break
@@ -436,8 +536,8 @@ class FastSpeech2(pl.LightningModule):
                     "phones": batch["phones"][i],
                 }
                 if self.use_snr:
-                    pred_dict['snr'] = snrs[i]
-                    true_dict['snr'] = batch['snr'].cpu()[i]
+                    pred_dict["snr"] = snrs[i]
+                    true_dict["snr"] = batch["snr"].cpu()[i]
                 pred_fig = self.valid_ds.plot(pred_dict)
                 true_fig = self.valid_ds.plot(true_dict)
                 pred_audio = self.synth(mel.to("cuda:0"))[0]
@@ -451,22 +551,76 @@ class FastSpeech2(pl.LightningModule):
                         wandb.Audio(true_audio, sample_rate=22050),
                     ]
                 )
-            if len(self.eval_log_data) >= 10:
-                table = wandb.Table(
-                    data=self.eval_log_data,
-                    columns=[
-                        "text",
-                        "predicted_mel",
-                        "true_mel",
-                        "predicted_audio",
-                        "true_audio",
-                    ],
-                )
-                wandb.log({"examples": table})
-                self.eval_log_data = None
+
+    def validation_epoch_end(self, validation_step_outputs):
+        if self.trainer.is_global_zero:
+            table = wandb.Table(
+                data=self.eval_log_data,
+                columns=[
+                    "text",
+                    "predicted_mel",
+                    "true_mel",
+                    "predicted_audio",
+                    "true_audio",
+                ],
+            )
+            wandb.log({"examples": table})
+            self.eval_log_data = None
+
+            df = pd.DataFrame(self.phone_dict)
+            table_dict = {
+                "phone": [],
+                "variance": [],
+                "mean_real": [],
+                "mean_synth": [],
+                "std_real": [],
+                "std_synth": [],
+                "MAE": [],
+                "count": [],
+                "ks_stat": [],
+                "ks_pval": [],
+            }
+            for phone in df["phone"].unique():
+                phone_df = df[df["phone"] == phone]
+                for var in phone_df["variance"].unique():
+                    var_df = phone_df[phone_df["variance"] == var]
+                    table_dict["phone"].append(phone)
+                    table_dict["variance"].append(var)
+                    table_dict["mean_real"].append(var_df["real_val"].mean())
+                    table_dict["mean_synth"].append(var_df["synth_val"].mean())
+                    table_dict["std_real"].append(var_df["real_val"].std())
+                    table_dict["std_synth"].append(var_df["synth_val"].std())
+                    table_dict["MAE"].append(
+                        (var_df["real_val"] - var_df["synth_val"]).abs().mean()
+                    )
+                    table_dict["count"].append(var_df.shape[0])
+                    ks, pval = ks_2samp(var_df["real_val"].values, var_df["synth_val"].values)
+                    table_dict["ks_stat"].append(ks)
+                    table_dict["ks_pval"].append(pval)
+
+            metric_df = pd.DataFrame(table_dict)
+            table = wandb.Table(dataframe=metric_df)
+            wandb.log({"phone metrics": table})
+
+            variances = ["duration", "pitch", "energy"]
+            if self.use_snr:
+                variances.append("snr")
+
+            for var in variances:
+                var_df = metric_df[metric_df["variance"] == var]
+                var_df = var_df[var_df["phone"] != "[SILENCE]"]
+                wandb.log({f"eval/{var}_MAE": var_df["MAE"].mean()})
+                wandb.log({f"eval/{var}_KS": var_df["ks_stat"].mean()})
 
     def configure_optimizers(self):
-        self.optimizer = torch.optim.AdamW(self.parameters(), self.lr)
+        # "betas": [0.8, 0.99], "eps": 1e-9, "weight_decay": 0.01}
+        self.optimizer = torch.optim.AdamW(
+            self.parameters(),
+            self.lr,
+            # betas=[0.8, 0.99],
+            # eps=1e-9,
+            # weight_decay=0.01
+        )
 
         self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
             self.optimizer,
@@ -474,6 +628,10 @@ class FastSpeech2(pl.LightningModule):
             steps_per_epoch=len(self.train_ds) // self.batch_size,
             epochs=self.epochs,
         )
+
+        # self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        #     self.optimizer, self.epochs
+        # )
 
         sched = {
             "scheduler": self.scheduler,

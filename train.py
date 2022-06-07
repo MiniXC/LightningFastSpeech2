@@ -14,7 +14,7 @@ config.read("config.ini")
 
 os.environ["WANDB_MODE"] = config["train"].get("wandb_mode")
 
-wandb_logger = WandbLogger(project="LightningFastSpeech", group="DDP", log_model="all")
+wandb_logger = WandbLogger(project="LightningFastSpeech", group="DDP")
 
 if __name__ == "__main__":
     epochs = config["train"].getint("epochs")
