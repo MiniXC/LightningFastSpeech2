@@ -1,28 +1,13 @@
 import torch
 import numpy as np
-from librosa.filters import mel as librosa_mel
-from librosa.util import pad_center, tiny
-from scipy.signal import get_window
 import torch.nn.functional as F
-
-# TODO: greaty simplify this by porting it to nnAudio or similar
 
 
 def dynamic_range_compression(x, C=1, clip_val=1e-7):
-    """
-    PARAMS
-    ------
-    C: compression factor
-    """
     return torch.log(torch.clamp(x, min=clip_val) * C)
 
 
 def dynamic_range_decompression(x, C=1):
-    """
-    PARAMS
-    ------
-    C: compression factor used to compress
-    """
     return torch.exp(x) / C
 
 
@@ -68,8 +53,6 @@ def get_alignment(tier, sampling_rate, hop_length):
         # Trim leading silences
         if phones == []:
             if p in sil_phones:
-                # if p == "spn":
-                #     return None
                 continue
             else:
                 start_time = s
@@ -80,8 +63,6 @@ def get_alignment(tier, sampling_rate, hop_length):
             end_time = e
             end_idx = len(phones)
         else:
-            # if p == "spn":
-            #     return None
             # For silent phones
             phones.append("sil")
             end_time = e

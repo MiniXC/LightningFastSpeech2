@@ -1,152 +1,136 @@
-from audioop import mul
 import configparser
 import os
-
 import json
 from pathlib import Path
-from PIL import Image
 import io
-import matplotlib.pyplot as plt
-import matplotlib
-import scipy
-import seaborn as sns
-import torchaudio
 from glob import glob
-from phones.convert import Converter
-from phones import PhoneCollection
-from scipy import signal
-
+import multiprocessing
+from random import Random
 
 import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
+from tqdm.contrib.concurrent import process_map, thread_map
 from pandarallel import pandarallel
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
-from tqdm.contrib.concurrent import process_map, thread_map
-import torchaudio.transforms as T
+import torchaudio
+import torchaudio.transforms as AT
 import torchvision.transforms as VT
 import torchaudio.functional as F
 import torch
 import tgt
 import pyworld as pw
-from torchaudio import transforms
-import multiprocessing
-from random import Random
-from copy import deepcopy
-from wav2mel.wav2mel import Wav2Mel
-from time import time
-from pathlib import Path
-from snr import WADA
+from phones.convert import Converter
+from phones import PhoneCollection
+import matplotlib.pyplot as plt
+import matplotlib
+import scipy
+import seaborn as sns
+from scipy import signal
+from PIL import Image
+from librosa.filters import mel as librosa_mel
 
-from multiprocessing import Pool, get_context
-
-from ipa_utils import get_phone_vecs
+import third_party.dvectors
 from audio_utils import (
     dynamic_range_compression,
     remove_outliers,
     smooth,
     get_alignment,
 )
-
-from librosa.filters import mel as librosa_mel
-
-config = configparser.ConfigParser()
-config.read("config.ini")
+from snr import WADA
 
 pandarallel.initialize(progress_bar=True)
 tqdm.pandas()
 
 
-class Timer:
-    def __init__(self, name):
-        self.name = name
-        self.duration = 0
-
-    def __enter__(self):
-        self.start = time()
-
-    def __exit__(self, type, value, traceback):
-        self.duration = time() - self.start
-        print(f"{self.duration} - {self.name}")
-
-
-# TODO: convert to pl DataModules
-class UnprocessedDataset(Dataset):
+class UnprocessedTTSDataset(Dataset):
     def __init__(
         self,
-        audio_directory,
-        alignment_directory=None,
+        audio_directory, # can be several as well
+        alignment_directory=None, # can be several as well
         max_entries=None,
-        dvector=False,
-        dvector_mean=True,
-        treshold=0.5,
-        treshold_max=32,
-        no_alignments=False,
+        speaker_type="dvector",  # "none", "id", "dvector"
+        min_length=0.5,
+        max_length=32,
         augment_duration=0.1,
-        use_snr=False,
-        conditioned=False,
+        variances=["pitch", "energy", "snr"],
+        variance_levels=["phone", "phone", "phone"],
+        priors=["pitch", "energy", "snr", "duration"],
+        sampling_rate=22050,
+        n_fft=1024,
+        win_length=1024,
+        hop_length=256,
+        n_mels=80,
+        fmin=0,
+        fmax=8000,
+        pitch_quality=0.25,
+        remove_outliers=False,
+        source_phoneset="arpabet",
+        shuffle_seed=42,
     ):
         super().__init__()
 
-        self.augment_duration = augment_duration
-        self.use_snr = use_snr
-
-        self.dvector_mean = dvector_mean
-
         self.dir = audio_directory
-
-        self.treshold = treshold
-        self.treshold_max = treshold_max
-
         if alignment_directory is None:
             alignment_directory = audio_directory
 
-        self.sampling_rate = config["dataset"].getint("sampling_rate")
-        self.n_fft = config["dataset"].getint("n_fft")
-        self.win_length = config["dataset"].getint("win_length")
-        self.hop_length = config["dataset"].getint("hop_length")
-        self.n_mels = config["dataset"].getint("n_mels")
-        self.f_min = config["dataset"].getint("f_min")
-        self.f_max = config["dataset"].getint("f_max")
-        self.dio_speed = config["dataset"].getint("dio_speed")
-        self.pitch_smooth = config["dataset"].getint("pitch_smooth")
-        self.remove_outliers = config["dataset"].getboolean("remove_outliers")
-        self.pitch_type = config["dataset"].get("pitch_type")
+        # HPARAMS
+        self.min_length = min_length
+        self.max_length = max_length
+        self.max_frames = int(np.ceil(sampling_rate * max_length / hop_length))
+        self.augment_duration = augment_duration
+        self.speaker_type = speaker_type
+        self.variances = variances
+        self.variance_levels = variance_levels
+        self.priors = priors
+        self.sampling_rate = sampling_rate
+        self.n_fft = n_fft
+        self.win_length = win_length
+        self.hop_length = hop_length
+        self.n_mels = n_mels
+        self.fmin = fmin
+        self.fmax = fmax
+        self.dio_speed = int(np.round(1/pitch_quality))
+        self.remove_outliers = remove_outliers
+        self.source_phoneset = source_phoneset
 
-        self.target_lang = config["dataset"].get("target_lang")
-        if self.target_lang == "None":
-            self.target_lang = None
-        self.remove_stress = config["dataset"].getboolean("remove_stress")
-        self.source_phoneset = config["dataset"].get("source_phoneset")
+        # PHONES
+        self.phone_converter = Converter()
+        self.phone_collection = PhoneCollection()
 
-        self.converter = Converter()
-        self.pc = PhoneCollection()
-
-        self.has_dvector = dvector
-
+        # TODO: add this upstream
         self.phone_cache = {}
 
-        self.no_alignments = no_alignments
-        if not no_alignments:
-            self.grid_files = {
-                Path(file).name.replace(".TextGrid", ".wav"): file
-                for file in glob(
-                    os.path.join(alignment_directory, "**/*.TextGrid"), recursive=True
-                )
-            }
+        # TEXTGRID LOADING
+        if not isinstance(alignment_directory, list):
+            alignment_directory = [alignment_directory]
+        grid_files = {}
+        for ali_dir in alignment_directory:
+            for file in glob(
+                os.path.join(ali_dir, "**/*.TextGrid"),
+                recursive=True
+            ):
+                grid_files[Path(file).name.replace(".TextGrid", ".wav")] = file
 
-            self.grid_missing = 0
-
+        # AUDIO LOADING
+        if not isinstance(audio_directory, list):
+            audio_directory = [audio_directory]
+        entry_list = []
+        for aud_dir in audio_directory:
+            entry_list += list(glob(os.path.join(audio_directory, "**", "*.wav")))
         if max_entries is not None:
-            entry_list = list(glob(os.path.join(audio_directory, "**", "*.wav")))[
-                :max_entries
-            ]
-        else:
-            entry_list = list(glob(os.path.join(audio_directory, "**", "*.wav")))
+            entry_list[:max_entries]
+        Random(shuffle_seed).shuffle(entry_list)
 
-        Random(42).shuffle(entry_list)
-
+        # DATAFRAME
+        self.entry_stats = {
+            "missing_textgrids": 0,
+            "empty_textgrids": 0,
+            "too_short": 0,
+            "too_long": 0,
+            "bad_transcriptions": 0,
+        }
         entries = [
             entry
             for entry in process_map(
@@ -158,9 +142,9 @@ class UnprocessedDataset(Dataset):
             )
             if entry is not None
         ]
-
-        if not no_alignments:
-            print(f"{self.grid_missing} textgrids not found")
+        print("data loading stats:")
+        for key in self.entry_stats:
+            print(f"{key}: {self.entry_stats[key]}")
         self.data = pd.DataFrame(
             entries,
             columns=[
@@ -176,15 +160,15 @@ class UnprocessedDataset(Dataset):
         )
         del entries
 
-        if self.has_dvector:
+        # DVECTORS
+        if self.speaker_type == "dvector":
+            self.create_dvectors()
             dvecs = []
             for i, row in self.data.iterrows():
-                if not self.dvector_mean:
-                    dvecs.append(row["audio"].replace(".wav", ".npy"))
-                else:
-                    dvecs.append(Path(row["audio"]).parent / "speaker.npy")
+                dvecs.append(Path(row["audio"]).parent / "speaker.npy")
             self.data["dvector"] = dvecs
 
+        # MEL SPECTROGRAM
         self.mel_spectrogram = T.Spectrogram(
             n_fft=self.n_fft,
             win_length=self.win_length,
@@ -206,19 +190,97 @@ class UnprocessedDataset(Dataset):
         )
         self.mel_basis = torch.from_numpy(self.mel_basis).float()
 
-        if self.has_dvector:
-            self.create_dvectors()
+        # SNR
+        if "snr" in self.variances:
+            self.wada = WADA()
 
-        self.wada = WADA()
+    def __len__(self):
+        return len(self.data)
 
-        self.conditioned = conditioned
+    def __getitem__(self, idx):
+        row = self.data.iloc[idx]
+        
+        # LOAD AUDIO
+        audio, sampling_rate = torchaudio.load(row["audio"])
+        if sampling_rate != self.sampling_rate:
+            transform = AT.Resample(sampling_rate, self.sampling_rate)
+            audio = transform(audio)
+        start = int(self.sampling_rate * row["start"])
+        end = int(self.sampling_rate * row["end"])
+        audio = audio[0][start:end]
+        audio = audio / torch.max(torch.abs(audio))
+
+        # MEL SPECTROGRAM
+        mel = self.mel_spectrogram(audio.unsqueeze(0))
+        mel = torch.sqrt(mel[0])
+        mel = torch.matmul(self.mel_basis, mel)
+        mel = dynamic_range_compression(mel).cpu()
+
+        # VARIANCES
+        variances = {}
+        if "pitch" in self.variances:
+            pitch, t = pw.dio(
+                audio.cpu().numpy().astype(np.float64),
+                self.sampling_rate,
+                frame_period=self.hop_length / self.sampling_rate * 1000,
+                speed=self.dio_speed,
+            )
+            variances["pitch"] = pw.stonemask(
+                audio.cpu().numpy().astype(np.float64), pitch, t, self.sampling_rate
+            )
+            if self.remove_outliers:
+                variances["pitch"] = remove_outliers(variances["pitch"])
+        if "snr" in self.variances:
+            variances["snr"] = np.clip(
+                (self.wada.snr_windowed(audio, self.hop_length, self.win_length) - 40)
+                / 60,
+                -1.1,
+                1.1,
+            )
+            if self.remove_outliers:
+                variances["snr"] = remove_outliers(variances["snr"])
+        if "energy" in self.variances:
+            variances["energy"] = torch.norm(mel, dim=0).cpu()
+            if self.remove_outliers:
+                variances["energy"] = remove_outliers(variances["energy"])
+
+        # DURATIONS
+        duration = row["duration"]
+        if self.augment_duration > 0:
+            duration = self._augment_duration(duration)
+        dur_sum = sum(duration)
+
+        # PRIORS
+        priors = {}
+        silence_mask = row["phones"] == "[SILENCE]"
+        for var in self.priors:
+            priors[var] = np.mean(result[var][~silence_mask])
+
+        # RESULT
+        result = {
+            "mel": np.array(mel.T)[:dur_sum],
+            "variances": {},
+            "priors": {},
+            "speaker": {},
+        }
+        for var in self.variances:
+            result["variances"][var] = variances[var]
+        for var in self.priors:
+            result["priors"][var] = priors[var]
+        result["speaker"]["id"] = row["speaker"]
+        if self.speaker_type == "dvector":
+            result["speaker"]["dvector"] = row["dvector"]
+
+        return result
 
     def create_dvectors(self):
-        wav2mel = Wav2Mel()
+        wav2mel = dvectors.wav2mel.Wav2Mel()
         dvector_gen = torch.jit.load("dvector/dvector.pt").eval()
 
         for idx, row in tqdm(
-            self.data.iterrows(), desc="creating dvectors", total=len(self.data)
+            self.data.iterrows(),
+            desc="creating/loading utt. dvectors (this only has to be done once)",
+            total=len(self.data),
         ):
             dvec_path = Path(row["audio"].replace(".wav", ".npy"))
             if not dvec_path.exists():
@@ -229,16 +291,16 @@ class UnprocessedDataset(Dataset):
                 audio = audio / torch.max(torch.abs(audio))  # might not be necessary
 
                 if 16_000 != self.sampling_rate:
-                    transform = transforms.Resample(sampling_rate, self.sampling_rate)
+                    transform = AT.Resample(sampling_rate, self.sampling_rate)
                     audio = transform(audio)
                 dvector_mel = wav2mel(torch.unsqueeze(audio, 0).cpu(), 16_000)
                 dvec_result = dvector_gen.embed_utterance(dvector_mel).detach()
-
                 np.save(dvec_path, dvec_result.numpy())
 
         speaker_dvecs = []
         for speaker in tqdm(
-            self.data["speaker"].unique(), desc="creating speaker dvectors"
+            self.data["speaker"].unique(), 
+            desc="creating/loading speaker dvectors (this only has to be done once)"
         ):
             speaker_df = self.data[self.data["speaker"] == speaker]
             speaker_path = Path(speaker_df.iloc[0]["audio"]).parent / "speaker.npy"
@@ -253,65 +315,55 @@ class UnprocessedDataset(Dataset):
         extract_speaker = lambda x: x.split("/")[-2]
         audio_name = Path(audio_file).name
 
-        if not self.no_alignments:
-            try:
-                grid_file = self.grid_files[audio_name]
-                textgrid = tgt.io.read_textgrid(grid_file)
-            except KeyError:
-                self.grid_missing += 1
-                return None
-            ali = get_alignment(
-                textgrid.get_tier_by_name("phones"),
-                self.sampling_rate,
-                self.hop_length,
-            )
-            if ali is None:
-                return None
+        try:
+            grid_file = self.grid_files[audio_name]
+            textgrid = tgt.io.read_textgrid(grid_file)
+        except KeyError:
+            self.entry_stats["missing_textgrids"] += 1
+            return None
+        ali = get_alignment(
+            textgrid.get_tier_by_name("phones"),
+            self.sampling_rate,
+            self.hop_length,
+        )
 
-            phones, durations, start, end = ali
+        phones, durations, start, end = ali
 
-            if end - start < self.treshold or end - start > self.treshold_max:
-                return None
+        if end - start < self.min_length:
+            self.entry_stats["too_short"] += 1
+            return None
+        if end - start > self.max_length:
+            self.entry_stats["too_long"] += 1
+            return None
 
-            for i, phone in enumerate(phones):
-                add_stress = False
-                phone.replace("ˌ", "")
-                if self.remove_stress:
-                    r_phone = phone.replace("0", "").replace("1", "")
-                else:
-                    # TODO: this does not work properly yet, we'd need the syllable boundary
-                    r_phone = phone.replace("0", "").replace("1", "ˈ")
-                    if "ˈ" in r_phone:
-                        add_stress = True
-                if len(r_phone) > 0:
-                    phone = r_phone
-                if phone not in ["spn", "sil"]:
-                    o_phone = phone
-                    if o_phone not in self.phone_cache:
-                        phone = self.converter(
-                            phone, self.source_phoneset, lang=self.target_lang
-                        )[0]
-                        self.phone_cache[o_phone] = phone
-                    phone = self.phone_cache[o_phone]
-                    if add_stress:
-                        phone = "ˈ" + phone
-                else:
-                    phone = "[SILENCE]"
-                phones[i] = phone
-            if start >= end:
-                return None
-        else:
-            phones = None
-            durations = None
-            start = 0
-            audio, sampling_rate = torchaudio.load(audio_file)
-            end = len(audio[0]) / sampling_rate
+        for i, phone in enumerate(phones):
+            add_stress = False
+            phone.replace("ˌ", "")
+            r_phone = phone.replace("0", "").replace("1", "")
+            if len(r_phone) > 0:
+                phone = r_phone
+            if phone not in ["spn", "sil"]:
+                o_phone = phone
+                if o_phone not in self.phone_cache:
+                    phone = self.converter(
+                        phone, self.source_phoneset, lang=self.target_lang
+                    )[0]
+                    self.phone_cache[o_phone] = phone
+                phone = self.phone_cache[o_phone]
+                if add_stress:
+                    phone = "ˈ" + phone
+            else:
+                phone = "[SILENCE]"
+            phones[i] = phone
+        if start >= end:
+            self.entry_stats["empty_textgrids"] += 1
+            return None
 
         try:
             with open(audio_file.replace(".wav", ".lab"), "r") as f:
                 transcription = f.read()
         except UnicodeDecodeError:
-            print("failed to read")
+            self.entry_stats["bad_transcriptions"] += 1
             return None
         return (
             phones,
@@ -324,116 +376,26 @@ class UnprocessedDataset(Dataset):
             audio_name,
         )
 
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        row = self.data.iloc[idx]
-        audio, sampling_rate = torchaudio.load(row["audio"])
-        if sampling_rate != self.sampling_rate:
-            transform = transforms.Resample(sampling_rate, self.sampling_rate)
-            audio = transform(audio)
-        start = int(self.sampling_rate * row["start"])
-        end = int(self.sampling_rate * row["end"])
-
-        audio = audio[0][start:end]
-        audio = audio / torch.max(torch.abs(audio))
-
-        if self.use_snr:
-            snrs = np.clip(
-                (self.wada.snr_windowed(audio, self.hop_length, self.win_length) - 40)
-                / 60,
-                -1.1,
-                1.1,
-            )
-
-        mel = self.mel_spectrogram(audio.unsqueeze(0))
-        mel = torch.sqrt(mel[0])
-        energy = torch.norm(mel, dim=0).cpu()
-
-        mel = torch.matmul(self.mel_basis, mel)
-        mel = dynamic_range_compression(mel).cpu()
-
-        if str(self.pitch_type) == "pyworld":
-            pitch, t = pw.dio(
-                audio.cpu().numpy().astype(np.float64),
-                self.sampling_rate,
-                frame_period=self.hop_length / self.sampling_rate * 1000,
-                speed=self.dio_speed,
-            )
-            pitch = pw.stonemask(
-                audio.cpu().numpy().astype(np.float64), pitch, t, self.sampling_rate
-            )
-        else:
-            pitch = F.compute_kaldi_pitch(
-                audio.unsqueeze(0),
-                self.sampling_rate,
-                self.win_length / self.sampling_rate * 1000,
-                self.hop_length / self.sampling_rate * 1000,
-            )[..., 0][0]
-
-        if self.remove_outliers:
-            pitch = remove_outliers(pitch)
-            energy = remove_outliers(energy)
-        if self.pitch_smooth > 1:
-            pitch = smooth(pitch, self.pitch_smooth)
-
-        duration = row["duration"]
-        if self.augment_duration > 0:
-            truth_vals = np.random.uniform(size=len(duration)) >= self.augment_duration
-            rand_vals = np.random.normal(0, 1, size=len(duration)).round()
-            rand_vals[truth_vals] = 0
-            rand_vals_shifted = rand_vals[:-1] * -1
-            rand_vals[1:] += rand_vals_shifted
-            rand_vals = rand_vals.astype(int)
-            rand_vals[(duration + rand_vals) < 0] = 0
-            if rand_vals.sum() != 0:
-                rand_vals[-1] -= rand_vals.sum()
-                i = -1
-                while True:
-                    if rand_vals[i] < 0:
-                        rand_vals[i - 1] += rand_vals[i]
-                        rand_vals[i] = 0
-                        i -= 1
-                    else:
-                        break
-            duration += rand_vals
-            duration[duration < 0] = 0
-
-        if self.no_alignments:
-            dur_sum = -1
-        else:
-            dur_sum = sum(duration)
-
-        # TODO: investigate why this is necessary
-        pitch = torch.tensor(pitch.astype(np.float32))[:dur_sum]
-        energy = energy[:dur_sum]
-
-        result = {
-            "mel": np.array(mel.T)[:dur_sum],
-            "pitch": np.array(pitch),
-            "energy": np.array(energy),
-            "duration": np.array(duration),
-        }
-
-        if self.use_snr:
-            result["snr"] = snrs[:dur_sum].astype(np.float32)
-
-        if self.has_dvector:
-            result["dvector"] = row["dvector"]
-
-        if self.conditioned:
-            result["conditioned"] = {}
-            for var in ["pitch", "energy", "duration"]:
-                result["conditioned"][var] = np.mean(result[var])
-            result["conditioned"]["snr"] = np.clip(
-                (self.wada.snr(audio) - 40)
-                / 60,
-                -1.1,
-                1.1,
-            )
-
-        return result
+    def _augment_duration(self, duration):
+        truth_vals = np.random.uniform(size=len(duration)) >= self.augment_duration
+        rand_vals = np.random.normal(0, 1, size=len(duration)).round()
+        rand_vals[truth_vals] = 0
+        rand_vals_shifted = rand_vals[:-1] * -1
+        rand_vals[1:] += rand_vals_shifted
+        rand_vals = rand_vals.astype(int)
+        rand_vals[(duration + rand_vals) < 0] = 0
+        if rand_vals.sum() != 0:
+            rand_vals[-1] -= rand_vals.sum()
+            i = -1
+            while True:
+                if rand_vals[i] < 0:
+                    rand_vals[i - 1] += rand_vals[i]
+                    rand_vals[i] = 0
+                    i -= 1
+                else:
+                    break
+        duration += rand_vals
+        duration[duration < 0] = 0
 
 
 class ProcessedDataset(Dataset):
@@ -642,12 +604,7 @@ class ProcessedDataset(Dataset):
                 if "snr" in entry["conditioned"]:
                     sample["cond_snr"] = entry["conditioned"]["snr"]
 
-        sample_cp = deepcopy(sample)
-        del entry
-        del sample
-        del phones
-
-        return sample_cp
+        return sample
 
     def get_speaker_dvectors(self):
         speaker_dvecs = []
@@ -784,9 +741,12 @@ class ProcessedDataset(Dataset):
 
 if __name__ == "__main__":
     train_ud = UnprocessedDataset(
-        "../Data/LibriTTS/train-clean-360-aligned", max_entries=10_000, use_snr=True, conditioned=True,
+        "../Data/LibriTTS/train-clean-360-aligned",
+        max_entries=10_000,
+        use_snr=True,
+        conditioned=True,
     )
     train = ProcessedDataset(
         unprocessed_ds=train_ud, split="train", phone_vec=False, recompute_stats=True
     )
-    #train.plot(train[0], show=True)
+    # train.plot(train[0], show=True)

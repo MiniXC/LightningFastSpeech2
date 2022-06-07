@@ -2,6 +2,7 @@ import json
 import torch
 import hifigan
 
+# TODO: decompress dynamic range
 
 class Synthesiser:
     def __init__(self, sampling_rate, device="cuda:0"):
