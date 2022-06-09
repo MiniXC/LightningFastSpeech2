@@ -22,7 +22,6 @@ import torch
 import tgt
 import pyworld as pw
 from phones.convert import Converter
-from phones import PhoneCollection
 import matplotlib.pyplot as plt
 import matplotlib
 import scipy
@@ -31,20 +30,19 @@ from scipy import signal
 from PIL import Image
 from librosa.filters import mel as librosa_mel
 
-import third_party.dvectors
-from audio_utils import (
+from third_party.dvectors.wav2mel import Wav2Mel
+from dataset.audio_utils import (
     dynamic_range_compression,
-    remove_outliers,
-    smooth,
     get_alignment,
 )
-from snr import WADA
+from dataset.snr import SNR
+from dataset.cwt import CWT
 
 pandarallel.initialize(progress_bar=True)
 tqdm.pandas()
 
 
-class UnprocessedTTSDataset(Dataset):
+class UnprocessedDataset(Dataset):
     def __init__(
         self,
         audio_directory, # can be several as well
@@ -56,6 +54,7 @@ class UnprocessedTTSDataset(Dataset):
         augment_duration=0.1,
         variances=["pitch", "energy", "snr"],
         variance_levels=["phone", "phone", "phone"],
+        variance_transforms=["cwt", "none", "none"], # "cwt", "log", "none"
         priors=["pitch", "energy", "snr", "duration"],
         sampling_rate=22050,
         n_fft=1024,
@@ -65,7 +64,6 @@ class UnprocessedTTSDataset(Dataset):
         fmin=0,
         fmax=8000,
         pitch_quality=0.25,
-        remove_outliers=False,
         source_phoneset="arpabet",
         shuffle_seed=42,
     ):
@@ -92,12 +90,10 @@ class UnprocessedTTSDataset(Dataset):
         self.fmin = fmin
         self.fmax = fmax
         self.dio_speed = int(np.round(1/pitch_quality))
-        self.remove_outliers = remove_outliers
         self.source_phoneset = source_phoneset
 
         # PHONES
         self.phone_converter = Converter()
-        self.phone_collection = PhoneCollection()
 
         # TODO: add this upstream
         self.phone_cache = {}
@@ -105,22 +101,22 @@ class UnprocessedTTSDataset(Dataset):
         # TEXTGRID LOADING
         if not isinstance(alignment_directory, list):
             alignment_directory = [alignment_directory]
-        grid_files = {}
+        self.grid_files = {}
         for ali_dir in alignment_directory:
             for file in glob(
                 os.path.join(ali_dir, "**/*.TextGrid"),
                 recursive=True
             ):
-                grid_files[Path(file).name.replace(".TextGrid", ".wav")] = file
+                self.grid_files[Path(file).name.replace(".TextGrid", ".wav")] = file
 
         # AUDIO LOADING
         if not isinstance(audio_directory, list):
             audio_directory = [audio_directory]
         entry_list = []
         for aud_dir in audio_directory:
-            entry_list += list(glob(os.path.join(audio_directory, "**", "*.wav")))
+            entry_list += list(glob(os.path.join(aud_dir, "**", "*.wav")))
         if max_entries is not None:
-            entry_list[:max_entries]
+            entry_list = entry_list[:max_entries]
         Random(shuffle_seed).shuffle(entry_list)
 
         # DATAFRAME
@@ -134,7 +130,7 @@ class UnprocessedTTSDataset(Dataset):
         entries = [
             entry
             for entry in process_map(
-                self.create_entry,
+                self._create_entry,
                 entry_list,
                 chunksize=100,
                 max_workers=multiprocessing.cpu_count(),
@@ -162,14 +158,14 @@ class UnprocessedTTSDataset(Dataset):
 
         # DVECTORS
         if self.speaker_type == "dvector":
-            self.create_dvectors()
+            self._create_dvectors()
             dvecs = []
             for i, row in self.data.iterrows():
                 dvecs.append(Path(row["audio"]).parent / "speaker.npy")
             self.data["dvector"] = dvecs
 
         # MEL SPECTROGRAM
-        self.mel_spectrogram = T.Spectrogram(
+        self.mel_spectrogram = AT.Spectrogram(
             n_fft=self.n_fft,
             win_length=self.win_length,
             hop_length=self.hop_length,
@@ -185,20 +181,25 @@ class UnprocessedTTSDataset(Dataset):
             sr=self.sampling_rate,
             n_fft=self.n_fft,
             n_mels=self.n_mels,
-            fmin=self.f_min,
-            fmax=self.f_max,
+            fmin=self.fmin,
+            fmax=self.fmax,
         )
         self.mel_basis = torch.from_numpy(self.mel_basis).float()
 
-        # SNR
-        if "snr" in self.variances:
-            self.wada = WADA()
+        # VARIANCE TRANSFORMS
+        self.variance_transforms = variance_transforms
+        if "cwt" in self.variance_transforms:
+            self.cwt = CWT()
+        
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
         row = self.data.iloc[idx]
+
+        # ID
+        item_id = row["basename"]
         
         # LOAD AUDIO
         audio, sampling_rate = torchaudio.load(row["audio"])
@@ -216,52 +217,44 @@ class UnprocessedTTSDataset(Dataset):
         mel = torch.matmul(self.mel_basis, mel)
         mel = dynamic_range_compression(mel).cpu()
 
-        # VARIANCES
-        variances = {}
-        if "pitch" in self.variances:
-            pitch, t = pw.dio(
-                audio.cpu().numpy().astype(np.float64),
-                self.sampling_rate,
-                frame_period=self.hop_length / self.sampling_rate * 1000,
-                speed=self.dio_speed,
-            )
-            variances["pitch"] = pw.stonemask(
-                audio.cpu().numpy().astype(np.float64), pitch, t, self.sampling_rate
-            )
-            if self.remove_outliers:
-                variances["pitch"] = remove_outliers(variances["pitch"])
-        if "snr" in self.variances:
-            variances["snr"] = np.clip(
-                (self.wada.snr_windowed(audio, self.hop_length, self.win_length) - 40)
-                / 60,
-                -1.1,
-                1.1,
-            )
-            if self.remove_outliers:
-                variances["snr"] = remove_outliers(variances["snr"])
-        if "energy" in self.variances:
-            variances["energy"] = torch.norm(mel, dim=0).cpu()
-            if self.remove_outliers:
-                variances["energy"] = remove_outliers(variances["energy"])
-
-        # DURATIONS
+        # DURATIONS & SILENCE MASK
         duration = row["duration"]
         if self.augment_duration > 0:
             duration = self._augment_duration(duration)
         dur_sum = sum(duration)
+        unexpanded_silence_mask = np.array(row["phones"]) == "[SILENCE]"
+        silence_mask = UnprocessedDataset._expand(unexpanded_silence_mask, duration)
+
+        # VARIANCES
+        # TODO: add variance class
+        variances = self._create_variances(audio, silence_mask)
 
         # PRIORS
         priors = {}
-        silence_mask = row["phones"] == "[SILENCE]"
         for var in self.priors:
-            priors[var] = np.mean(result[var][~silence_mask])
+            if var == "duration":
+                priors[var] = np.mean(duration[~unexpanded_silence_mask])
+            else:
+                if "signal" in variances[var]:
+                    var_val = variances[var]["signal"]
+                else:
+                    var_val = variances[var]
+                priors[var] = np.mean(var_val[~silence_mask])
+
+        # TEXT & PHONES
+        text = row["text"]
+        phones = row["phones"]
 
         # RESULT
         result = {
+            "id": item_id,
             "mel": np.array(mel.T)[:dur_sum],
             "variances": {},
             "priors": {},
             "speaker": {},
+            "text": text,
+            "phones": phones,
+            "duration": duration,
         }
         for var in self.variances:
             result["variances"][var] = variances[var]
@@ -273,11 +266,59 @@ class UnprocessedTTSDataset(Dataset):
 
         return result
 
-    def create_dvectors(self):
-        wav2mel = dvectors.wav2mel.Wav2Mel()
-        dvector_gen = torch.jit.load("dvector/dvector.pt").eval()
+    def _create_variances(self, audio, silence_mask):
+        variances = {}
 
-        for idx, row in tqdm(
+        # PITCH
+        if "pitch" in self.variances:
+            pitch, t = pw.dio(
+                audio.cpu().numpy().astype(np.float64),
+                self.sampling_rate,
+                frame_period=self.hop_length / self.sampling_rate * 1000,
+                speed=self.dio_speed,
+            )
+            variances["pitch"] = pw.stonemask(
+                audio.cpu().numpy().astype(np.float64), pitch, t, self.sampling_rate
+            )
+            variances["pitch"][variances["pitch"]==0] = np.nan
+            variances["pitch"][silence_mask] = np.nan
+            variances["pitch"] = UnprocessedDataset._interpolate(variances["pitch"])
+
+        # SNR
+        if "snr" in self.variances:
+            snr = SNR(audio, self.sampling_rate)
+            variances["snr"] = snr.windowed_wada(
+                window=self.win_length,
+                stride=self.hop_length/self.win_length, 
+                use_samples=True
+            )
+            variances["snr"][silence_mask] = np.nan
+            variances["snr"] = UnprocessedDataset._interpolate(variances["snr"])
+            variances["snr"] = variances["snr"]
+
+        # ENERGY
+        if "energy" in self.variances:
+            variances["energy"] = np.array([
+                np.sqrt(np.sum((audio[x*self.hop_length:(x*self.hop_length)+self.win_length]**2).numpy())/self.win_length)
+                for x in range(int(np.ceil(len(audio)/self.hop_length)))
+            ])
+
+        # TRANSFORMS
+        for i, var in enumerate(self.variances):
+            if self.variance_transforms[i] == "cwt":
+                variances[var] = self.cwt.decompose(variances[var])
+            if self.variance_transforms[i] == "log":
+                variances[var] = np.log(variances[var])
+
+        return variances
+            
+
+    def _create_dvectors(self):
+        wav2mel = Wav2Mel()
+        dvector_path = Path(__file__).parent.parent / "third_party" / "dvectors" / "dvector.pt"
+        dvector_gen = torch.jit.load(dvector_path).eval()
+
+        for _, row in tqdm(
             self.data.iterrows(),
             desc="creating/loading utt. dvectors (this only has to be done once)",
             total=len(self.data),
@@ -297,7 +338,6 @@ class UnprocessedTTSDataset(Dataset):
                 dvec_result = dvector_gen.embed_utterance(dvector_mel).detach()
                 np.save(dvec_path, dvec_result.numpy())
 
-        speaker_dvecs = []
         for speaker in tqdm(
             self.data["speaker"].unique(), 
             desc="creating/loading speaker dvectors (this only has to be done once)"
@@ -306,12 +346,12 @@ class UnprocessedTTSDataset(Dataset):
             speaker_path = Path(speaker_df.iloc[0]["audio"]).parent / "speaker.npy"
             if not speaker_path.exists():
                 dvecs = []
-                for idx, row in speaker_df.iterrows():
+                for _, row in speaker_df.iterrows():
                     dvecs.append(np.load(row["audio"].replace(".wav", ".npy")))
                 dvec = np.mean(dvecs, axis=0)
                 np.save(speaker_path, dvec)
 
-    def create_entry(self, audio_file):
+    def _create_entry(self, audio_file):
         extract_speaker = lambda x: x.split("/")[-2]
         audio_name = Path(audio_file).name
 
@@ -345,8 +385,8 @@ class UnprocessedTTSDataset(Dataset):
             if phone not in ["spn", "sil"]:
                 o_phone = phone
                 if o_phone not in self.phone_cache:
-                    phone = self.converter(
-                        phone, self.source_phoneset, lang=self.target_lang
+                    phone = self.phone_converter(
+                        phone, self.source_phoneset, lang=None
                     )[0]
                     self.phone_cache[o_phone] = phone
                 phone = self.phone_cache[o_phone]
@@ -396,6 +436,123 @@ class UnprocessedTTSDataset(Dataset):
                     break
         duration += rand_vals
         duration[duration < 0] = 0
+        return duration
+
+    @staticmethod
+    def _expand(values, durations):
+        out = []
+        for value, d in zip(values, durations):
+            out += [value] * max(0, int(d))
+        return np.array(out)
+
+    @staticmethod
+    def _interpolate(x):
+        def nan_helper(y):
+            return np.isnan(y), lambda z: z.nonzero()[0]
+        nans, y = nan_helper(x)
+        x[nans] = np.interp(y(nans), y(~nans), x[~nans])
+        return x
+
+    def plot(self, sample_or_idx, show=True):
+        if not show:
+            matplotlib.use("AGG", force=True)
+        if isinstance(sample_or_idx, int):
+            sample = self[sample_or_idx]
+
+        # MEL SPECTROGRAM
+        mel = sample["mel"]
+        cwts = self.variance_transforms.count("cwt")
+        fig, axs = plt.subplots(
+            nrows=1+cwts,
+            sharex=True, 
+            gridspec_kw={'height_ratios': [3] + [1] * cwts},
+            figsize=[6.4 * (len(mel) / 150), 4.8],
+        )
+        audio_len = len(mel) * self.hop_length / self.sampling_rate
+        axs[0].imshow(
+            mel.T,
+            origin="lower",
+            cmap="gray",
+            aspect="auto",
+            interpolation='gaussian',
+            extent=[0,audio_len,0,80],
+            alpha=0.5
+        )
+        axs[0].set_xlim(0, audio_len)
+        axs[0].set_xlabel("Time (seconds)")
+
+        # PHONES
+        x = 0
+        ax2 = axs[0].twiny()
+        phone_x = []
+        phone_l = []
+        for phone, duration in zip(sample["phones"], sample["duration"]):
+            new_x = x * self.hop_length / self.sampling_rate
+            axs[0].axline((new_x, 0), (new_x, 80), color="white", alpha=0.3)
+            if phone == "[SILENCE]":
+                phone = "☐"
+            phone_x.append(
+                new_x + duration * self.hop_length / self.sampling_rate / 2
+            )
+            phone_l.append(phone)
+            x += duration
+        ax2.set_xlim(0, audio_len)
+        ax2.set_xticks(phone_x)
+        ax2.set_xticklabels(phone_l)
+        ax2.set_xlabel("Phones (IPA)")
+        ax2.tick_params(axis='x', labelsize=8)
+
+        # VARIANCES
+        variance_text = []
+        variance_x = []
+        variance_y = []
+        num_vars = len(self.variances)
+        for i, var in enumerate(self.variances):
+            if self.variance_transforms[i] == "cwt":
+                var_vals = sample["variances"][var]["signal"]
+            else:
+                var_vals = sample["variances"][var]
+            variance_text += [var] * len(mel)
+            variance_x += list(np.array(range(len(mel))) * self.hop_length / self.sampling_rate)
+            variance_y += list((var_vals-var_vals.min())/(var_vals.max()-var_vals.min())*(80/num_vars)+(i*80/num_vars))
+        sns.lineplot(
+            x=variance_x,
+            y=variance_y,
+            hue=variance_text,
+            ax=axs[0],
+            linewidth=2,
+        )
+        for i, var in enumerate(self.variances):
+            ax_num = 1
+            if self.variance_transforms[i] == "cwt":
+                spectrogram = sample["variances"][var]["spectrogram"]
+                axs[ax_num].imshow(
+                    spectrogram,
+                    extent=[0, audio_len, 1, 10],
+                    cmap='PRGn',
+                    aspect='auto',
+                    vmax=abs(spectrogram).max(),
+                    vmin=-abs(spectrogram).max(),
+                    interpolation="gaussian"
+                )
+                axs[ax_num].set_ylabel(f"{var.title()} Frequency")
+                ax_num += 1
+            
+        # LEGEND & AXES
+        plt.xlim(0, audio_len)
+        plt.ylim(0, 80)
+        plt.yticks(range(0, 81, 10))
+        plt.tight_layout()
+
+        # SHOW/CREATE IMG
+        if show:
+            plt.show()
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png")
+        plt.clf()
+        buf.seek(0)
+        plt.close()
+        return Image.open(buf)
 
 
 class ProcessedDataset(Dataset):
@@ -662,7 +819,7 @@ class ProcessedDataset(Dataset):
         fig = plt.figure(figsize=[6.4 * (len(mel) / 150), 4.8])
         ax = fig.add_subplot()
 
-        ax.imshow(mel.T, origin="lower", cmap="gray")
+        ax.imshow(mel.T, origin="lower", cmap="gray", interpolation="gaussian")
 
         last = 0
 
@@ -737,16 +894,3 @@ class ProcessedDataset(Dataset):
             if "snr" in data:
                 data["cond_snr"] = torch.tensor(np.array(data["cond_snr"]))
         return data
-
-
-if __name__ == "__main__":
-    train_ud = UnprocessedDataset(
-        "../Data/LibriTTS/train-clean-360-aligned",
-        max_entries=10_000,
-        use_snr=True,
-        conditioned=True,
-    )
-    train = ProcessedDataset(
-        unprocessed_ds=train_ud, split="train", phone_vec=False, recompute_stats=True
-    )
-    # train.plot(train[0], show=True)

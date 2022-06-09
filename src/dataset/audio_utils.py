@@ -78,4 +78,9 @@ def get_alignment(tier, sampling_rate, hop_length):
     phones = phones[:end_idx]
     durations = durations[:end_idx]
 
+    true_dur = int(np.ceil((end_time-start_time)*sampling_rate/hop_length))
+    pred_dur = sum(durations)
+    if pred_dur != true_dur:
+        durations[-1] += true_dur - pred_dur
+
     return phones, durations, start_time, end_time

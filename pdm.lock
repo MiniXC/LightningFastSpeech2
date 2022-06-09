@@ -880,6 +880,11 @@ version = "1.1.0"
 summary = "ANSII Color formatting for output in terminal."
 
 [[package]]
+name = "textgrid"
+version = "1.5"
+summary = "Praat TextGrid manipulation."
+
+[[package]]
 name = "tgt"
 version = "1.4.4"
 summary = "TextGridTools -- Read, write, and manipulate Praat TextGrid files"
@@ -1034,7 +1039,7 @@ summary = "Backport of pathlib-compatible object wrapper for zip files"
 
 [metadata]
 lock_version = "3.1"
-content_hash = "sha256:4d675501da981a8a27aabce52021e34fc390e3571573210a2ce87e687002c9f3"
+content_hash = "sha256:1120d51888ea3f044acb851cb0fbb77cb74943bce67db99b57c5c64704cf2fa8"
 
 [metadata.files]
 "absl-py 1.0.0" = [
@@ -2198,6 +2203,10 @@ content_hash = "sha256:4d675501da981a8a27aabce52021e34fc390e3571573210a2ce87e687
 ]
 "termcolor 1.1.0" = [
     {file = "termcolor-1.1.0.tar.gz", hash = "sha256:1d6d69ce66211143803fbc56652b41d73b4a400a2891d7bf7a1cdf4c02de613b"},
+]
+"textgrid 1.5" = [
+    {file = "TextGrid-1.5-py3-none-any.whl", hash = "sha256:819b467398da3b95932a456fb728d8293a21f958b698b00c266f3c018bb90910"},
+    {file = "TextGrid-1.5.tar.gz", hash = "sha256:78c459da90a2d2b8c5b66bcf78160bc5517518df6070712b8d9222bf2af87c9c"},
 ]
 "tgt 1.4.4" = [
     {file = "tgt-1.4.4.tar.gz", hash = "sha256:1473f3c2292f0b97d779b6f575df0d3394ded94f4bf62417bd5781b3889f7a62"},
