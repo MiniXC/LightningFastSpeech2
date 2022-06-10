@@ -13,7 +13,7 @@ from tqdm.auto import tqdm
 from tqdm.contrib.concurrent import process_map, thread_map
 from pandarallel import pandarallel
 from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 import torchaudio
 import torchaudio.transforms as AT
 import torchvision.transforms as VT
@@ -41,6 +41,7 @@ from dataset.cwt import CWT
 pandarallel.initialize(progress_bar=True)
 tqdm.pandas()
 
+np.seterr(divide='raise', invalid='raise')
 
 class UnprocessedDataset(Dataset):
     def __init__(
@@ -56,6 +57,7 @@ class UnprocessedDataset(Dataset):
         variance_levels=["phone", "phone", "phone"],
         variance_transforms=["cwt", "none", "none"], # "cwt", "log", "none"
         priors=["pitch", "energy", "snr", "duration"],
+        stat_samples=10_000,
         sampling_rate=22050,
         n_fft=1024,
         win_length=1024,
@@ -190,6 +192,23 @@ class UnprocessedDataset(Dataset):
         self.variance_transforms = variance_transforms
         if "cwt" in self.variance_transforms:
             self.cwt = CWT()
+
+        # COMPUTE STATS
+        stat_list = []
+        for entry in tqdm(DataLoader(
+            self,
+            num_workers=multiprocessing.cpu_count(),
+            batch_size=16,
+        ), total=stat_samples):
+            stat_list.append(self._create_stats(entry))
+            if len(stat_list) >= stat_samples:
+                break
+        stats = {}
+        for key in stat_list[0].keys():
+            stats[key] = {}
+            for np_stat in stat_list[0][key].keys():
+                stats[key][np_stat] = getattr(np, np_stat)([s[key][np_stat] for s in stats])
+        print(stats)
         
 
     def __len__(self):
@@ -235,7 +254,7 @@ class UnprocessedDataset(Dataset):
             if var == "duration":
                 priors[var] = np.mean(duration[~unexpanded_silence_mask])
             else:
-                if "signal" in variances[var]:
+                if isinstance(variances[var], dict):
                     var_val = variances[var]["signal"]
                 else:
                     var_val = variances[var]
@@ -262,7 +281,7 @@ class UnprocessedDataset(Dataset):
             result["priors"][var] = priors[var]
         result["speaker"]["id"] = row["speaker"]
         if self.speaker_type == "dvector":
-            result["speaker"]["dvector"] = row["dvector"]
+            result["speaker"]["dvector"] = str(row["dvector"])
 
         return result
 
@@ -286,7 +305,7 @@ class UnprocessedDataset(Dataset):
 
         # SNR
         if "snr" in self.variances:
-            snr = SNR(audio, self.sampling_rate)
+            snr = SNR(audio.cpu().numpy().astype(np.float64), self.sampling_rate)
             variances["snr"] = snr.windowed_wada(
                 window=self.win_length,
                 stride=self.hop_length/self.win_length, 
@@ -415,6 +434,31 @@ class UnprocessedDataset(Dataset):
             transcription,
             audio_name,
         )
+
+    def _create_stats(self, x):
+        result = {}
+        for i, var in enumerate(self.variances):
+            if self.variance_transforms[i] == "cwt":
+                var_val = x["variances"][var]["signal"].float()
+            else:
+                var_val = x["variances"][var].float()
+            result[var] = {}
+            result[var]["min"] = torch.min(var_val)
+            result[var]["max"] = torch.max(var_val)
+            result[var]["mean"] = torch.mean(var_val)
+            result[var]["std"] = torch.std(var_val)
+            if var in self.priors:
+                result[var+"_prior"] = {}
+                result[var+"_prior"]["min"] = torch.min(torch.mean(var_val, axis=1))
+                result[var+"_prior"]["max"] = torch.max(torch.mean(var_val, axis=1))
+        for var in self.priors:
+            if var not in self.variances:
+                var_val = x[var].float()
+                result[var+"_prior"] = {}
+                result[var+"_prior"]["min"] = torch.min(torch.mean(var_val, axis=1))
+                result[var+"_prior"]["max"] = torch.max(torch.mean(var_val, axis=1))
+        print(result)
+        return result
 
     def _augment_duration(self, duration):
         truth_vals = np.random.uniform(size=len(duration)) >= self.augment_duration

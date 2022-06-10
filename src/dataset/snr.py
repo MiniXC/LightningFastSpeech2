@@ -328,9 +328,9 @@ def _wada(wav):
     # next 2 lines define a fancy curve derived from a gamma distribution -- see paper
     db_vals = np.arange(-20, 101)
     # peak normalize, get magnitude, clip lower bound
-    wav = np.array(wav)
-    wav = wav / abs(wav).max()
-    abs_wav = abs(wav)
+    abs_wav = np.abs(wav)
+    if np.sum(abs_wav) == 0:
+        return np.nan
     abs_wav[abs_wav < eps] = eps
     # calcuate statistics
     v1 = max(eps, abs_wav.mean())
