@@ -1,63 +1,63 @@
 import configparser
-import os
-import json
-from pathlib import Path
 import io
-from glob import glob
+import json
 import multiprocessing
+import os
+from glob import glob
+from pathlib import Path
 from random import Random
 
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from tqdm.auto import tqdm
-from tqdm.contrib.concurrent import process_map, thread_map
-from pandarallel import pandarallel
-from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import Dataset, DataLoader
+import pyworld as pw
+import scipy
+import scipy.stats as stats
+import seaborn as sns
+import tgt
+import torch
 import torchaudio
+import torchaudio.functional as F
 import torchaudio.transforms as AT
 import torchvision.transforms as VT
-import torchaudio.functional as F
-import torch
-import tgt
-import pyworld as pw
-from phones.convert import Converter
-import matplotlib.pyplot as plt
-import matplotlib
-import scipy
-import seaborn as sns
-from scipy import signal
-from PIL import Image
 from librosa.filters import mel as librosa_mel
-
+from matplotlib.gridspec import GridSpec
+from pandarallel import pandarallel
+from phones.convert import Converter
+from PIL import Image
+from scipy import signal
 from third_party.dvectors.wav2mel import Wav2Mel
-from dataset.audio_utils import (
-    dynamic_range_compression,
-    get_alignment,
-)
-from dataset.snr import SNR
+from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import DataLoader, Dataset
+from tqdm.auto import tqdm
+from tqdm.contrib.concurrent import process_map, thread_map
+
+from dataset.audio_utils import dynamic_range_compression, get_alignment
 from dataset.cwt import CWT
+from dataset.snr import SNR
 
 pandarallel.initialize(progress_bar=True)
 tqdm.pandas()
 
-np.seterr(divide='raise', invalid='raise')
+np.seterr(divide="raise", invalid="raise")
+
 
 class UnprocessedDataset(Dataset):
     def __init__(
         self,
-        audio_directory, # can be several as well
-        alignment_directory=None, # can be several as well
+        audio_directory,  # can be several as well
+        alignment_directory=None,  # can be several as well
         max_entries=None,
+        stat_entries=10_000,
         speaker_type="dvector",  # "none", "id", "dvector"
         min_length=0.5,
         max_length=32,
-        augment_duration=0.1,
+        augment_duration=0, # 0.1,
         variances=["pitch", "energy", "snr"],
         variance_levels=["phone", "phone", "phone"],
-        variance_transforms=["cwt", "none", "none"], # "cwt", "log", "none"
+        variance_transforms=["cwt", "none", "none"],  # "cwt", "log", "none"
         priors=["pitch", "energy", "snr", "duration"],
-        stat_samples=10_000,
         sampling_rate=22050,
         n_fft=1024,
         win_length=1024,
@@ -91,7 +91,7 @@ class UnprocessedDataset(Dataset):
         self.n_mels = n_mels
         self.fmin = fmin
         self.fmax = fmax
-        self.dio_speed = int(np.round(1/pitch_quality))
+        self.dio_speed = int(np.round(1 / pitch_quality))
         self.source_phoneset = source_phoneset
 
         # PHONES
@@ -105,10 +105,7 @@ class UnprocessedDataset(Dataset):
             alignment_directory = [alignment_directory]
         self.grid_files = {}
         for ali_dir in alignment_directory:
-            for file in glob(
-                os.path.join(ali_dir, "**/*.TextGrid"),
-                recursive=True
-            ):
+            for file in glob(os.path.join(ali_dir, "**/*.TextGrid"), recursive=True):
                 self.grid_files[Path(file).name.replace(".TextGrid", ".wav")] = file
 
         # AUDIO LOADING
@@ -193,23 +190,46 @@ class UnprocessedDataset(Dataset):
         if "cwt" in self.variance_transforms:
             self.cwt = CWT()
 
+        # PHONES TO IDS
+        self.phone2id = self._create_phone2id()
+        self.id2phone = {v: k for k, v in self.phone2id.items()}
+        self.data["phones"] = self.data["phones"].apply(
+            lambda x: torch.tensor([self.phone2id[p] for p in x]).long()
+        )
+
         # COMPUTE STATS
+        stat_bs = 16
         stat_list = []
-        for entry in tqdm(DataLoader(
-            self,
-            num_workers=multiprocessing.cpu_count(),
-            batch_size=16,
-        ), total=stat_samples):
-            stat_list.append(self._create_stats(entry))
-            if len(stat_list) >= stat_samples:
+        for entry in tqdm(
+            DataLoader(
+                self,
+                num_workers=multiprocessing.cpu_count(),
+                batch_size=stat_bs,
+                collate_fn=self._collate_fn,
+                drop_last=True,
+            ),
+            total=min([stat_entries,max_entries])//stat_bs,
+            desc="computing stats",
+        ):
+            if len(stat_list) * stat_bs >= stat_entries:
                 break
+            stat_list.append(self._create_stats(entry))
         stats = {}
+        stats["sample_size"] = stat_entries
         for key in stat_list[0].keys():
             stats[key] = {}
             for np_stat in stat_list[0][key].keys():
-                stats[key][np_stat] = getattr(np, np_stat)([s[key][np_stat] for s in stats])
+                if np_stat == "std":
+                    std_sq = np.array([s[key][np_stat] for s in stat_list])**2
+                    mean_list = np.array([s[key]["mean"] for s in stat_list])
+                    mean_diff_sq = (mean_list - np.mean(mean_list))**2
+                    stats[key][np_stat] = np.sqrt(np.mean(std_sq+mean_diff_sq))
+                else:
+                    stats[key][np_stat] = getattr(np, np_stat)(
+                        [s[key][np_stat] for s in stat_list]
+                    )
+        self.stats = stats
         print(stats)
-        
 
     def __len__(self):
         return len(self.data)
@@ -219,7 +239,7 @@ class UnprocessedDataset(Dataset):
 
         # ID
         item_id = row["basename"]
-        
+
         # LOAD AUDIO
         audio, sampling_rate = torchaudio.load(row["audio"])
         if sampling_rate != self.sampling_rate:
@@ -237,11 +257,11 @@ class UnprocessedDataset(Dataset):
         mel = dynamic_range_compression(mel).cpu()
 
         # DURATIONS & SILENCE MASK
-        duration = row["duration"]
+        duration = np.array(row["duration"])
         if self.augment_duration > 0:
             duration = self._augment_duration(duration)
         dur_sum = sum(duration)
-        unexpanded_silence_mask = np.array(row["phones"]) == "[SILENCE]"
+        unexpanded_silence_mask = np.array(row["phones"]) == self.phone2id["[SILENCE]"]
         silence_mask = UnprocessedDataset._expand(unexpanded_silence_mask, duration)
 
         # VARIANCES
@@ -285,6 +305,15 @@ class UnprocessedDataset(Dataset):
 
         return result
 
+    def _create_phone2id(self):
+        unique_phones = set()
+        for phone_list in self.data["phones"]:
+            unique_phones.update(phone_list)
+        unique_phones = list(sorted(unique_phones))
+        phone2id = {p: i + 1 for p, i in zip(unique_phones, range(len(unique_phones)))}
+        phone2id["[PAD]"] = 0
+        return phone2id
+
     def _create_variances(self, audio, silence_mask):
         variances = {}
 
@@ -299,8 +328,13 @@ class UnprocessedDataset(Dataset):
             variances["pitch"] = pw.stonemask(
                 audio.cpu().numpy().astype(np.float64), pitch, t, self.sampling_rate
             )
-            variances["pitch"][variances["pitch"]==0] = np.nan
+            variances["pitch"][variances["pitch"] == 0] = np.nan
+            if len(silence_mask) < len(variances["pitch"]):
+                variances["pitch"] = variances["pitch"][:len(silence_mask)]
             variances["pitch"][silence_mask] = np.nan
+            if np.isnan(variances["pitch"]).all():
+                variances["pitch"][:] = 1e-7
+                print(variances["pitch"])
             variances["pitch"] = UnprocessedDataset._interpolate(variances["pitch"])
 
         # SNR
@@ -308,19 +342,38 @@ class UnprocessedDataset(Dataset):
             snr = SNR(audio.cpu().numpy().astype(np.float64), self.sampling_rate)
             variances["snr"] = snr.windowed_wada(
                 window=self.win_length,
-                stride=self.hop_length/self.win_length, 
-                use_samples=True
+                stride=self.hop_length / self.win_length,
+                use_samples=True,
             )
+            if len(silence_mask) < len(variances["snr"]):
+                variances["snr"] = variances["snr"][:len(silence_mask)]
             variances["snr"][silence_mask] = np.nan
-            variances["snr"] = UnprocessedDataset._interpolate(variances["snr"])
-            variances["snr"] = variances["snr"]
+            if all(np.isnan(variances["snr"])):
+                variances["snr"] = np.zeros_like(variances["snr"])
+            else:
+                variances["snr"] = UnprocessedDataset._interpolate(variances["snr"])
 
         # ENERGY
         if "energy" in self.variances:
-            variances["energy"] = np.array([
-                np.sqrt(np.sum((audio[x*self.hop_length:(x*self.hop_length)+self.win_length]**2).numpy())/self.win_length)
-                for x in range(int(np.ceil(len(audio)/self.hop_length)))
-            ])
+            variances["energy"] = np.array(
+                [
+                    np.sqrt(
+                        np.sum(
+                            (
+                                audio[
+                                    x * self.hop_length : (x * self.hop_length)
+                                    + self.win_length
+                                ]
+                                ** 2
+                            ).numpy()
+                        )
+                        / self.win_length
+                    )
+                    for x in range(int(np.ceil(len(audio) / self.hop_length)))
+                ]
+            )
+            if len(silence_mask) < len(variances["energy"]):
+                variances["energy"] = variances["energy"][:len(silence_mask)]
 
         # TRANSFORMS
         for i, var in enumerate(self.variances):
@@ -330,11 +383,12 @@ class UnprocessedDataset(Dataset):
                 variances[var] = np.log(variances[var])
 
         return variances
-            
 
     def _create_dvectors(self):
         wav2mel = Wav2Mel()
-        dvector_path = Path(__file__).parent.parent / "third_party" / "dvectors" / "dvector.pt"
+        dvector_path = (
+            Path(__file__).parent.parent / "third_party" / "dvectors" / "dvector.pt"
+        )
         dvector_gen = torch.jit.load(dvector_path).eval()
 
         for _, row in tqdm(
@@ -358,8 +412,8 @@ class UnprocessedDataset(Dataset):
                 np.save(dvec_path, dvec_result.numpy())
 
         for speaker in tqdm(
-            self.data["speaker"].unique(), 
-            desc="creating/loading speaker dvectors (this only has to be done once)"
+            self.data["speaker"].unique(),
+            desc="creating/loading speaker dvectors (this only has to be done once)",
         ):
             speaker_df = self.data[self.data["speaker"] == speaker]
             speaker_path = Path(speaker_df.iloc[0]["audio"]).parent / "speaker.npy"
@@ -439,25 +493,28 @@ class UnprocessedDataset(Dataset):
         result = {}
         for i, var in enumerate(self.variances):
             if self.variance_transforms[i] == "cwt":
-                var_val = x["variances"][var]["signal"].float()
+                var_val = x[f"variances_{var}_signal"].float()
             else:
-                var_val = x["variances"][var].float()
+                var_val = x[f"variances_{var}"].float()
             result[var] = {}
             result[var]["min"] = torch.min(var_val)
             result[var]["max"] = torch.max(var_val)
             result[var]["mean"] = torch.mean(var_val)
             result[var]["std"] = torch.std(var_val)
             if var in self.priors:
-                result[var+"_prior"] = {}
-                result[var+"_prior"]["min"] = torch.min(torch.mean(var_val, axis=1))
-                result[var+"_prior"]["max"] = torch.max(torch.mean(var_val, axis=1))
+                result[var + "_prior"] = {}
+                result[var + "_prior"]["min"] = torch.min(torch.mean(var_val, axis=0))
+                result[var + "_prior"]["max"] = torch.max(torch.mean(var_val, axis=0))
+                result[var + "_prior"]["mean"] = torch.mean(torch.mean(var_val, axis=0))
+                result[var + "_prior"]["std"] = torch.std(torch.mean(var_val, axis=0))
         for var in self.priors:
             if var not in self.variances:
                 var_val = x[var].float()
-                result[var+"_prior"] = {}
-                result[var+"_prior"]["min"] = torch.min(torch.mean(var_val, axis=1))
-                result[var+"_prior"]["max"] = torch.max(torch.mean(var_val, axis=1))
-        print(result)
+                result[var + "_prior"] = {}
+                result[var + "_prior"]["min"] = torch.min(torch.mean(var_val, axis=0))
+                result[var + "_prior"]["max"] = torch.max(torch.mean(var_val, axis=0))
+                result[var + "_prior"]["mean"] = torch.mean(torch.mean(var_val, axis=0))
+                result[var + "_prior"]["std"] = torch.std(torch.mean(var_val, axis=0))
         return result
 
     def _augment_duration(self, duration):
@@ -493,9 +550,39 @@ class UnprocessedDataset(Dataset):
     def _interpolate(x):
         def nan_helper(y):
             return np.isnan(y), lambda z: z.nonzero()[0]
+
         nans, y = nan_helper(x)
         x[nans] = np.interp(y(nans), y(~nans), x[~nans])
         return x
+
+    @staticmethod
+    def _flatten(structure, key="", path="", flattened=None):
+        if flattened is None:
+            flattened = {}
+        if not isinstance(structure, dict):
+            flattened[((path + "_") if path else "") + key] = structure
+        # elif isinstance(structure, list):
+        #     for i, item in enumerate(structure):
+        #         UnprocessedDataset._flatten(item, "%d" % i, path + "_" + key, flattened)
+        else:
+            for new_key, value in structure.items():
+                UnprocessedDataset._flatten(
+                    value, new_key, ((path + "_") if path else "") + key, flattened
+                )
+        return flattened
+
+    def _collate_fn(self, data):
+        # list-of-dict -> dict-of-lists
+        # (see https://stackoverflow.com/a/33046935)
+        data = [UnprocessedDataset._flatten(x) for x in data]
+        l2d = lambda x: {k: [dic[k] for dic in x] for k in x[0]}
+        data = l2d(data)
+        for key in data.keys():
+            if isinstance(data[key][0], np.ndarray):
+                data[key] = [torch.tensor(x) for x in data[key]]
+            if torch.is_tensor(data[key][0]):
+                data[key] = pad_sequence(data[key], batch_first=True, padding_value=0)
+        return data
 
     def plot(self, sample_or_idx, show=True):
         if not show:
@@ -506,45 +593,47 @@ class UnprocessedDataset(Dataset):
         # MEL SPECTROGRAM
         mel = sample["mel"]
         cwts = self.variance_transforms.count("cwt")
-        fig, axs = plt.subplots(
-            nrows=1+cwts,
-            sharex=True, 
-            gridspec_kw={'height_ratios': [3] + [1] * cwts},
-            figsize=[6.4 * (len(mel) / 150), 4.8],
+        fig = plt.figure(
+            figsize=[7 * (len(mel) / 150) + 3, 4 + 2 * cwts],
+            constrained_layout=True
         )
+        gs = GridSpec(4, 4, figure=fig)
+        
         audio_len = len(mel) * self.hop_length / self.sampling_rate
-        axs[0].imshow(
+        ax0 = fig.add_subplot(gs[:2, 1:])
+        ax0.imshow(
             mel.T,
             origin="lower",
             cmap="gray",
             aspect="auto",
-            interpolation='gaussian',
-            extent=[0,audio_len,0,80],
-            alpha=0.5
+            interpolation="gaussian",
+            extent=[0, audio_len, 0, 80],
+            alpha=0.5,
         )
-        axs[0].set_xlim(0, audio_len)
-        axs[0].set_xlabel("Time (seconds)")
+        ax0.set_xlim(0, audio_len)
+        ax0.set_ylim(0, 80)
+        ax0.set_xlabel("Time (seconds)")
+        ax0.set_yticks(range(0, 81, 10))
 
         # PHONES
         x = 0
-        ax2 = axs[0].twiny()
+        ax2 = ax0.twiny()
         phone_x = []
         phone_l = []
         for phone, duration in zip(sample["phones"], sample["duration"]):
+            phone = self.id2phone[phone.item()]
             new_x = x * self.hop_length / self.sampling_rate
-            axs[0].axline((new_x, 0), (new_x, 80), color="white", alpha=0.3)
+            ax0.axline((new_x, 0), (new_x, 80), color="white", alpha=0.3)
             if phone == "[SILENCE]":
                 phone = "☐"
-            phone_x.append(
-                new_x + duration * self.hop_length / self.sampling_rate / 2
-            )
+            phone_x.append(new_x + duration * self.hop_length / self.sampling_rate / 2)
             phone_l.append(phone)
             x += duration
         ax2.set_xlim(0, audio_len)
         ax2.set_xticks(phone_x)
         ax2.set_xticklabels(phone_l)
         ax2.set_xlabel("Phones (IPA)")
-        ax2.tick_params(axis='x', labelsize=8)
+        ax2.tick_params(axis="x", labelsize=8)
 
         # VARIANCES
         variance_text = []
@@ -557,35 +646,53 @@ class UnprocessedDataset(Dataset):
             else:
                 var_vals = sample["variances"][var]
             variance_text += [var] * len(mel)
-            variance_x += list(np.array(range(len(mel))) * self.hop_length / self.sampling_rate)
-            variance_y += list((var_vals-var_vals.min())/(var_vals.max()-var_vals.min())*(80/num_vars)+(i*80/num_vars))
+            variance_x += list(
+                np.array(range(len(mel))) * self.hop_length / self.sampling_rate
+            )
+            variance_y += list(
+                (var_vals - var_vals.min())
+                / ((var_vals.max() - var_vals.min()) + 1e-7)
+                * (80 / num_vars)
+                + (i * 80 / num_vars)
+            )
         sns.lineplot(
             x=variance_x,
             y=variance_y,
             hue=variance_text,
-            ax=axs[0],
+            ax=ax0,
             linewidth=2,
         )
         for i, var in enumerate(self.variances):
             ax_num = 1
             if self.variance_transforms[i] == "cwt":
                 spectrogram = sample["variances"][var]["spectrogram"]
-                axs[ax_num].imshow(
-                    spectrogram,
+                cwt_ax = fig.add_subplot(gs[1+ax_num, 1:], sharex=ax0)
+                cwt_ax.imshow(
+                    spectrogram.T,
                     extent=[0, audio_len, 1, 10],
-                    cmap='PRGn',
-                    aspect='auto',
+                    cmap="PRGn",
+                    aspect="auto",
                     vmax=abs(spectrogram).max(),
                     vmin=-abs(spectrogram).max(),
-                    interpolation="gaussian"
+                    interpolation="gaussian",
                 )
-                axs[ax_num].set_ylabel(f"{var.title()} Frequency")
+                cwt_ax.set_ylabel(f"{var.title()} Frequency")
+                cwt_ax.set_ylim(1,10)
+                cwt_ax.set_yticks(range(1,11,2))
                 ax_num += 1
-            
+
+        # PRIORS
+        for i, var in enumerate(self.priors):
+            prior_ax = fig.add_subplot(gs[i, 0])
+            prior_vals = self.stats[f"{var}_prior"]
+            mu, sig = prior_vals["mean"], prior_vals["std"]
+            pmin, pmax = prior_vals["min"], prior_vals["max"]
+            x = np.linspace(pmin, pmax)
+            prior_ax.plot(x, stats.norm.pdf(x, mu, sig))
+            prior_ax.set_title(f"{var} Prior")
+            prior_ax.axvline(sample["priors"][var], color="red")
+
         # LEGEND & AXES
-        plt.xlim(0, audio_len)
-        plt.ylim(0, 80)
-        plt.yticks(range(0, 81, 10))
         plt.tight_layout()
 
         # SHOW/CREATE IMG
@@ -860,7 +967,7 @@ class ProcessedDataset(Dataset):
             snr_min, snr_max = -1.1, 1.1
             snr = (snr - snr_min) / (snr_max - snr_min) * mel.shape[1]
 
-        fig = plt.figure(figsize=[6.4 * (len(mel) / 150), 4.8])
+        fig = plt.figure(figsize=[6.4 * (len(mel) / 150), 4.8], constrained_layout=True)
         ax = fig.add_subplot()
 
         ax.imshow(mel.T, origin="lower", cmap="gray", interpolation="gaussian")

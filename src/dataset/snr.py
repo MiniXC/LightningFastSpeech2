@@ -4,6 +4,7 @@ import numpy as np
 from textgrid import TextGrid
 from pathlib import Path
 
+
 class SNR:
     def __init__(
         self,
@@ -11,7 +12,7 @@ class SNR:
         rate: int,
         rms_window: Optional[int] = None,
         rms_stride: Optional[float] = 0.5,
-        vad: Optional[Union[str,Iterable[Tuple[float, float]]]]=None,
+        vad: Optional[Union[str, Iterable[Tuple[float, float]]]] = None,
     ):
         """
         Creates a new ``SNR`` object tied to specific audio array (given as ``values``) and sampling rate (as ``rate``).
@@ -43,13 +44,13 @@ class SNR:
         """
         return len(self) / self.rate
 
-    def seconds(self, start: float, end: float) -> 'SNR':
+    def seconds(self, start: float, end: float) -> "SNR":
         """
         Returns a new ``SNR`` object which only spans from second ``start`` to second ``end``.
         """
         return self[int(self.rate * start) : int(self.rate * end)]
 
-    def rms(self, rms_window: int=20, rms_stride: float=0.5):
+    def rms(self, rms_window: int = 20, rms_stride: float = 0.5):
         """
         Returns a new ``SNR`` object with rms-based audio.
         ``rms_window`` and ``rms_stride`` determine the window width and stride as a percentage of the width, respectively.
@@ -80,21 +81,21 @@ class SNR:
         return result
 
     @property
-    def samples(self) -> 'SNR':
+    def samples(self) -> "SNR":
         """
         Returns a new ``SNR`` object with sample-based audio.
         """
         return SNR(self._values, self.rate, None, self._rms_stride, self.vad)
 
     @property
-    def notebook(self) -> 'SNRNotebook':
+    def notebook(self) -> "SNRNotebook":
         """
         The ``SNRNotebook`` endpoint for Jupyter Notebook visualisation.
         """
         return SNRNotebook(self)
 
     @classmethod
-    def from_file(cls, file_path: str, **kwargs) -> 'SNR':
+    def from_file(cls, file_path: str, **kwargs) -> "SNR":
         """
         Uses ``librosa.load`` to create a ``SNR`` object from an audio file path (``file_path``).
         Keyword arguments for ``SNR`` can be passed as well.
@@ -133,7 +134,7 @@ class SNR:
             step = int(self.rate * (self._rms / 1000))
             for index in np.arange(0, len(self._values), int(step * self._rms_stride)):
                 window_values = self._values[index : index + step]
-                rms_arr.append(np.sum(window_values ** 2) / len(window_values))
+                rms_arr.append(np.sum(window_values**2) / len(window_values))
             return np.array(rms_arr)
 
     @property
@@ -141,17 +142,17 @@ class SNR:
         """
         The RMS power in dB.
         """
-        return 20 * np.log10(np.sqrt(np.sum(self.values ** 2) / len(self.values)))
+        return 20 * np.log10(np.sqrt(np.sum(self.values**2) / len(self.values)))
 
     @staticmethod
     def normalize(values: Iterable[float]) -> Iterable[float]:
         """
         Returns a normalized version of the given float array.
         """
-        a = np.sqrt(len(values) / np.sum(values ** 2))
+        a = np.sqrt(len(values) / np.sum(values**2))
         return values * a
 
-    def get_augmented(self, noise: "SNR", snr:int=0):
+    def get_augmented(self, noise: "SNR", snr: int = 0):
         """
         Combines this ``SNR`` object with the given ``noise`` object at the desired ``snr`` and returns the new noisy ``SNR`` object.
         """
@@ -191,7 +192,9 @@ class SNR:
         )
 
     def _windowed_measure(self, measure, window, stride, use_vad, use_samples):
-        windows = self.get_windows(window, stride, return_slices=True, use_samples=use_samples)
+        windows = self.get_windows(
+            window, stride, return_slices=True, use_samples=use_samples
+        )
         index_arr = []
         value_arr = []
         for index_slice in windows:
@@ -214,7 +217,13 @@ class SNR:
             index_arr.append(index_slice)
         return np.array(index_arr), np.array(value_arr)
 
-    def get_windows(self, window: int=100, stride: float=0.5, return_slices: bool=False, use_samples: bool=False):
+    def get_windows(
+        self,
+        window: int = 100,
+        stride: float = 0.5,
+        return_slices: bool = False,
+        use_samples: bool = False,
+    ):
         """
         Used to get the windowed values of this ``SNR`` object.
         If ``return_slices`` is set to ``True``, slices which can be used to index an SNR object are returned (for example, use ``SNR[SNR.get_windows(return_slices=True)[0]]`` to get the first window).
@@ -226,7 +235,9 @@ class SNR:
             step = window
         else:
             step = int(self.rate * (window / 1000))
-        for index in np.arange(0, int(np.ceil(len(self._values) / step) * step), int(step * stride)):
+        for index in np.arange(
+            0, int(np.ceil(len(self._values) / step) * step), int(step * stride)
+        ):
             if index > len(self._values) - 1:
                 break
             index_slice = slice(index, min(index + step, len(self._values)))
@@ -279,7 +290,7 @@ class SNR:
                 value_arr.append(v)
         return np.array(index_arr), np.array(value_arr)
 
-    def vad_ratio(self, padding:int=10):
+    def vad_ratio(self, padding: int = 10):
         """
         Over the entire audio: Calculate the ratio of the mean power in voice vs. unvoiced regions. This can be infinity when the power in unvoiced regions is zero.
         ``padding`` (given in milliseconds) can make the voice regions smaller when positive, or larger when negative.
@@ -310,7 +321,9 @@ class SNR:
         v_result = (v_powers * v_factors).sum()
         return v_result - s_result
 
+
 g_vals = np.load(Path(__file__).parent.parent / "data" / "wada_values.npy")
+
 
 def _wada(wav):
     global g_vals
@@ -350,7 +363,7 @@ def _wada(wav):
             g_vals[wav_snr_idx + 1] - g_vals[wav_snr_idx]
         ) * (db_vals[wav_snr_idx + 1] - db_vals[wav_snr_idx])
     # Calculate SNR
-    dEng = sum(wav ** 2)
+    dEng = sum(wav**2)
     dFactor = 10 ** (wav_snr / 10)
     dNoiseEng = dEng / (1 + dFactor)  # Noise energy
     dSigEng = dEng * dFactor / (1 + dFactor)  # Signal energy

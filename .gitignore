@@ -13,3 +13,4 @@ __pypackages__
 .pdm.toml
 *.log
 run_longjob.sh
+*.lprof
