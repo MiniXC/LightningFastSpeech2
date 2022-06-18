@@ -265,7 +265,7 @@ class SNR:
         result = self._windowed_measure("wada", window, stride, use_vad, use_samples)
         for i, v in zip(*result):
             if v > -20 and v < 100:
-                value_arr.append(v)
+                value_arr.append(v + 20)
             else:
                 value_arr.append(np.nan)
         return np.array(value_arr)

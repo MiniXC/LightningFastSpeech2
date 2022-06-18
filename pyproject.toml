@@ -31,6 +31,7 @@ dependencies = [
     "tensorflow>=2.9.1",
     "crepe>=0.0.12",
     "textgrid>=1.5",
+    "rich>=12.4.4",
 ]
 license = {text = "MIT"}
 requires-python = ">=3.7,<3.11"

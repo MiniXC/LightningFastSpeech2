@@ -6,6 +6,7 @@ import os
 from glob import glob
 from pathlib import Path
 from random import Random
+import warnings
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -26,12 +27,13 @@ from matplotlib.gridspec import GridSpec
 from pandarallel import pandarallel
 from phones.convert import Converter
 from PIL import Image
+from rich import print
 from scipy import signal
 from third_party.dvectors.wav2mel import Wav2Mel
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
-from tqdm.auto import tqdm
-from tqdm.contrib.concurrent import process_map, thread_map
+from tqdm.rich import tqdm
+from tqdm.contrib.concurrent import process_map
 
 from dataset.audio_utils import dynamic_range_compression, get_alignment
 from dataset.cwt import CWT
@@ -40,24 +42,17 @@ from dataset.snr import SNR
 pandarallel.initialize(progress_bar=True)
 tqdm.pandas()
 
+warnings.filterwarnings('ignore')
 np.seterr(divide="raise", invalid="raise")
 
 
-class UnprocessedDataset(Dataset):
+class TTSDataset(Dataset):
     def __init__(
         self,
         audio_directory,  # can be several as well
         alignment_directory=None,  # can be several as well
         max_entries=None,
         stat_entries=10_000,
-        speaker_type="dvector",  # "none", "id", "dvector"
-        min_length=0.5,
-        max_length=32,
-        augment_duration=0, # 0.1,
-        variances=["pitch", "energy", "snr"],
-        variance_levels=["phone", "phone", "phone"],
-        variance_transforms=["cwt", "none", "none"],  # "cwt", "log", "none"
-        priors=["pitch", "energy", "snr", "duration"],
         sampling_rate=22050,
         n_fft=1024,
         win_length=1024,
@@ -68,6 +63,17 @@ class UnprocessedDataset(Dataset):
         pitch_quality=0.25,
         source_phoneset="arpabet",
         shuffle_seed=42,
+        overwrite_stats=False,
+        _stats=None,
+        # provided by model
+        speaker_type="dvector",  # "none", "id", "dvector"
+        min_length=0.5,
+        max_length=32,
+        augment_duration=0, # 0.1,
+        variances=["pitch", "energy", "snr"],
+        variance_levels=["phone", "phone", "phone"],
+        variance_transforms=["cwt", "cwt", "cwt"],  # "cwt", "log", "none"
+        priors=["pitch", "energy", "snr", "duration"],
     ):
         super().__init__()
 
@@ -134,6 +140,7 @@ class UnprocessedDataset(Dataset):
                 chunksize=100,
                 max_workers=multiprocessing.cpu_count(),
                 desc="collecting textgrid and audio files",
+                tqdm_class=tqdm,
             )
             if entry is not None
         ]
@@ -158,10 +165,13 @@ class UnprocessedDataset(Dataset):
         # DVECTORS
         if self.speaker_type == "dvector":
             self._create_dvectors()
-            dvecs = []
+            self.speaker2dvector = {}
             for i, row in self.data.iterrows():
-                dvecs.append(Path(row["audio"]).parent / "speaker.npy")
-            self.data["dvector"] = dvecs
+                if row["speaker"] not in self.speaker2dvector:
+                    self.speaker2dvector[row["speaker"]] = np.load(Path(row["audio"]).parent / "speaker.npy")
+        elif self.speaker_type == "id":
+            speakers = self.data["speaker"].unique()
+            self.speaker2id = {speaker: i for i, speaker in enumerate(speakers)}
 
         # MEL SPECTROGRAM
         self.mel_spectrogram = AT.Spectrogram(
@@ -196,40 +206,105 @@ class UnprocessedDataset(Dataset):
         self.data["phones"] = self.data["phones"].apply(
             lambda x: torch.tensor([self.phone2id[p] for p in x]).long()
         )
+        self.phone_level = False
 
         # COMPUTE STATS
-        stat_bs = 16
+        stat_bs = 4
         stat_list = []
-        for entry in tqdm(
-            DataLoader(
-                self,
-                num_workers=multiprocessing.cpu_count(),
-                batch_size=stat_bs,
-                collate_fn=self._collate_fn,
-                drop_last=True,
-            ),
-            total=min([stat_entries,max_entries])//stat_bs,
-            desc="computing stats",
-        ):
-            if len(stat_list) * stat_bs >= stat_entries:
-                break
-            stat_list.append(self._create_stats(entry))
-        stats = {}
-        stats["sample_size"] = stat_entries
-        for key in stat_list[0].keys():
-            stats[key] = {}
-            for np_stat in stat_list[0][key].keys():
-                if np_stat == "std":
-                    std_sq = np.array([s[key][np_stat] for s in stat_list])**2
-                    mean_list = np.array([s[key]["mean"] for s in stat_list])
-                    mean_diff_sq = (mean_list - np.mean(mean_list))**2
-                    stats[key][np_stat] = np.sqrt(np.mean(std_sq+mean_diff_sq))
+        if stat_entries == None:
+            stat_entries = len(self)
+        if max_entries == None:
+            max_entries = len(self)
+        if stat_entries > max_entries:
+            stat_entries = max_entries
+        stat_path = Path(self.dir) / "stats.json"
+        compute_stats = True
+        if _stats is not None:
+            self.stats = _stats
+            compute_stats = False
+        elif stat_path.exists() and not overwrite_stats:
+            with open(stat_path, "r") as f:
+                stats = json.load(f)
+            if "samples" in stats and stats["samples"] == stat_entries:
+                if "seed" in stats and stats["seed"] == shuffle_seed:
+                    print("loading stats from file")
+                    compute_stats = False
+                    self.stats = stats
                 else:
-                    stats[key][np_stat] = getattr(np, np_stat)(
-                        [s[key][np_stat] for s in stat_list]
-                    )
-        self.stats = stats
-        print(stats)
+                    raise ValueError("stats file exists but seed does not match")
+            else:
+                raise ValueError("stats file exists but number of samples does not match")
+        if compute_stats:
+            for entry in tqdm(
+                DataLoader(
+                    self,
+                    num_workers=multiprocessing.cpu_count(),
+                    batch_size=stat_bs,
+                    collate_fn=self._collate_fn,
+                    drop_last=True,
+                ),
+                total=min([stat_entries,max_entries])//stat_bs,
+                desc="computing stats",
+            ):
+                if len(stat_list) * stat_bs >= stat_entries:
+                    break
+                stat_list.append(self._create_stats(entry))
+            stats = {}
+            stats["sample_size"] = stat_entries
+            for key in stat_list[0].keys():
+                stats[key] = {}
+                for np_stat in stat_list[0][key].keys():
+                    if np_stat == "std":
+                        std_sq = np.array([s[key][np_stat] for s in stat_list])**2
+                        stats[key][np_stat] = float(np.sqrt(np.sum(std_sq) / len(std_sq)))
+                    if np_stat == "mean":
+                        stats[key][np_stat] = float(np.mean([s[key]["mean"] for s in stat_list]))
+                    if np_stat == "min":
+                        stats[key][np_stat] = float(np.min([s[key]["min"] for s in stat_list]))
+                    if np_stat == "max":
+                        stats[key][np_stat] = float(np.max([s[key]["max"] for s in stat_list]))
+            stats["seed"] = shuffle_seed
+            stats["samples"] = stat_entries
+            json.dump(stats, open(stat_path, "w"))
+            self.stats = stats
+
+        if "phone" in self.variance_levels:
+            self.phone_level = True
+
+    def create_validation_dataset(
+        self,
+        audio_directory,  # can be several as well
+        alignment_directory=None,  # can be several as well
+        max_entries=None,
+        shuffle_seed=42,
+    ):
+        return TTSDataset(
+            audio_directory,
+            alignment_directory=alignment_directory,
+            max_entries=max_entries,
+            augment_duration=0,
+            shuffle_seed=shuffle_seed,
+            # use train dataset stats
+            _stats=self.stats,
+            # use train dataset parameters
+            speaker_type=self.speaker_type,
+            min_length=self.min_length,
+            max_length=self.max_length,
+            variances=self.variances,
+            variance_levels=self.variance_levels,
+            variance_transforms=self.variance_transforms,
+            priors=self.priors,
+            sampling_rate=self.sampling_rate,
+            n_fft=self.n_fft,
+            win_length=self.win_length,
+            hop_length=self.hop_length,
+            n_mels=self.n_mels,
+            fmin=self.fmin,
+            fmax=self.fmax,
+            pitch_quality=self.pitch_quality,
+            source_phoneset=self.source_phoneset,
+        )
+
 
     def __len__(self):
         return len(self.data)
@@ -262,11 +337,11 @@ class UnprocessedDataset(Dataset):
             duration = self._augment_duration(duration)
         dur_sum = sum(duration)
         unexpanded_silence_mask = np.array(row["phones"]) == self.phone2id["[SILENCE]"]
-        silence_mask = UnprocessedDataset._expand(unexpanded_silence_mask, duration)
+        silence_mask = TTSDataset._expand(unexpanded_silence_mask, duration)
 
         # VARIANCES
         # TODO: add variance class
-        variances = self._create_variances(audio, silence_mask)
+        variances = self._create_variances(audio, silence_mask, duration)
 
         # PRIORS
         priors = {}
@@ -275,10 +350,13 @@ class UnprocessedDataset(Dataset):
                 priors[var] = np.mean(duration[~unexpanded_silence_mask])
             else:
                 if isinstance(variances[var], dict):
-                    var_val = variances[var]["signal"]
+                    var_val = variances[var]["original_signal"]
                 else:
                     var_val = variances[var]
-                priors[var] = np.mean(var_val[~silence_mask])
+                if self.variance_levels[self.variances.index(var)] == "phone":
+                    priors[var] = np.mean(var_val[~unexpanded_silence_mask])
+                else:
+                    priors[var] = np.mean(var_val[~silence_mask])
 
         # TEXT & PHONES
         text = row["text"]
@@ -290,18 +368,20 @@ class UnprocessedDataset(Dataset):
             "mel": np.array(mel.T)[:dur_sum],
             "variances": {},
             "priors": {},
-            "speaker": {},
             "text": text,
             "phones": phones,
             "duration": duration,
+            "silence_mask": silence_mask,
+            "unexpanded_silence_mask": unexpanded_silence_mask,
         }
         for var in self.variances:
             result["variances"][var] = variances[var]
         for var in self.priors:
             result["priors"][var] = priors[var]
-        result["speaker"]["id"] = row["speaker"]
         if self.speaker_type == "dvector":
-            result["speaker"]["dvector"] = str(row["dvector"])
+            result["speaker"] = self.speaker2dvector[row["speaker"]]
+        elif self.speaker_type == "id":
+            result["speaker"] = self.speaker2id[row["speaker"]]
 
         return result
 
@@ -314,7 +394,7 @@ class UnprocessedDataset(Dataset):
         phone2id["[PAD]"] = 0
         return phone2id
 
-    def _create_variances(self, audio, silence_mask):
+    def _create_variances(self, audio, silence_mask, durations):
         variances = {}
 
         # PITCH
@@ -330,12 +410,11 @@ class UnprocessedDataset(Dataset):
             )
             variances["pitch"][variances["pitch"] == 0] = np.nan
             if len(silence_mask) < len(variances["pitch"]):
-                variances["pitch"] = variances["pitch"][:len(silence_mask)]
+                variances["pitch"] = variances["pitch"][:sum(durations)]
             variances["pitch"][silence_mask] = np.nan
             if np.isnan(variances["pitch"]).all():
                 variances["pitch"][:] = 1e-7
-                print(variances["pitch"])
-            variances["pitch"] = UnprocessedDataset._interpolate(variances["pitch"])
+            variances["pitch"] = TTSDataset._interpolate(variances["pitch"])
 
         # SNR
         if "snr" in self.variances:
@@ -346,12 +425,12 @@ class UnprocessedDataset(Dataset):
                 use_samples=True,
             )
             if len(silence_mask) < len(variances["snr"]):
-                variances["snr"] = variances["snr"][:len(silence_mask)]
+                variances["snr"] = variances["snr"][:sum(durations)]
             variances["snr"][silence_mask] = np.nan
             if all(np.isnan(variances["snr"])):
                 variances["snr"] = np.zeros_like(variances["snr"])
             else:
-                variances["snr"] = UnprocessedDataset._interpolate(variances["snr"])
+                variances["snr"] = TTSDataset._interpolate(variances["snr"])
 
         # ENERGY
         if "energy" in self.variances:
@@ -373,10 +452,19 @@ class UnprocessedDataset(Dataset):
                 ]
             )
             if len(silence_mask) < len(variances["energy"]):
-                variances["energy"] = variances["energy"][:len(silence_mask)]
+                variances["energy"] = variances["energy"][:sum(durations)]
 
         # TRANSFORMS
         for i, var in enumerate(self.variances):
+            if self.phone_level and self.variance_levels[i] == "phone":
+                pos = 0
+                for j, d in enumerate(durations):
+                    if d > 0:
+                        variances[var][j] = np.mean(variances[var][pos: pos + d])
+                    else:
+                        variances[var][j] = 1e-7
+                    pos += d
+                variances[var] = variances[var][:len(durations)]
             if self.variance_transforms[i] == "cwt":
                 variances[var] = self.cwt.decompose(variances[var])
             if self.variance_transforms[i] == "log":
@@ -393,7 +481,7 @@ class UnprocessedDataset(Dataset):
 
         for _, row in tqdm(
             self.data.iterrows(),
-            desc="creating/loading utt. dvectors (this only has to be done once)",
+            desc="creating/loading utt. dvectors",
             total=len(self.data),
         ):
             dvec_path = Path(row["audio"].replace(".wav", ".npy"))
@@ -413,7 +501,7 @@ class UnprocessedDataset(Dataset):
 
         for speaker in tqdm(
             self.data["speaker"].unique(),
-            desc="creating/loading speaker dvectors (this only has to be done once)",
+            desc="creating/loading speaker dvectors",
         ):
             speaker_df = self.data[self.data["speaker"] == speaker]
             speaker_path = Path(speaker_df.iloc[0]["audio"]).parent / "speaker.npy"
@@ -493,28 +581,30 @@ class UnprocessedDataset(Dataset):
         result = {}
         for i, var in enumerate(self.variances):
             if self.variance_transforms[i] == "cwt":
-                var_val = x[f"variances_{var}_signal"].float()
+                var_val = x[f"variances_{var}_original_signal"].float()
             else:
                 var_val = x[f"variances_{var}"].float()
+            var_val[x["silence_mask"]] = np.nan
             result[var] = {}
-            result[var]["min"] = torch.min(var_val)
-            result[var]["max"] = torch.max(var_val)
-            result[var]["mean"] = torch.mean(var_val)
-            result[var]["std"] = torch.std(var_val)
+            result[var]["min"] = torch.min(var_val[~torch.isnan(var_val)])
+            result[var]["max"] = torch.max(var_val[~torch.isnan(var_val)])
+            result[var]["mean"] = torch.nanmean(var_val)
+            result[var]["std"] = torch.std(var_val[~torch.isnan(var_val)])
             if var in self.priors:
                 result[var + "_prior"] = {}
-                result[var + "_prior"]["min"] = torch.min(torch.mean(var_val, axis=0))
-                result[var + "_prior"]["max"] = torch.max(torch.mean(var_val, axis=0))
-                result[var + "_prior"]["mean"] = torch.mean(torch.mean(var_val, axis=0))
-                result[var + "_prior"]["std"] = torch.std(torch.mean(var_val, axis=0))
+                result[var + "_prior"]["min"] = torch.min(torch.nanmean(var_val, axis=1))
+                result[var + "_prior"]["max"] = torch.max(torch.nanmean(var_val, axis=1))
+                result[var + "_prior"]["mean"] = torch.mean(torch.nanmean(var_val, axis=1))
+                result[var + "_prior"]["std"] = torch.std(torch.nanmean(var_val, axis=1))
         for var in self.priors:
             if var not in self.variances:
                 var_val = x[var].float()
+                var_val[x["unexpanded_silence_mask"]] = np.nan
                 result[var + "_prior"] = {}
-                result[var + "_prior"]["min"] = torch.min(torch.mean(var_val, axis=0))
-                result[var + "_prior"]["max"] = torch.max(torch.mean(var_val, axis=0))
-                result[var + "_prior"]["mean"] = torch.mean(torch.mean(var_val, axis=0))
-                result[var + "_prior"]["std"] = torch.std(torch.mean(var_val, axis=0))
+                result[var + "_prior"]["min"] = torch.min(torch.nanmean(var_val, axis=1))
+                result[var + "_prior"]["max"] = torch.max(torch.nanmean(var_val, axis=1))
+                result[var + "_prior"]["mean"] = torch.mean(torch.nanmean(var_val, axis=1))
+                result[var + "_prior"]["std"] = torch.std(torch.nanmean(var_val, axis=1))
         return result
 
     def _augment_duration(self, duration):
@@ -563,10 +653,10 @@ class UnprocessedDataset(Dataset):
             flattened[((path + "_") if path else "") + key] = structure
         # elif isinstance(structure, list):
         #     for i, item in enumerate(structure):
-        #         UnprocessedDataset._flatten(item, "%d" % i, path + "_" + key, flattened)
+        #         TTSDataset._flatten(item, "%d" % i, path + "_" + key, flattened)
         else:
             for new_key, value in structure.items():
-                UnprocessedDataset._flatten(
+                TTSDataset._flatten(
                     value, new_key, ((path + "_") if path else "") + key, flattened
                 )
         return flattened
@@ -574,14 +664,15 @@ class UnprocessedDataset(Dataset):
     def _collate_fn(self, data):
         # list-of-dict -> dict-of-lists
         # (see https://stackoverflow.com/a/33046935)
-        data = [UnprocessedDataset._flatten(x) for x in data]
+        data = [TTSDataset._flatten(x) for x in data]
         l2d = lambda x: {k: [dic[k] for dic in x] for k in x[0]}
         data = l2d(data)
         for key in data.keys():
             if isinstance(data[key][0], np.ndarray):
                 data[key] = [torch.tensor(x) for x in data[key]]
             if torch.is_tensor(data[key][0]):
-                data[key] = pad_sequence(data[key], batch_first=True, padding_value=0)
+                pad_val = 1 if "silence_mask" in key else 0
+                data[key] = pad_sequence(data[key], batch_first=True, padding_value=pad_val)
         return data
 
     def plot(self, sample_or_idx, show=True):
@@ -597,7 +688,7 @@ class UnprocessedDataset(Dataset):
             figsize=[7 * (len(mel) / 150) + 3, 4 + 2 * cwts],
             constrained_layout=True
         )
-        gs = GridSpec(4, 4, figure=fig)
+        gs = GridSpec(5, 4, figure=fig)
         
         audio_len = len(mel) * self.hop_length / self.sampling_rate
         ax0 = fig.add_subplot(gs[:2, 1:])
@@ -614,6 +705,7 @@ class UnprocessedDataset(Dataset):
         ax0.set_ylim(0, 80)
         ax0.set_xlabel("Time (seconds)")
         ax0.set_yticks(range(0, 81, 10))
+        ax0.set_title(f'"{sample["text"]}"')
 
         # PHONES
         x = 0
@@ -642,9 +734,11 @@ class UnprocessedDataset(Dataset):
         num_vars = len(self.variances)
         for i, var in enumerate(self.variances):
             if self.variance_transforms[i] == "cwt":
-                var_vals = sample["variances"][var]["signal"]
+                var_vals = sample["variances"][var]["original_signal"]
             else:
                 var_vals = sample["variances"][var]
+            if self.variance_levels[i] == "phone":
+                var_vals = TTSDataset._expand(var_vals, sample["duration"])
             variance_text += [var] * len(mel)
             variance_x += list(
                 np.array(range(len(mel))) * self.hop_length / self.sampling_rate
@@ -662,12 +756,15 @@ class UnprocessedDataset(Dataset):
             ax=ax0,
             linewidth=2,
         )
+        ax_num = 1
         for i, var in enumerate(self.variances):
-            ax_num = 1
+            cwt_ax = []
             if self.variance_transforms[i] == "cwt":
                 spectrogram = sample["variances"][var]["spectrogram"]
-                cwt_ax = fig.add_subplot(gs[1+ax_num, 1:], sharex=ax0)
-                cwt_ax.imshow(
+                if self.variance_levels[i] == "phone":
+                    spectrogram = TTSDataset._expand(spectrogram, sample["duration"])
+                cwt_ax.append(fig.add_subplot(gs[1+ax_num, 1:]))
+                cwt_ax[-1].imshow(
                     spectrogram.T,
                     extent=[0, audio_len, 1, 10],
                     cmap="PRGn",
@@ -676,9 +773,9 @@ class UnprocessedDataset(Dataset):
                     vmin=-abs(spectrogram).max(),
                     interpolation="gaussian",
                 )
-                cwt_ax.set_ylabel(f"{var.title()} Frequency")
-                cwt_ax.set_ylim(1,10)
-                cwt_ax.set_yticks(range(1,11,2))
+                cwt_ax[-1].set_ylabel(f"{var.title()} Frequency")
+                cwt_ax[-1].set_ylim(1,10)
+                cwt_ax[-1].set_yticks(range(1,11,2))
                 ax_num += 1
 
         # PRIORS
@@ -691,9 +788,6 @@ class UnprocessedDataset(Dataset):
             prior_ax.plot(x, stats.norm.pdf(x, mu, sig))
             prior_ax.set_title(f"{var} Prior")
             prior_ax.axvline(sample["priors"][var], color="red")
-
-        # LEGEND & AXES
-        plt.tight_layout()
 
         # SHOW/CREATE IMG
         if show:

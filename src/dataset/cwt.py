@@ -28,6 +28,8 @@ class CWT:
         self.tau = tau
 
     def decompose(self, signal):
+        signal[signal == 0] = 1e-7
+        original_signal = signal.copy()
         signal = np.log(signal)
         cwtmatr, widths = wavelet_decomposition(
             (signal - signal.mean()) / (signal.std() + 1e-7),
@@ -37,6 +39,7 @@ class CWT:
         )
         return {
             "signal": signal,
+            "original_signal": original_signal,
             "spectrogram": cwtmatr.T,
             "mean": signal.mean(),
             "std": signal.std(),

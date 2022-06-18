@@ -1,20 +1,24 @@
 import json
 import torch
-import third_party.hifigan
+from .models import Generator
+
+class AttrDict(dict):
+    def __init__(self, *args, **kwargs):
+        super(AttrDict, self).__init__(*args, **kwargs)
+        self.__dict__ = self
 
 # TODO: decompress dynamic range
 
-class HifiganSynthesiser:
+class Synthesiser:
     def __init__(
         self,
         device="cuda:0",
         model="universal",
     ):
-        with open("hifigan/config.json", "r") as f:
+        with open("third_party/hifigan/config.json", "r") as f:
             config = json.load(f)
-        config["sampling_rate"] = sampling_rate
-        config = hifigan.AttrDict(config)
-        vocoder = hifigan.Generator(config)
+        config = AttrDict(config)
+        vocoder = Generator(config)
         ckpt = torch.load(f"third_party/hifigan/generator_{model}.pth.tar")
         vocoder.load_state_dict(ckpt["generator"])
         vocoder.eval()

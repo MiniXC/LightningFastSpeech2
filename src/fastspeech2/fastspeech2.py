@@ -11,9 +11,9 @@ import wandb
 import pandas as pd
 from scipy.stats import ks_2samp
 
-from dataset import ProcessedDataset, UnprocessedDataset
+from dataset import TTSDataset
 from model import ConformerEncoderLayer, PositionalEncoding, VarianceAdaptor
-from synthesiser import Synthesiser
+from third_party.hifigan import Synthesiser
 
 num_cpus = multiprocessing.cpu_count()
 
@@ -21,85 +21,45 @@ num_cpus = multiprocessing.cpu_count()
 class FastSpeech2(pl.LightningModule):
     def __init__(
         self,
-        lr,
-        batch_size,
-        speaker_type,
-        variances,
-        priors,
-        duration_augmentation,
-        train_path,
-        valid_path,
-        inference_path,
+        lr=5e-03,
+        batch_size=6,
+        speaker_type="dvector",  # "none", "id", "dvector"
+        min_length=0.5,
+        max_length=32,
+        augment_duration=0.1, # 0.1,
+        variances=["pitch", "energy", "snr"],
+        variance_levels=["phone", "phone", "phone"],
+        variance_transforms=["cwt", "cwt", "cwt"],  # "cwt", "log", "none"
+        priors=["pitch", "energy", "snr", "duration"],
+        train_ds_params=None,
+        valid_ds_params=None,
     ):
         super().__init__()
 
         # hparams
-        self.lr = lr
-        self.batch_size = batch_size
-        self.speaker_type = speaker_type
-        self.variances = variances
-        self.priors = priors
-        self.duration_augmentation = duration_augmentation
+        self.save_hyperparameters(ignore=["train_ds_params", "valid_ds_params"])
 
         # data
-        self.train_path = train_path
-        self.valid_path = valid_path
-        self.inference_path = inference_path
+        train_ds_params["speaker_type"] = speaker_type
+        train_ds_params["min_length"] = min_length
+        train_ds_params["max_length"] = max_length
+        train_ds_params["augment_duration"] = augment_duration
+        train_ds_params["variances"] = variances
+        train_ds_params["variance_levels"] = variance_levels
+        train_ds_params["variance_transforms"] = variance_transforms
+        train_ds_params["priors"] = priors
+        self.train_ds = TTSDataset(**train_ds_params)
+        self.valid_ds = self.train_ds.create_validation_dataset(**valid_ds_params)
 
-        if "+" in train_path:
-            train_uds = [
-                UnprocessedDataset(
-                    x,
-                    dvector=self.has_dvector,
-                    augment_duration=augment_duration,
-                    use_snr=self.use_snr,
-                    conditioned=self.conditioned,
-                )
-                for x in train_path.split("+")
-            ]
-            train_dss = [
-                ProcessedDataset(
-                    unprocessed_ds=x, split="train", phone_vec=False, stats=stats
-                )
-                for x in train_uds
-            ]
-            self.train_ds = ConcatDataset(train_dss)
-        else:
-            train_ud = UnprocessedDataset(
-                train_path,
-                dvector=self.has_dvector,
-                augment_duration=augment_duration,
-                use_snr=self.use_snr,
-                # max_entries=10_000,
-                conditioned=self.conditioned,
-            )
-            self.train_ds = ProcessedDataset(
-                unprocessed_ds=train_ud,
-                split="train",
-                phone_vec=False,
-                stats=stats,
-            )
-        valid_ud = UnprocessedDataset(
-            valid_path,
-            dvector=self.has_dvector,
-            augment_duration=0,
-            use_snr=self.use_snr,
-            # max_entries=500,
-            conditioned=self.conditioned,
-        )
-        self.valid_ds = ProcessedDataset(
-            unprocessed_ds=valid_ud,
-            split="val",
-            phone_vec=False,
-            phone2id=self.train_ds.phone2id,
-            stats=stats,
-        )
+        self.synth = Synthesiser()
 
-        self.synth = Synthesiser(22050)
-
-        vocab_n = self.train_ds.vocab_n
-        speaker_n = self.train_ds.speaker_n
-        stats = self.train_ds.stats
+        # needed for inference without a dataset
+        self.stats = self.train_ds.stats
+        self.phone2id = self.train_ds.phone2id
+        if self.train_ds.speaker_type == "dvector":
+            self.speaker2dvector = self.train_ds.speaker2dvector
+        if self.train_ds.speaker_type == "id":
+            self.speaker2id = self.train_ds.speaker2id
 
         # config
         encoder_hidden = config["model"].getint("encoder_hidden")
@@ -212,6 +172,14 @@ class FastSpeech2(pl.LightningModule):
                     nbins,
                     encoder_hidden,
                 )
+
+    def on_load_checkpoint(self, checkpoint):
+        self.stats = checkpoint["stats"]
+        self.phone2id = checkpoint['phone2id']
+
+    def on_save_checkpoint(self, checkpoint):
+        checkpoint["stats"] = self.stats
+        checkpoint['phone2id'] = self.phone2id
 
     def get_conditioned(self, targets):
         pitch_embedding = self.condition_pitch_embedding(

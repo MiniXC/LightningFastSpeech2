@@ -4,12 +4,7 @@ import torch
 import torch.nn as nn
 from torch.nn.modules.transformer import TransformerEncoderLayer, TransformerEncoder
 from torch.nn.utils.rnn import pad_sequence
-import configparser
-from stochastic_duration_predictor.sdp import StochasticDurationPredictor
-
-config = configparser.ConfigParser()
-config.read("config.ini")
-
+from third_party.stochastic_duration_predictor.sdp import StochasticDurationPredictor
 
 def generate_square_subsequent_mask(sz):
     mask = (torch.triu(torch.ones((sz, sz))) == 1).transpose(0, 1)
