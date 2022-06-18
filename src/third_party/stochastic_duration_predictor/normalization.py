@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 
+
 class LayerNorm2(nn.Module):
     """Layer norm for the 2nd dimension of the input using torch primitive.
     Args:
@@ -21,5 +22,7 @@ class LayerNorm2(nn.Module):
 
     def forward(self, x):
         x = x.transpose(1, -1)
-        x = torch.nn.functional.layer_norm(x, (self.channels,), self.gamma, self.beta, self.eps)
+        x = torch.nn.functional.layer_norm(
+            x, (self.channels,), self.gamma, self.beta, self.eps
+        )
         return x.transpose(1, -1)

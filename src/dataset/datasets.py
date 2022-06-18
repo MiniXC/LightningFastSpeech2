@@ -42,7 +42,7 @@ from dataset.snr import SNR
 pandarallel.initialize(progress_bar=True)
 tqdm.pandas()
 
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore")
 np.seterr(divide="raise", invalid="raise")
 
 
@@ -69,7 +69,7 @@ class TTSDataset(Dataset):
         speaker_type="dvector",  # "none", "id", "dvector"
         min_length=0.5,
         max_length=32,
-        augment_duration=0, # 0.1,
+        augment_duration=0,  # 0.1,
         variances=["pitch", "energy", "snr"],
         variance_levels=["phone", "phone", "phone"],
         variance_transforms=["cwt", "cwt", "cwt"],  # "cwt", "log", "none"
@@ -168,7 +168,9 @@ class TTSDataset(Dataset):
             self.speaker2dvector = {}
             for i, row in self.data.iterrows():
                 if row["speaker"] not in self.speaker2dvector:
-                    self.speaker2dvector[row["speaker"]] = np.load(Path(row["audio"]).parent / "speaker.npy")
+                    self.speaker2dvector[row["speaker"]] = np.load(
+                        Path(row["audio"]).parent / "speaker.npy"
+                    )
         elif self.speaker_type == "id":
             speakers = self.data["speaker"].unique()
             self.speaker2id = {speaker: i for i, speaker in enumerate(speakers)}
@@ -233,7 +235,9 @@ class TTSDataset(Dataset):
                 else:
                     raise ValueError("stats file exists but seed does not match")
             else:
-                raise ValueError("stats file exists but number of samples does not match")
+                raise ValueError(
+                    "stats file exists but number of samples does not match"
+                )
         if compute_stats:
             for entry in tqdm(
                 DataLoader(
@@ -243,7 +247,7 @@ class TTSDataset(Dataset):
                     collate_fn=self._collate_fn,
                     drop_last=True,
                 ),
-                total=min([stat_entries,max_entries])//stat_bs,
+                total=min([stat_entries, max_entries]) // stat_bs,
                 desc="computing stats",
             ):
                 if len(stat_list) * stat_bs >= stat_entries:
@@ -255,14 +259,22 @@ class TTSDataset(Dataset):
                 stats[key] = {}
                 for np_stat in stat_list[0][key].keys():
                     if np_stat == "std":
-                        std_sq = np.array([s[key][np_stat] for s in stat_list])**2
-                        stats[key][np_stat] = float(np.sqrt(np.sum(std_sq) / len(std_sq)))
+                        std_sq = np.array([s[key][np_stat] for s in stat_list]) ** 2
+                        stats[key][np_stat] = float(
+                            np.sqrt(np.sum(std_sq) / len(std_sq))
+                        )
                     if np_stat == "mean":
-                        stats[key][np_stat] = float(np.mean([s[key]["mean"] for s in stat_list]))
+                        stats[key][np_stat] = float(
+                            np.mean([s[key]["mean"] for s in stat_list])
+                        )
                     if np_stat == "min":
-                        stats[key][np_stat] = float(np.min([s[key]["min"] for s in stat_list]))
+                        stats[key][np_stat] = float(
+                            np.min([s[key]["min"] for s in stat_list])
+                        )
                     if np_stat == "max":
-                        stats[key][np_stat] = float(np.max([s[key]["max"] for s in stat_list]))
+                        stats[key][np_stat] = float(
+                            np.max([s[key]["max"] for s in stat_list])
+                        )
             stats["seed"] = shuffle_seed
             stats["samples"] = stat_entries
             json.dump(stats, open(stat_path, "w"))
@@ -304,7 +316,6 @@ class TTSDataset(Dataset):
             pitch_quality=self.pitch_quality,
             source_phoneset=self.source_phoneset,
         )
-
 
     def __len__(self):
         return len(self.data)
@@ -410,7 +421,7 @@ class TTSDataset(Dataset):
             )
             variances["pitch"][variances["pitch"] == 0] = np.nan
             if len(silence_mask) < len(variances["pitch"]):
-                variances["pitch"] = variances["pitch"][:sum(durations)]
+                variances["pitch"] = variances["pitch"][: sum(durations)]
             variances["pitch"][silence_mask] = np.nan
             if np.isnan(variances["pitch"]).all():
                 variances["pitch"][:] = 1e-7
@@ -425,7 +436,7 @@ class TTSDataset(Dataset):
                 use_samples=True,
             )
             if len(silence_mask) < len(variances["snr"]):
-                variances["snr"] = variances["snr"][:sum(durations)]
+                variances["snr"] = variances["snr"][: sum(durations)]
             variances["snr"][silence_mask] = np.nan
             if all(np.isnan(variances["snr"])):
                 variances["snr"] = np.zeros_like(variances["snr"])
@@ -452,7 +463,7 @@ class TTSDataset(Dataset):
                 ]
             )
             if len(silence_mask) < len(variances["energy"]):
-                variances["energy"] = variances["energy"][:sum(durations)]
+                variances["energy"] = variances["energy"][: sum(durations)]
 
         # TRANSFORMS
         for i, var in enumerate(self.variances):
@@ -460,11 +471,11 @@ class TTSDataset(Dataset):
                 pos = 0
                 for j, d in enumerate(durations):
                     if d > 0:
-                        variances[var][j] = np.mean(variances[var][pos: pos + d])
+                        variances[var][j] = np.mean(variances[var][pos : pos + d])
                     else:
                         variances[var][j] = 1e-7
                     pos += d
-                variances[var] = variances[var][:len(durations)]
+                variances[var] = variances[var][: len(durations)]
             if self.variance_transforms[i] == "cwt":
                 variances[var] = self.cwt.decompose(variances[var])
             if self.variance_transforms[i] == "log":
@@ -592,19 +603,35 @@ class TTSDataset(Dataset):
             result[var]["std"] = torch.std(var_val[~torch.isnan(var_val)])
             if var in self.priors:
                 result[var + "_prior"] = {}
-                result[var + "_prior"]["min"] = torch.min(torch.nanmean(var_val, axis=1))
-                result[var + "_prior"]["max"] = torch.max(torch.nanmean(var_val, axis=1))
-                result[var + "_prior"]["mean"] = torch.mean(torch.nanmean(var_val, axis=1))
-                result[var + "_prior"]["std"] = torch.std(torch.nanmean(var_val, axis=1))
+                result[var + "_prior"]["min"] = torch.min(
+                    torch.nanmean(var_val, axis=1)
+                )
+                result[var + "_prior"]["max"] = torch.max(
+                    torch.nanmean(var_val, axis=1)
+                )
+                result[var + "_prior"]["mean"] = torch.mean(
+                    torch.nanmean(var_val, axis=1)
+                )
+                result[var + "_prior"]["std"] = torch.std(
+                    torch.nanmean(var_val, axis=1)
+                )
         for var in self.priors:
             if var not in self.variances:
                 var_val = x[var].float()
                 var_val[x["unexpanded_silence_mask"]] = np.nan
                 result[var + "_prior"] = {}
-                result[var + "_prior"]["min"] = torch.min(torch.nanmean(var_val, axis=1))
-                result[var + "_prior"]["max"] = torch.max(torch.nanmean(var_val, axis=1))
-                result[var + "_prior"]["mean"] = torch.mean(torch.nanmean(var_val, axis=1))
-                result[var + "_prior"]["std"] = torch.std(torch.nanmean(var_val, axis=1))
+                result[var + "_prior"]["min"] = torch.min(
+                    torch.nanmean(var_val, axis=1)
+                )
+                result[var + "_prior"]["max"] = torch.max(
+                    torch.nanmean(var_val, axis=1)
+                )
+                result[var + "_prior"]["mean"] = torch.mean(
+                    torch.nanmean(var_val, axis=1)
+                )
+                result[var + "_prior"]["std"] = torch.std(
+                    torch.nanmean(var_val, axis=1)
+                )
         return result
 
     def _augment_duration(self, duration):
@@ -672,7 +699,9 @@ class TTSDataset(Dataset):
                 data[key] = [torch.tensor(x) for x in data[key]]
             if torch.is_tensor(data[key][0]):
                 pad_val = 1 if "silence_mask" in key else 0
-                data[key] = pad_sequence(data[key], batch_first=True, padding_value=pad_val)
+                data[key] = pad_sequence(
+                    data[key], batch_first=True, padding_value=pad_val
+                )
         return data
 
     def plot(self, sample_or_idx, show=True):
@@ -685,11 +714,10 @@ class TTSDataset(Dataset):
         mel = sample["mel"]
         cwts = self.variance_transforms.count("cwt")
         fig = plt.figure(
-            figsize=[7 * (len(mel) / 150) + 3, 4 + 2 * cwts],
-            constrained_layout=True
+            figsize=[7 * (len(mel) / 150) + 3, 4 + 2 * cwts], constrained_layout=True
         )
         gs = GridSpec(5, 4, figure=fig)
-        
+
         audio_len = len(mel) * self.hop_length / self.sampling_rate
         ax0 = fig.add_subplot(gs[:2, 1:])
         ax0.imshow(
@@ -763,7 +791,7 @@ class TTSDataset(Dataset):
                 spectrogram = sample["variances"][var]["spectrogram"]
                 if self.variance_levels[i] == "phone":
                     spectrogram = TTSDataset._expand(spectrogram, sample["duration"])
-                cwt_ax.append(fig.add_subplot(gs[1+ax_num, 1:]))
+                cwt_ax.append(fig.add_subplot(gs[1 + ax_num, 1:]))
                 cwt_ax[-1].imshow(
                     spectrogram.T,
                     extent=[0, audio_len, 1, 10],
@@ -774,8 +802,8 @@ class TTSDataset(Dataset):
                     interpolation="gaussian",
                 )
                 cwt_ax[-1].set_ylabel(f"{var.title()} Frequency")
-                cwt_ax[-1].set_ylim(1,10)
-                cwt_ax[-1].set_yticks(range(1,11,2))
+                cwt_ax[-1].set_ylim(1, 10)
+                cwt_ax[-1].set_yticks(range(1, 11, 2))
                 ax_num += 1
 
         # PRIORS

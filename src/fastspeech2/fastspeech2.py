@@ -5,18 +5,18 @@ import multiprocessing
 import pytorch_lightning as pl
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, ConcatDataset
+from torch.utils.data import DataLoader
 from torch.nn.modules.transformer import TransformerEncoder
 import wandb
 import pandas as pd
 from scipy.stats import ks_2samp
 
 from dataset import TTSDataset
-from model import ConformerEncoderLayer, PositionalEncoding, VarianceAdaptor
+from model import ConformerEncoderLayer, PositionalEncoding, VarianceAdaptor, PriorEmbedding, SpeakerEmbedding
 from third_party.hifigan import Synthesiser
+from loss import FastSpeech2Loss
 
 num_cpus = multiprocessing.cpu_count()
-
 
 class FastSpeech2(pl.LightningModule):
     def __init__(
@@ -26,13 +26,27 @@ class FastSpeech2(pl.LightningModule):
         speaker_type="dvector",  # "none", "id", "dvector"
         min_length=0.5,
         max_length=32,
-        augment_duration=0.1, # 0.1,
+        augment_duration=0.1,  # 0.1,
         variances=["pitch", "energy", "snr"],
         variance_levels=["phone", "phone", "phone"],
         variance_transforms=["cwt", "cwt", "cwt"],  # "cwt", "log", "none"
         priors=["pitch", "energy", "snr", "duration"],
+        n_mels=80,
         train_ds_params=None,
         valid_ds_params=None,
+        stochastic_duration=False,
+        encoder_hidden=256,
+        encoder_head=2,
+        encoder_layers=4,
+        encoder_dropout=0.1,
+        encoder_kernel_sizes=[9, 9, 9, 9],
+        decoder_hidden=256,
+        decoder_head=2,
+        decoder_layers=4,  # TODO: test with 6 layers
+        decoder_dropout=0.1,
+        decoder_kernel_sizes=[9, 9, 9, 9],
+        conv_filter_size=1024,
+        variance_nbins=256,
     ):
         super().__init__()
 
@@ -40,16 +54,19 @@ class FastSpeech2(pl.LightningModule):
         self.save_hyperparameters(ignore=["train_ds_params", "valid_ds_params"])
 
         # data
-        train_ds_params["speaker_type"] = speaker_type
-        train_ds_params["min_length"] = min_length
-        train_ds_params["max_length"] = max_length
-        train_ds_params["augment_duration"] = augment_duration
-        train_ds_params["variances"] = variances
-        train_ds_params["variance_levels"] = variance_levels
-        train_ds_params["variance_transforms"] = variance_transforms
-        train_ds_params["priors"] = priors
-        self.train_ds = TTSDataset(**train_ds_params)
-        self.valid_ds = self.train_ds.create_validation_dataset(**valid_ds_params)
+        if train_ds_params is not None:
+            train_ds_params["speaker_type"] = speaker_type
+            train_ds_params["min_length"] = min_length
+            train_ds_params["max_length"] = max_length
+            train_ds_params["augment_duration"] = augment_duration
+            train_ds_params["variances"] = variances
+            train_ds_params["variance_levels"] = variance_levels
+            train_ds_params["variance_transforms"] = variance_transforms
+            train_ds_params["priors"] = priors
+            train_ds_params["n_mels"] = n_mels
+            self.train_ds = TTSDataset(**train_ds_params)
+        if valid_ds_params is not None:
+            self.valid_ds = self.train_ds.create_validation_dataset(**valid_ds_params)
 
         self.synth = Synthesiser()
 
@@ -61,245 +78,153 @@ class FastSpeech2(pl.LightningModule):
         if self.train_ds.speaker_type == "id":
             self.speaker2id = self.train_ds.speaker2id
 
-        # config
-        encoder_hidden = config["model"].getint("encoder_hidden")
-        encoder_head = config["model"].getint("encoder_head")
-        encoder_layers = config["model"].getint("encoder_layers")
-        encoder_dropout = config["model"].getfloat("encoder_dropout")
-        decoder_hidden = config["model"].getint("decoder_hidden")
-        decoder_head = config["model"].getint("decoder_head")
-        decoder_layers = config["model"].getint("decoder_layers")
-        decoder_dropout = config["model"].getfloat("decoder_dropout")
-        conv_filter_size = config["model"].getint("conv_filter_size")
-        kernel = (
-            config["model"].getint("conv_kernel_1"),
-            config["model"].getint("conv_kernel_2"),
+        self.phone_embedding = nn.Embedding(
+            len(self.phone2id), self.hparams.encoder_hidden, padding_idx=0
         )
-        self.tgt_max_length = config["model"].getint("tgt_max_length")
-        self.max_lr = config["train"].getfloat("max_lr")
-        mel_channels = config["model"].getint("mel_channels")
-        self.has_postnet = config["model"].getboolean("postnet")
-
-        # modules
-
-        self.phone_embedding = nn.Embedding(vocab_n, encoder_hidden, padding_idx=0)
 
         if not self.has_dvector:
             self.speaker_embedding = nn.Embedding(
-                speaker_n,
-                encoder_hidden,
+                len(self.speaker2id),
+                self.hparams.encoder_hidden,
             )
 
+        # encoder
         self.encoder = TransformerEncoder(
             ConformerEncoderLayer(
-                encoder_hidden,
-                encoder_head,
-                conv_in=encoder_hidden,
-                conv_filter_size=conv_filter_size,
-                conv_kernel=kernel,
-                batch_first=True,
-                dropout=encoder_dropout,
+                self.hparams.encoder_hidden, self.hparams.encoder_head
             ),
-            num_layers=encoder_layers,
+            num_layers=self.hparams.encoder_layers,
         )
+        for i in range(self.hparams.encoder_layers):
+            self.encoder.layers[i] = ConformerEncoderLayer(
+                self.hparams.encoder_hidden,
+                self.hparams.encoder_head,
+                conv_in=self.hparams.encoder_hidden,
+                conv_filter_size=self.hparams.conv_filter_size,
+                conv_kernel=(self.hparams.encoder_kernel_sizes[i], 1),
+                batch_first=True,
+                dropout=self.hparams.encoder_dropout,
+            )
         self.positional_encoding = PositionalEncoding(
-            encoder_hidden, dropout=encoder_dropout
+            self.hparams.encoder_hidden, dropout=self.hparams.encoder_dropout
         )
-        self.variance_adaptor = VarianceAdaptor(stats, use_snr=self.use_snr)
+
+        # variances
+        self.variance_adaptor = VarianceAdaptor(
+            self.stats,
+            self.hparams.variances,
+            self.hparams.variance_levels,
+            self.hparams.variance_transforms,
+            self.hparams.stochastic_duration,
+            self.hparams.variance_nbins,
+            self.hparams.encoder_hidden,
+        )
+
+        # decoder
         self.decoder = TransformerEncoder(
             ConformerEncoderLayer(
-                decoder_hidden,
-                decoder_head,
-                conv_in=decoder_hidden,
-                conv_filter_size=conv_filter_size,
-                conv_kernel=kernel,
-                batch_first=True,
-                dropout=decoder_dropout,
+                self.hparams.decoder_hidden,
+                self.hparams.decoder_head,
             ),
-            num_layers=decoder_layers,
+            num_layers=self.hparams.decoder_layers,
         )
-
+        for i in range(self.hparams.decoder_layers):
+            self.decoder.layers[i] = ConformerEncoderLayer(
+                self.hparams.decoder_hidden,
+                self.hparams.decoder_head,
+                conv_in=self.hparams.decoder_hidden,
+                conv_filter_size=self.hparams.conv_filter_size,
+                conv_kernel=(self.hparams.decoder_kernel_sizes[i], 1),
+                batch_first=True,
+                dropout=self.hparams.decoder_dropout,
+            )
         self.linear = nn.Linear(
-            decoder_hidden,
-            mel_channels,
+            self.hparams.decoder_hidden,
+            self.hparams.n_mels,
         )
 
-        if self.has_postnet:
-            self.postnet = PostNet()
+        # priors
+        self.prior_embeddings = {}
+        for prior in self.hparams.priors:
+            self.prior_embeddings[prior] = PriorEmbedding(
+                self.hparams.encoder_hidden,
+                self.hparams.variance_nbins,
+                self.stats[f"{prior}_prior"],
+            )
 
-        self.loss = FastSpeech2Loss(postnet=self.has_postnet, use_snr=self.use_snr)
+        # speaker
+        if self.hparams.speaker_type == "dvector":
+            self.speaker_embedding = SpeakerEmbedding(
+                self.hparams.encoder_hidden,
+                self.hparams.speaker_type,
+            )
+        elif self.hparams.speaker_type == "id":
+            self.speaker_embedding = SpeakerEmbedding(
+                self.hparams.encoder_hidden,
+                self.hparams.speaker_type,
+                len(self.speaker2id)
+            )
 
-        self.is_wandb_init = False
-
-        if self.conditioned:
-            nbins = 256
-            self.pitch_bins = nn.Parameter(
-                torch.linspace(
-                    stats["cond_pitch_min"], stats["cond_pitch_max"], nbins - 1
-                ),
-                requires_grad=False,
-            )
-            self.condition_pitch_embedding = nn.Embedding(
-                nbins,
-                encoder_hidden,
-            )
-            self.energy_bins = nn.Parameter(
-                torch.linspace(
-                    stats["cond_energy_min"], stats["cond_energy_max"], nbins - 1
-                ),
-                requires_grad=False,
-            )
-            self.condition_energy_embedding = nn.Embedding(
-                nbins,
-                encoder_hidden,
-            )
-            self.duration_bins = nn.Parameter(
-                torch.linspace(
-                    stats["cond_duration_min"], stats["cond_duration_max"], nbins - 1
-                ),
-                requires_grad=False,
-            )
-            self.condition_duration_embedding = nn.Embedding(
-                nbins,
-                encoder_hidden,
-            )
-            if self.use_snr:
-                self.snr_bins = nn.Parameter(
-                    torch.linspace(-1.1, 1.1, nbins - 1),
-                    requires_grad=False,
-                )
-                self.condition_snr_embedding = nn.Embedding(
-                    nbins,
-                    encoder_hidden,
-                )
+        # loss
+        self.loss = FastSpeech2Loss(
+            self.hparams.variances,
+            self.hparams.variance_levels,
+            self.hparams.variance_transforms
+        )
 
     def on_load_checkpoint(self, checkpoint):
         self.stats = checkpoint["stats"]
-        self.phone2id = checkpoint['phone2id']
+        self.phone2id = checkpoint["phone2id"]
 
     def on_save_checkpoint(self, checkpoint):
         checkpoint["stats"] = self.stats
-        checkpoint['phone2id'] = self.phone2id
-
-    def get_conditioned(self, targets):
-        pitch_embedding = self.condition_pitch_embedding(
-            torch.bucketize(targets["cond_pitch"].to(self.device), self.pitch_bins)
-        )
-        energy_embedding = self.condition_energy_embedding(
-            torch.bucketize(targets["cond_energy"].to(self.device), self.energy_bins)
-        )
-        duration_embedding = self.condition_duration_embedding(
-            torch.bucketize(
-                targets["cond_duration"].to(self.device), self.duration_bins
-            )
-        )
-        if self.use_snr:
-            snr_embedding = self.condition_snr_embedding(
-                torch.bucketize(targets["cond_snr"].to(self.device), self.snr_bins)
-            )
-            return (
-                pitch_embedding + energy_embedding + duration_embedding + snr_embedding
-            )
-        else:
-            return pitch_embedding + energy_embedding + duration_embedding
+        checkpoint["phone2id"] = self.phone2id
 
     def forward(self, targets, inference=False):
         phones = targets["phones"].to(self.device)
         speakers = targets["speaker"].to(self.device)
 
-        def get_key(key):
-            if not inference and key in targets and targets[key] is not None:
-                return targets[key].to(self.device)
-            else:
-                return None
-
-        pitch = get_key("pitch")
-        energy = get_key("energy")
-        duration = get_key("duration")
-        snr = get_key("snr")
-
         src_mask = phones.eq(0)
         output = self.phone_embedding(phones)
-
-        speakers = targets["speaker"]
-        if not self.has_dvector:
-            speaker_out = (
-                self.speaker_embedding(speakers)
-                .reshape(-1, 1, output.shape[-1])
-                .repeat_interleave(phones.shape[1], dim=1)
-            )
-        else:
-            speaker_out = (
-                speakers.reshape(-1, 1, output.shape[-1])
-                .repeat_interleave(phones.shape[1], dim=1)
-                .to(self.device)
-            )
-        output = output + speaker_out
-
-        # if self.conditioned:
-        #     cond = self.get_conditioned(targets)
-        #     cond = cond.reshape(-1, 1, output.shape[-1])
-        #     cond = cond.repeat_interleave(phones.shape[1], dim=1)
-        #     output = output + cond
 
         output = self.positional_encoding(output)
         output = self.encoder(output, src_key_padding_mask=src_mask)
 
-        if not self.has_dvector:
-            speaker_out2 = (
-                self.speaker_embedding(speakers)
-                .reshape(-1, 1, output.shape[-1])
-                .repeat_interleave(phones.shape[1], dim=1)
-            )
-        else:
-            speaker_out2 = (
-                speakers.reshape(-1, 1, output.shape[-1])
-                .repeat_interleave(phones.shape[1], dim=1)
-                .to(self.device)
-            )
-        output = output + speaker_out2
+        output += self.speaker_embedding(targets["speaker"], output.shape[1])
 
-        if self.conditioned:
-            cond = self.get_conditioned(targets)
-            cond = cond.reshape(-1, 1, output.shape[-1])
-            cond = cond.repeat_interleave(phones.shape[1], dim=1)
-            output = output + cond
-        # speaker embedding addition was here
+        for prior in self.hparams.priors:
+            output += self.prior_embeddings[prior](targets[prior], output.shape[1])
 
-        if not self.has_dvector:
-            variance_out = self.variance_adaptor(
-                output,
-                src_mask,
-                pitch,
-                energy,
-                duration,
-                snr,
-                self.tgt_max_length,
-                speaker_out2,
-            )
-        else:
-            variance_out = self.variance_adaptor(
-                output,
-                src_mask,
-                pitch,
-                energy,
-                duration,
-                snr,
-                self.tgt_max_length,
-                speaker_out2,
-            )
+        # if not self.has_dvector:
+        #     variance_out = self.variance_adaptor(
+        #         output,
+        #         src_mask,
+        #         pitch,
+        #         energy,
+        #         duration,
+        #         snr,
+        #         self.tgt_max_length,
+        #         speaker_out2,
+        #     )
+        # else:
+        #     variance_out = self.variance_adaptor(
+        #         output,
+        #         src_mask,
+        #         pitch,
+        #         energy,
+        #         duration,
+        #         snr,
+        #         self.tgt_max_length,
+        #         speaker_out2,
+        #     )
+
         output = variance_out["x"]
         output = self.positional_encoding(output)
         output = self.decoder(output, src_key_padding_mask=variance_out["tgt_mask"])
 
         output = self.linear(output)
 
-        if self.has_postnet:
-            postnet_output = self.postnet(output)
-            final_output = postnet_output + output
-        else:
-            postnet_output = None
-            final_output = output
+        final_output = output
 
         result = {
             "mel": output,

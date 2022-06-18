@@ -6,6 +6,7 @@ from torch.nn.modules.transformer import TransformerEncoderLayer, TransformerEnc
 from torch.nn.utils.rnn import pad_sequence
 from third_party.stochastic_duration_predictor.sdp import StochasticDurationPredictor
 
+
 def generate_square_subsequent_mask(sz):
     mask = (torch.triu(torch.ones((sz, sz))) == 1).transpose(0, 1)
     mask = (
@@ -84,110 +85,148 @@ class ConformerEncoderLayer(TransformerEncoderLayer):
         ).transpose(1, 2)
         return self.dropout2(x)
 
+class SpeakerEmbedding(nn.Module):
+    def __init__(self, embedding_dim, speaker_type, nspeakers=None):
+        super().__init__()
+        self.speaker_type = speaker_type
+        self.embedding_dim = embedding_dim
+        if speaker_type == "dvector":
+            self.projection = nn.Linear(256, embedding_dim)
+        elif speaker_type == "id":
+            self.speaker_embedding(nspeakers)
+
+    def forward(self, x, input_length):
+        if self.speaker_type == "dvector":
+            out = self.projection(x)
+        elif self.speaker_type == "id":
+            out = self.speaker_embedding(x)
+        return (
+            out
+            .reshape(-1, 1, self.embedding_dim)
+            .repeat_interleave(input_length, dim=1)
+        )
+
+
+class PriorEmbedding(nn.Module):
+    def __init__(self, embedding_dim, nbins, stats):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.bins = nn.Parameter(
+            torch.linspace(
+                stats["min"], stats["max"], nbins - 1
+            ),
+            requires_grad=False,
+        )
+        self.embedding = nn.Embedding(
+            nbins,
+            embedding_dim,
+        )
+
+    def forward(self, x, input_length):
+        out = self.condition_pitch_embedding(
+            torch.bucketize(x, self.bins)
+        )
+        return (
+            out
+            .reshape(-1, 1, self.embedding_dim)
+            .repeat_interleave(input_length, dim=1)
+        )
 
 class VarianceAdaptor(nn.Module):
-    def __init__(self, stats, use_snr=False):
+    def __init__(
+        self,
+        stats,
+        variances,
+        variance_levels,
+        variance_transforms,
+        stochastic_duration,
+        max_length,
+        nbins,
+        embedding_dim,
+    ):
         super().__init__()
+        self.variances = variances
+        self.variance_levels = variance_levels
+        self.variance_transforms = variance_transforms
+        self.stochastic_duration = stochastic_duration
+        self.max_length = max_length
 
-        self.stochastic = False
-
-        if config["model"].getboolean("duration_transformer"):
-            self.duration_predictor = ConformerVariancePredictor()
-        elif config["model"].getboolean("duration_stochastic"):
+        if self.stochastic_duration:
             self.duration_predictor = StochasticVariancePredictor()
-            self.stochastic = True
         else:
             self.duration_predictor = VariancePredictor()
+
         self.length_regulator = LengthRegulator()
-        self.pitch_encoder = VarianceEncoder()
-        self.energy_encoder = VarianceEncoder()
-        if use_snr:
-            self.snr_encoder = VarianceEncoder(-1.1, 1.1)
-        self.use_snr = use_snr
+        
+        self.encoders = {}
+        for var in self.variances:
+            self.encoders[var] = VarianceEncoder(
+                stats[var]["min"],
+                stats[var]["max"],
+                nbins,
+                embedding_dim,
+            )
 
     def forward(
         self,
         x,
         src_mask,
-        tgt_pitch=None,
-        tgt_energy=None,
-        tgt_duration=None,
-        tgt_snr=None,
-        tgt_max_length=None,
-        speaker_embedding=None,
-        c_pitch=1,
-        c_energy=1,
-        c_duration=1,
-        c_snr=1,
+        targets,
+        teacher_forcing=True,
     ):
         if not self.stochastic:
             duration_pred = self.duration_predictor(x, src_mask)
         else:
-            if tgt_duration is not None:  # training
-                duration_pred = self.duration_predictor(x, src_mask, tgt_duration, speaker_embedding)
+            if teacher_forcing:
+                duration_pred = self.duration_predictor(
+                    x, src_mask, targets["duration"]
+                )
             else:
-                duration_pred = self.duration_predictor(x, src_mask, tgt_duration, speaker_embedding, inference=True)
+                duration_pred = self.duration_predictor(
+                    x, src_mask, inference=True
+                )
 
-        if config["dataset"].get("variance_level") == "phoneme":
-            pitch_pred, pitch_out = self.pitch_encoder(x, tgt_pitch, src_mask, c_pitch)
-            x = x + pitch_out
-            energy_pred, energy_out = self.energy_encoder(
-                x, tgt_energy, src_mask, c_energy
-            )
-            x = x + energy_out
-            if self.use_snr:
-                snr_pred, snr_out = self.snr_encoder(x, tgt_snr, src_mask, c_snr)
-                x = x + snr_out
+        result = {}
 
-        if tgt_duration is not None:  # training
-            duration_rounded = tgt_duration
+        for i, var in enumerate(self.variances):
+            if self.variance_levels[i] == "phone":
+                if teacher_forcing:
+                    pred, out = self.encoders[var](x, targets["pitch"], src_mask)
+                else:
+                    pred, out = self.encoders[var](x, None, src_mask)
+                result[var] = pred
+                x += out
+
+        if teacher_forcing:  # training
+            duration_rounded = targets["duration"]
         else:
-            if not self.stochastic:
-                duration_rounded = torch.round((torch.exp(duration_pred) - 1) * c_duration)
+            if not self.stochastic_duration:
+                duration_rounded = torch.round(
+                    (torch.exp(duration_pred) - 1)
+                )
             else:
-                duration_rounded = torch.ceil((torch.exp(duration_pred+1e-9)) * c_duration).masked_fill(duration_pred==0, 0)
+                duration_rounded = torch.ceil(
+                    (torch.exp(duration_pred + 1e-9))
+                ).masked_fill(duration_pred == 0, 0)
             duration_rounded = torch.clamp(duration_rounded, min=0).int()
 
-        x, tgt_len, tgt_mask = self.length_regulator(
-            x, duration_rounded, tgt_max_length
+        x, tgt_mask = self.length_regulator(
+            x, duration_rounded, self.max_length
         )
 
-        if config["dataset"].get("variance_level") == "frame":
-            pitch_pred, pitch_out = self.pitch_encoder(x, tgt_pitch, tgt_mask, c_pitch)
-            energy_pred, energy_out = self.energy_encoder(
-                x, tgt_energy, tgt_mask, c_energy
-            )
-            if self.use_snr:
-                snr_pred, snr_out = self.snr_encoder(x, tgt_snr, tgt_mask, c_snr)
-            if pitch_out.shape[1] > tgt_max_length:
-                print("sample too long...")
-            pitch_out = pitch_out[:, :tgt_max_length]
-            energy_out = energy_out[:, :tgt_max_length]
-            pitch_pred = pitch_pred[:, :tgt_max_length]
-            energy_pred = energy_pred[:, :tgt_max_length]
-            if self.use_snr:
-                snr_out = snr_out[:, :tgt_max_length]
-                snr_pred = snr_pred[:, :tgt_max_length]
-            x = x + pitch_out + energy_out
-            if self.use_snr:
-                x = x + snr_out
-        elif config["dataset"].get("variance_level") != "phoneme":
-            raise ValueError("variance_level has to be frame or phoneme")
+        for i, var in enumerate(self.variances):
+            if self.variance_levels[i] == "frame":
+                if teacher_forcing:
+                    pred, out = self.encoders[var](x, targets["pitch"], src_mask)
+                else:
+                    pred, out = self.encoders[var](x, None, src_mask)
+                result[var] = pred
+                x += out
 
-        # TODO: investigate if one should be applied before the other
-        # ming implementation has pitch predicted first
-
-        result = {
-            "x": x,
-            "pitch": pitch_pred,
-            "energy": energy_pred,
-            "log_duration": duration_pred,
-            "duration_rounded": duration_rounded,
-            "tgt_mask": tgt_mask,
-        }
-
-        if self.use_snr:
-            result["snr"] = snr_pred
+        result["x"] = x
+        result["duration_prediction"] = duration_pred
+        result["duration_rounded"] = duration_rounded
+        result["tgt_mask"] = tgt_mask
 
         return result
 
@@ -207,24 +246,21 @@ class LengthRegulator(nn.Module):
         out = pad_sequence(repeated_list, batch_first=True, padding_value=0)
         if max_length is not None:
             out = out[:, :max_length]
-        return out, lengths, mask
+        return out, mask
 
 
 class VarianceEncoder(nn.Module):
-    def __init__(self, min=-1, max=1):
+    def __init__(self, min, max, nbins, encoder_hidden):
         super().__init__()
-
-        n_bins = config["model"].getint("variance_nbins")
-        encoder_hidden = config["model"].getint("encoder_hidden")
 
         self.predictor = VariancePredictor()
         self.bins = nn.Parameter(
-            torch.linspace(min, max, n_bins - 1),
+            torch.linspace(min, max, nbins - 1),
             requires_grad=False,
         )
-        self.embedding = nn.Embedding(n_bins, encoder_hidden)
+        self.embedding = nn.Embedding(nbins, encoder_hidden)
 
-    def forward(self, x, tgt, mask, control):
+    def forward(self, x, tgt, mask, control=1.0):
         prediction = self.predictor(x, mask)
         if tgt is not None:
             embedding = self.embedding(torch.bucketize(tgt, self.bins))
@@ -233,56 +269,13 @@ class VarianceEncoder(nn.Module):
             embedding = self.embedding(torch.bucketize(prediction, self.bins))
         return prediction, embedding
 
-
-class ConformerVariancePredictor(nn.Module):
-    def __init__(self, activation=nn.ReLU):
-        super().__init__()
-
-        input_size = config["model"].getint("encoder_hidden")
-        encoder_head = config["model"].getint("duration_transformer_head")
-        dropout = config["model"].getfloat("variance_dropout")
-        conv_filter_size = config["model"].getint("variance_filter_size")
-        kernel = (
-            config["model"].getint("conv_kernel_1"),
-            config["model"].getint("conv_kernel_2"),
-        )
-
-        self.transformer = TransformerEncoder(
-            ConformerEncoderLayer(
-                input_size,
-                encoder_head,
-                conv_in=input_size,
-                conv_filter_size=conv_filter_size,
-                conv_kernel=kernel,
-                batch_first=True,
-                dropout=dropout,
-            ),
-            num_layers=2,
-        )
-        self.linear = nn.Linear(input_size, 1)
-
-    def forward(self, x, mask=None):
-        out = self.linear(self.transformer(x))
-        out = out.squeeze(-1)
-        if mask is not None:
-            out = out.masked_fill(mask, 0)
-        return out
-
 class StochasticVariancePredictor(nn.Module):
-    def __init__(self):
+    def __init__(self, encoder_hidden, hidden_dim, kernel, dropout, num_flows, conditioning_size):
         super().__init__()
-
-        input_size = config["model"].getint("encoder_hidden")
-        hidden_size = config["model"].getint("duration_stochastic_hidden")
-        kernel = config["model"].getint("duration_stochastic_kernel")
-        dropout = config["model"].getfloat("duration_stochastic_dropout")
-        num_flows = config["model"].getint("duration_stochastic_num_flows")
-        conditioning_size = config["model"].getint("duration_stochastic_conditioning_size")
-        self.sigma = config["inference"].getfloat("duration_stochastic_sigma")
 
         self.sdp = StochasticDurationPredictor(
-            input_size,
-            hidden_size,
+            encoder_hidden,
+            hidden_dim,
             kernel,
             dropout,
             num_flows,
@@ -290,13 +283,11 @@ class StochasticVariancePredictor(nn.Module):
         )
 
     def forward(self, x, mask, tgt=None, condition=None, sigma=1.0, inference=False):
-        if inference:
-            sigma = self.sigma
         out = self.sdp(x, mask, tgt, g=condition, reverse=inference, noise_scale=sigma)
         if mask is not None and inference:
             out = out.masked_fill(mask, 0)
-            #print(out)
         return out
+
 
 class VariancePredictor(nn.Module):
     def __init__(self, activation=nn.ReLU):
@@ -308,16 +299,22 @@ class VariancePredictor(nn.Module):
         dropout = config["model"].getfloat("variance_dropout")
         depthwise = config["model"].getboolean("depthwise_conv")
 
+        # add num_conv layers
+
         if not depthwise:
             self.layers = nn.Sequential(
                 Transpose(
-                    nn.Conv1d(input_size, filter_size, kernel, padding=(kernel - 1) // 2)
+                    nn.Conv1d(
+                        input_size, filter_size, kernel, padding=(kernel - 1) // 2
+                    )
                 ),
                 activation(),
                 nn.LayerNorm(filter_size),
                 nn.Dropout(dropout),
                 Transpose(
-                    nn.Conv1d(input_size, filter_size, kernel, padding=(kernel - 1) // 2)
+                    nn.Conv1d(
+                        input_size, filter_size, kernel, padding=(kernel - 1) // 2
+                    )
                 ),
                 activation(),
                 nn.LayerNorm(filter_size),
@@ -328,8 +325,10 @@ class VariancePredictor(nn.Module):
             self.layers = nn.Sequential(
                 Transpose(
                     nn.Sequential(
-                        nn.Conv1d(input_size, input_size, kernel, padding=(kernel - 1) // 2),
-                        nn.Conv1d(input_size, filter_size, 1)
+                        nn.Conv1d(
+                            input_size, input_size, kernel, padding=(kernel - 1) // 2
+                        ),
+                        nn.Conv1d(input_size, filter_size, 1),
                     )
                 ),
                 activation(),
@@ -337,8 +336,10 @@ class VariancePredictor(nn.Module):
                 nn.Dropout(dropout),
                 Transpose(
                     nn.Sequential(
-                        nn.Conv1d(input_size, input_size, kernel, padding=(kernel - 1) // 2),
-                        nn.Conv1d(input_size, filter_size, 1)
+                        nn.Conv1d(
+                            input_size, input_size, kernel, padding=(kernel - 1) // 2
+                        ),
+                        nn.Conv1d(input_size, filter_size, 1),
                     )
                 ),
                 activation(),

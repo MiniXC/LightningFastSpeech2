@@ -9,7 +9,9 @@ from .transforms import piecewise_rational_quadratic_transform
 
 
 class DilatedDepthSeparableConv(nn.Module):
-    def __init__(self, channels, kernel_size, num_layers, dropout_p=0.0) -> torch.tensor:
+    def __init__(
+        self, channels, kernel_size, num_layers, dropout_p=0.0
+    ) -> torch.tensor:
         """Dilated Depth-wise Separable Convolution module.
 
         ::
@@ -36,7 +38,14 @@ class DilatedDepthSeparableConv(nn.Module):
             dilation = kernel_size**i
             padding = (kernel_size * dilation - dilation) // 2
             self.convs_sep.append(
-                nn.Conv1d(channels, channels, kernel_size, groups=channels, dilation=dilation, padding=padding)
+                nn.Conv1d(
+                    channels,
+                    channels,
+                    kernel_size,
+                    groups=channels,
+                    dilation=dilation,
+                    padding=padding,
+                )
             )
             self.convs_1x1.append(nn.Conv1d(channels, channels, 1))
             self.norms_1.append(LayerNorm2(channels))
@@ -75,7 +84,9 @@ class ElementwiseAffine(nn.Module):
         self.translation = nn.Parameter(torch.zeros(channels, 1))
         self.log_scale = nn.Parameter(torch.zeros(channels, 1))
 
-    def forward(self, x, x_mask, reverse=False, **kwargs):  # pylint: disable=unused-argument
+    def forward(
+        self, x, x_mask, reverse=False, **kwargs
+    ):  # pylint: disable=unused-argument
         if not reverse:
             y = (x * torch.exp(self.log_scale) + self.translation) * x_mask
             logdet = torch.sum(self.log_scale * x_mask, [1, 2])
@@ -112,8 +123,12 @@ class ConvFlow(nn.Module):
         self.half_channels = in_channels // 2
 
         self.pre = nn.Conv1d(self.half_channels, hidden_channels, 1)
-        self.convs = DilatedDepthSeparableConv(hidden_channels, kernel_size, num_layers, dropout_p=0.0)
-        self.proj = nn.Conv1d(hidden_channels, self.half_channels * (num_bins * 3 - 1), 1)
+        self.convs = DilatedDepthSeparableConv(
+            hidden_channels, kernel_size, num_layers, dropout_p=0.0
+        )
+        self.proj = nn.Conv1d(
+            hidden_channels, self.half_channels * (num_bins * 3 - 1), 1
+        )
         self.proj.weight.data.zero_()
         self.proj.bias.data.zero_()
 
@@ -127,7 +142,9 @@ class ConvFlow(nn.Module):
         h = h.reshape(b, c, -1, t).permute(0, 1, 3, 2)  # [b, cx?, t] -> [b, c, t, ?]
 
         unnormalized_widths = h[..., : self.num_bins] / math.sqrt(self.hidden_channels)
-        unnormalized_heights = h[..., self.num_bins : 2 * self.num_bins] / math.sqrt(self.hidden_channels)
+        unnormalized_heights = h[..., self.num_bins : 2 * self.num_bins] / math.sqrt(
+            self.hidden_channels
+        )
         unnormalized_derivatives = h[..., 2 * self.num_bins :]
 
         x1, logabsdet = piecewise_rational_quadratic_transform(
@@ -195,23 +212,33 @@ class StochasticDurationPredictor(nn.Module):
 
         # condition encoder text
         self.pre = nn.Conv1d(in_channels, hidden_channels, 1)
-        self.convs = DilatedDepthSeparableConv(hidden_channels, kernel_size, num_layers=3, dropout_p=dropout_p)
+        self.convs = DilatedDepthSeparableConv(
+            hidden_channels, kernel_size, num_layers=3, dropout_p=dropout_p
+        )
         self.proj = nn.Conv1d(hidden_channels, hidden_channels, 1)
 
         # posterior encoder
         self.flows = nn.ModuleList()
         self.flows.append(ElementwiseAffine(2))
-        self.flows += [ConvFlow(2, hidden_channels, kernel_size, num_layers=3) for _ in range(num_flows)]
+        self.flows += [
+            ConvFlow(2, hidden_channels, kernel_size, num_layers=3)
+            for _ in range(num_flows)
+        ]
 
         # condition encoder duration
         self.post_pre = nn.Conv1d(1, hidden_channels, 1)
-        self.post_convs = DilatedDepthSeparableConv(hidden_channels, kernel_size, num_layers=3, dropout_p=dropout_p)
+        self.post_convs = DilatedDepthSeparableConv(
+            hidden_channels, kernel_size, num_layers=3, dropout_p=dropout_p
+        )
         self.post_proj = nn.Conv1d(hidden_channels, hidden_channels, 1)
 
         # flow layers
         self.post_flows = nn.ModuleList()
         self.post_flows.append(ElementwiseAffine(2))
-        self.post_flows += [ConvFlow(2, hidden_channels, kernel_size, num_layers=3) for _ in range(num_flows)]
+        self.post_flows += [
+            ConvFlow(2, hidden_channels, kernel_size, num_layers=3)
+            for _ in range(num_flows)
+        ]
 
         if cond_channels != 0 and cond_channels is not None:
             self.cond = nn.Conv1d(cond_channels, hidden_channels, 1)
@@ -219,7 +246,9 @@ class StochasticDurationPredictor(nn.Module):
         if language_emb_dim != 0 and language_emb_dim is not None:
             self.cond_lang = nn.Conv1d(language_emb_dim, hidden_channels, 1)
 
-    def forward(self, x, x_mask, dr=None, g=None, lang_emb=None, reverse=False, noise_scale=1.0):
+    def forward(
+        self, x, x_mask, dr=None, g=None, lang_emb=None, reverse=False, noise_scale=1.0
+    ):
         """
         Shapes:
             - x: :math:`[B, C, T]`
@@ -252,7 +281,12 @@ class StochasticDurationPredictor(nn.Module):
             h = self.post_pre(dr)
             h = self.post_convs(h, x_mask)
             h = self.post_proj(h) * x_mask
-            noise = torch.randn(dr.size(0), 2, dr.size(2)).to(device=x.device, dtype=x.dtype) * x_mask
+            noise = (
+                torch.randn(dr.size(0), 2, dr.size(2)).to(
+                    device=x.device, dtype=x.dtype
+                )
+                * x_mask
+            )
             z_q = noise
 
             # posterior encoder
@@ -268,9 +302,14 @@ class StochasticDurationPredictor(nn.Module):
             z0 = (dr - u) * x_mask
 
             # posterior encoder - neg log likelihood
-            logdet_tot_q += torch.sum((F.logsigmoid(z_u) + F.logsigmoid(-z_u)) * x_mask, [1, 2])
+            logdet_tot_q += torch.sum(
+                (F.logsigmoid(z_u) + F.logsigmoid(-z_u)) * x_mask, [1, 2]
+            )
             nll_posterior_encoder = (
-                torch.sum(-0.5 * (math.log(2 * math.pi) + (noise**2)) * x_mask, [1, 2]) - logdet_tot_q
+                torch.sum(
+                    -0.5 * (math.log(2 * math.pi) + (noise**2)) * x_mask, [1, 2]
+                )
+                - logdet_tot_q
             )
 
             z0 = torch.log(torch.clamp_min(z0, 1e-5)) * x_mask
@@ -285,12 +324,18 @@ class StochasticDurationPredictor(nn.Module):
                     z = torch.flip(z, [1])
 
             # flow layers - neg log likelihood
-            nll_flow_layers = torch.sum(0.5 * (math.log(2 * math.pi) + (z**2)) * x_mask, [1, 2]) - logdet_tot
+            nll_flow_layers = (
+                torch.sum(0.5 * (math.log(2 * math.pi) + (z**2)) * x_mask, [1, 2])
+                - logdet_tot
+            )
             return nll_flow_layers + nll_posterior_encoder
 
         flows = list(reversed(self.flows))
         flows = flows[:-2] + [flows[-1]]  # remove a useless vflow
-        z = torch.randn(x.size(0), 2, x.size(2)).to(device=x.device, dtype=x.dtype) * noise_scale
+        z = (
+            torch.randn(x.size(0), 2, x.size(2)).to(device=x.device, dtype=x.dtype)
+            * noise_scale
+        )
         for flow in flows:
             z = torch.flip(z, [1])
             z = flow(z, x_mask, g=x, reverse=reverse)

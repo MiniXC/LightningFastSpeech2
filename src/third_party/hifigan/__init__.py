@@ -2,12 +2,15 @@ import json
 import torch
 from .models import Generator
 
+
 class AttrDict(dict):
     def __init__(self, *args, **kwargs):
         super(AttrDict, self).__init__(*args, **kwargs)
         self.__dict__ = self
 
+
 # TODO: decompress dynamic range
+
 
 class Synthesiser:
     def __init__(
