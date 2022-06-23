@@ -49,8 +49,8 @@ np.seterr(divide="raise", invalid="raise")
 class TTSDataset(Dataset):
     def __init__(
         self,
-        audio_directory,  # can be several as well
-        alignment_directory=None,  # can be several as well
+        audio_dir,  # can be several as well
+        alignment_dir=None,  # can be several as well
         max_entries=None,
         stat_entries=10_000,
         sampling_rate=22050,
@@ -72,14 +72,14 @@ class TTSDataset(Dataset):
         augment_duration=0,  # 0.1,
         variances=["pitch", "energy", "snr"],
         variance_levels=["phone", "phone", "phone"],
-        variance_transforms=["cwt", "cwt", "cwt"],  # "cwt", "log", "none"
+        variance_transforms=["cwt", "none", "none"],  # "cwt", "log", "none"
         priors=["pitch", "energy", "snr", "duration"],
     ):
         super().__init__()
 
-        self.dir = audio_directory
-        if alignment_directory is None:
-            alignment_directory = audio_directory
+        self.dir = audio_dir
+        if alignment_dir is None:
+            alignment_dir = audio_dir
 
         # HPARAMS
         self.min_length = min_length
@@ -99,6 +99,7 @@ class TTSDataset(Dataset):
         self.fmax = fmax
         self.dio_speed = int(np.round(1 / pitch_quality))
         self.source_phoneset = source_phoneset
+        self.pitch_quality = pitch_quality
 
         # PHONES
         self.phone_converter = Converter()
@@ -107,18 +108,18 @@ class TTSDataset(Dataset):
         self.phone_cache = {}
 
         # TEXTGRID LOADING
-        if not isinstance(alignment_directory, list):
-            alignment_directory = [alignment_directory]
+        if not isinstance(alignment_dir, list):
+            alignment_dir = [alignment_dir]
         self.grid_files = {}
-        for ali_dir in alignment_directory:
+        for ali_dir in alignment_dir:
             for file in glob(os.path.join(ali_dir, "**/*.TextGrid"), recursive=True):
                 self.grid_files[Path(file).name.replace(".TextGrid", ".wav")] = file
 
         # AUDIO LOADING
-        if not isinstance(audio_directory, list):
-            audio_directory = [audio_directory]
+        if not isinstance(audio_dir, list):
+            audio_dir = [audio_dir]
         entry_list = []
-        for aud_dir in audio_directory:
+        for aud_dir in audio_dir:
             entry_list += list(glob(os.path.join(aud_dir, "**", "*.wav")))
         if max_entries is not None:
             entry_list = entry_list[:max_entries]
@@ -227,7 +228,7 @@ class TTSDataset(Dataset):
         elif stat_path.exists() and not overwrite_stats:
             with open(stat_path, "r") as f:
                 stats = json.load(f)
-            if "samples" in stats and stats["samples"] == stat_entries:
+            if True or ("samples" in stats and stats["samples"] == stat_entries):
                 if "seed" in stats and stats["seed"] == shuffle_seed:
                     print("loading stats from file")
                     compute_stats = False
@@ -285,14 +286,14 @@ class TTSDataset(Dataset):
 
     def create_validation_dataset(
         self,
-        audio_directory,  # can be several as well
-        alignment_directory=None,  # can be several as well
+        audio_dir,  # can be several as well
+        alignment_dir=None,  # can be several as well
         max_entries=None,
         shuffle_seed=42,
     ):
-        return TTSDataset(
-            audio_directory,
-            alignment_directory=alignment_directory,
+        ds = TTSDataset(
+            audio_dir,
+            alignment_dir=alignment_dir,
             max_entries=max_entries,
             augment_duration=0,
             shuffle_seed=shuffle_seed,
@@ -316,6 +317,9 @@ class TTSDataset(Dataset):
             pitch_quality=self.pitch_quality,
             source_phoneset=self.source_phoneset,
         )
+        ds.phone2id = self.phone2id
+        ds.id2phone = self.id2phone
+        return ds
 
     def __len__(self):
         return len(self.data)
@@ -465,7 +469,7 @@ class TTSDataset(Dataset):
             if len(silence_mask) < len(variances["energy"]):
                 variances["energy"] = variances["energy"][: sum(durations)]
 
-        # TRANSFORMS
+        # TRANSFORMS & Normalize
         for i, var in enumerate(self.variances):
             if self.phone_level and self.variance_levels[i] == "phone":
                 pos = 0
@@ -478,8 +482,10 @@ class TTSDataset(Dataset):
                 variances[var] = variances[var][: len(durations)]
             if self.variance_transforms[i] == "cwt":
                 variances[var] = self.cwt.decompose(variances[var])
-            if self.variance_transforms[i] == "log":
+            elif self.variance_transforms[i] == "log":
                 variances[var] = np.log(variances[var])
+            else:
+                variances[var] = (variances[var] - self.stats[var]["mean"]) / self.stats[var]["std"]
 
         return variances
 
@@ -661,7 +667,12 @@ class TTSDataset(Dataset):
         out = []
         for value, d in zip(values, durations):
             out += [value] * max(0, int(d))
-        return np.array(out)
+        if isinstance(values, list):
+            return out
+        elif isinstance(values, torch.Tensor):
+            return torch.stack(out)
+        elif isinstance(values, np.ndarray):
+            return np.array(out)
 
     @staticmethod
     def _interpolate(x):
@@ -678,9 +689,6 @@ class TTSDataset(Dataset):
             flattened = {}
         if not isinstance(structure, dict):
             flattened[((path + "_") if path else "") + key] = structure
-        # elif isinstance(structure, list):
-        #     for i, item in enumerate(structure):
-        #         TTSDataset._flatten(item, "%d" % i, path + "_" + key, flattened)
         else:
             for new_key, value in structure.items():
                 TTSDataset._flatten(
@@ -709,6 +717,8 @@ class TTSDataset(Dataset):
             matplotlib.use("AGG", force=True)
         if isinstance(sample_or_idx, int):
             sample = self[sample_or_idx]
+        else:
+            sample = sample_or_idx
 
         # MEL SPECTROGRAM
         mel = sample["mel"]
@@ -777,13 +787,16 @@ class TTSDataset(Dataset):
                 * (80 / num_vars)
                 + (i * 80 / num_vars)
             )
-        sns.lineplot(
-            x=variance_x,
-            y=variance_y,
-            hue=variance_text,
-            ax=ax0,
-            linewidth=2,
-        )
+        if num_vars > 0:
+            if isinstance(variance_y[0], torch.Tensor):
+                variance_y = [x.item() for x in variance_y]
+            sns.lineplot(
+                x=variance_x,
+                y=variance_y,
+                hue=variance_text,
+                ax=ax0,
+                linewidth=2,
+            )
         ax_num = 1
         for i, var in enumerate(self.variances):
             cwt_ax = []

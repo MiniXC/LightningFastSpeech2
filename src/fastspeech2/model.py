@@ -5,7 +5,7 @@ import torch.nn as nn
 from torch.nn.modules.transformer import TransformerEncoderLayer, TransformerEncoder
 from torch.nn.utils.rnn import pad_sequence
 from third_party.stochastic_duration_predictor.sdp import StochasticDurationPredictor
-
+from dataset.cwt import CWT
 
 def generate_square_subsequent_mask(sz):
     mask = (torch.triu(torch.ones((sz, sz))) == 1).transpose(0, 1)
@@ -85,6 +85,7 @@ class ConformerEncoderLayer(TransformerEncoderLayer):
         ).transpose(1, 2)
         return self.dropout2(x)
 
+
 class SpeakerEmbedding(nn.Module):
     def __init__(self, embedding_dim, speaker_type, nspeakers=None):
         super().__init__()
@@ -100,10 +101,8 @@ class SpeakerEmbedding(nn.Module):
             out = self.projection(x)
         elif self.speaker_type == "id":
             out = self.speaker_embedding(x)
-        return (
-            out
-            .reshape(-1, 1, self.embedding_dim)
-            .repeat_interleave(input_length, dim=1)
+        return out.reshape(-1, 1, self.embedding_dim).repeat_interleave(
+            input_length, dim=1
         )
 
 
@@ -112,9 +111,7 @@ class PriorEmbedding(nn.Module):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.bins = nn.Parameter(
-            torch.linspace(
-                stats["min"], stats["max"], nbins - 1
-            ),
+            torch.linspace(stats["min"], stats["max"], nbins - 1),
             requires_grad=False,
         )
         self.embedding = nn.Embedding(
@@ -123,14 +120,11 @@ class PriorEmbedding(nn.Module):
         )
 
     def forward(self, x, input_length):
-        out = self.condition_pitch_embedding(
-            torch.bucketize(x, self.bins)
+        out = self.embedding(torch.bucketize(x, self.bins))
+        return out.reshape(-1, 1, self.embedding_dim).repeat_interleave(
+            input_length, dim=1
         )
-        return (
-            out
-            .reshape(-1, 1, self.embedding_dim)
-            .repeat_interleave(input_length, dim=1)
-        )
+
 
 class VarianceAdaptor(nn.Module):
     def __init__(
@@ -139,88 +133,113 @@ class VarianceAdaptor(nn.Module):
         variances,
         variance_levels,
         variance_transforms,
-        stochastic_duration,
+        variance_nlayers,
+        variance_kernel_size,
+        variance_dropout,
+        variance_filter_size,
+        variance_nbins,
+        variance_depthwise_conv,
+        duration_nlayers,
+        duration_stochastic,
+        duration_kernel_size,
+        duration_dropout,
+        duration_filter_size,
+        duration_depthwise_conv,
+        encoder_hidden,
         max_length,
-        nbins,
-        embedding_dim,
     ):
         super().__init__()
         self.variances = variances
         self.variance_levels = variance_levels
         self.variance_transforms = variance_transforms
-        self.stochastic_duration = stochastic_duration
+        self.duration_stochastic = duration_stochastic
         self.max_length = max_length
 
-        if self.stochastic_duration:
-            self.duration_predictor = StochasticVariancePredictor()
+        if self.duration_stochastic:
+            if duration_depthwise_conv:
+                raise NotImplementedError("Depthwise convolution not implemented for Flow-Based duration prediction")
+            self.duration_predictor = StochasticDurationPredictor(
+                duration_nlayers, encoder_hidden, duration_filter_size, duration_kernel_size, duration_dropout
+            )
         else:
-            self.duration_predictor = VariancePredictor()
+            self.duration_predictor = VariancePredictor(
+                duration_nlayers, encoder_hidden, duration_filter_size, duration_kernel_size, duration_dropout, duration_depthwise_conv
+            )
 
         self.length_regulator = LengthRegulator()
-        
+
         self.encoders = {}
         for var in self.variances:
             self.encoders[var] = VarianceEncoder(
+                variance_nlayers[variances.index(var)],
+                encoder_hidden,
+                variance_filter_size,
+                variance_kernel_size[variances.index(var)],
+                variance_dropout[variances.index(var)],
+                variance_depthwise_conv,
                 stats[var]["min"],
                 stats[var]["max"],
-                nbins,
-                embedding_dim,
+                stats[var]["mean"],
+                stats[var]["std"],
+                variance_nbins,
+                cwt=variance_transforms[variances.index(var)]=="cwt",
             )
+        self.encoders = nn.ModuleDict(self.encoders)
 
     def forward(
         self,
         x,
         src_mask,
         targets,
-        teacher_forcing=True,
+        inference=False,
     ):
-        if not self.stochastic:
+        if not self.duration_stochastic:
             duration_pred = self.duration_predictor(x, src_mask)
         else:
-            if teacher_forcing:
+            if not inference:
                 duration_pred = self.duration_predictor(
                     x, src_mask, targets["duration"]
                 )
             else:
-                duration_pred = self.duration_predictor(
-                    x, src_mask, inference=True
-                )
+                duration_pred = self.duration_predictor(x, src_mask, inference=True)
 
         result = {}
 
         for i, var in enumerate(self.variances):
             if self.variance_levels[i] == "phone":
-                if teacher_forcing:
-                    pred, out = self.encoders[var](x, targets["pitch"], src_mask)
+                if not inference:
+                    if self.variance_transforms[i] == "cwt":
+                        pred, out = self.encoders[var](x, targets[f"variances_{var}_signal"], src_mask)
+                    else:
+                        pred, out = self.encoders[var](x, targets[f"variances_{var}"], src_mask)
                 else:
                     pred, out = self.encoders[var](x, None, src_mask)
-                result[var] = pred
+                result[f"variances_{var}"] = pred
                 x += out
 
-        if teacher_forcing:  # training
+        if not inference:
             duration_rounded = targets["duration"]
         else:
-            if not self.stochastic_duration:
-                duration_rounded = torch.round(
-                    (torch.exp(duration_pred) - 1)
-                )
+            if not self.duration_stochastic:
+                duration_rounded = torch.round((torch.exp(duration_pred) - 1))
             else:
                 duration_rounded = torch.ceil(
                     (torch.exp(duration_pred + 1e-9))
                 ).masked_fill(duration_pred == 0, 0)
             duration_rounded = torch.clamp(duration_rounded, min=0).int()
 
-        x, tgt_mask = self.length_regulator(
-            x, duration_rounded, self.max_length
-        )
+        x, tgt_mask = self.length_regulator(x, duration_rounded, self.max_length)
 
         for i, var in enumerate(self.variances):
             if self.variance_levels[i] == "frame":
-                if teacher_forcing:
-                    pred, out = self.encoders[var](x, targets["pitch"], src_mask)
+                if not inference:
+                    if self.variance_transforms[i] == "cwt":
+                        pred, out = self.encoders[var](x, targets[f"variances_{var}_signal"], tgt_mask)
+                    else:
+                        pred, out = self.encoders[var](x, targets[f"variances_{var}"], tgt_mask)
                 else:
-                    pred, out = self.encoders[var](x, None, src_mask)
-                result[var] = pred
+                    pred, out = self.encoders[var](x, None, tgt_mask)
+                result[f"variances_{var}"] = pred
                 x += out
 
         result["x"] = x
@@ -250,107 +269,162 @@ class LengthRegulator(nn.Module):
 
 
 class VarianceEncoder(nn.Module):
-    def __init__(self, min, max, nbins, encoder_hidden):
+    def __init__(
+        self, nlayers, in_channels, filter_size, kernel_size, dropout, depthwise, min, max, mean, std, nbins, cwt
+    ):
         super().__init__()
-
-        self.predictor = VariancePredictor()
+        self.cwt = cwt
+        self.predictor = VariancePredictor(
+            nlayers, in_channels, filter_size, kernel_size, dropout, depthwise, cwt
+        )
         self.bins = nn.Parameter(
             torch.linspace(min, max, nbins - 1),
             requires_grad=False,
         )
-        self.embedding = nn.Embedding(nbins, encoder_hidden)
+        self.embedding = nn.Embedding(nbins, in_channels)
+        if cwt:
+            self.mean_std_linear = nn.Linear(filter_size, 2)
+            self.cwt_obj = CWT()
+
+        self.mean = mean
+        self.std = std
 
     def forward(self, x, tgt, mask, control=1.0):
-        prediction = self.predictor(x, mask)
-        if tgt is not None:
-            embedding = self.embedding(torch.bucketize(tgt, self.bins))
+        if not self.cwt:
+            prediction = self.predictor(x, mask)
         else:
-            prediction = prediction * control
-            embedding = self.embedding(torch.bucketize(prediction, self.bins))
-        return prediction, embedding
+            prediction, out_conv = self.predictor(x, mask, return_conv=True)
+            mean_std = self.mean_std_linear(torch.mean(out_conv, axis=1))
+            mean, std = mean_std[:, 0], mean_std[:, 1]
 
-class StochasticVariancePredictor(nn.Module):
-    def __init__(self, encoder_hidden, hidden_dim, kernel, dropout, num_flows, conditioning_size):
+        if tgt is not None:
+            embedding = self.embedding(torch.bucketize(tgt * self.std + self.mean, self.bins).to(x.device))
+        else:
+            if self.cwt:
+                tmp_prediction = []
+                for i in range(len(prediction)):
+                    tmp_prediction.append(self.cwt_obj.recompose(prediction[i].T, mean[i], std[i]))
+                spectrogram = prediction
+                prediction = torch.stack(tmp_prediction)
+                bucket_prediction = prediction
+            else:
+                bucket_prediction = prediction * self.std + self.mean
+            prediction = prediction * control
+            embedding = self.embedding(torch.bucketize(bucket_prediction, self.bins).to(x.device))
+
+        if not self.cwt:
+            return prediction, embedding
+        else:
+            if tgt is not None:
+                return (
+                    {
+                        "spectrogram": prediction,
+                        "mean": mean,
+                        "std": std,
+                    },
+                    embedding
+                )
+            else:
+                return (
+                    {
+                        "reconstructed_signal": prediction,
+                        "spectrogram": spectrogram,
+                        "mean": mean,
+                        "std": std,
+                    },
+                    embedding
+                )
+
+
+class StochasticDurationPredictor(nn.Module):
+    def __init__(self, nlayers, in_channels, filter_size, kernel_size, dropout):
         super().__init__()
 
         self.sdp = StochasticDurationPredictor(
-            encoder_hidden,
-            hidden_dim,
-            kernel,
+            in_channels,
+            filter_size,
+            kernel_size,
             dropout,
-            num_flows,
-            conditioning_size,
+            nlayers,
         )
 
-    def forward(self, x, mask, tgt=None, condition=None, sigma=1.0, inference=False):
-        out = self.sdp(x, mask, tgt, g=condition, reverse=inference, noise_scale=sigma)
+    def forward(self, x, mask, tgt=None, sigma=1.0, inference=False):
+        out = self.sdp(x, mask, tgt, reverse=inference, noise_scale=sigma)
         if mask is not None and inference:
             out = out.masked_fill(mask, 0)
         return out
 
 
 class VariancePredictor(nn.Module):
-    def __init__(self, activation=nn.ReLU):
+    def __init__(
+        self, nlayers, in_channels, filter_size, kernel_size, dropout, depthwise=False, cwt=False
+    ):
         super().__init__()
 
-        input_size = config["model"].getint("encoder_hidden")
-        filter_size = config["model"].getint("variance_filter_size")
-        kernel = config["model"].getint("variance_kernel")
-        dropout = config["model"].getfloat("variance_dropout")
-        depthwise = config["model"].getboolean("depthwise_conv")
+        self.layers = nn.Sequential(
+            *[
+                VarianceConvolutionLayer(
+                    in_channels, filter_size, kernel_size, dropout, depthwise
+                )
+                for _ in range(nlayers)
+            ]
+        )
 
-        # add num_conv layers
+        self.cwt = cwt
+        if not self.cwt:
+            self.linear = nn.Linear(filter_size, 1)
+        else:
+            self.linear = nn.Linear(filter_size, 10)
 
+    def forward(self, x, mask=None, return_conv=False):
+        out_conv = self.layers(x)
+        out = self.linear(out_conv)
+        if not self.cwt:
+            out = out.squeeze(-1)
+        else:
+            mask = torch.stack([mask] * 10, dim=-1)
+        if mask is not None:
+            out = out.masked_fill(mask, 0)
+        if return_conv:
+            return out, out_conv
+        else:
+            return out
+
+
+class VarianceConvolutionLayer(nn.Module):
+    def __init__(self, in_channels, filter_size, kernel_size, dropout, depthwise):
+        super().__init__()
         if not depthwise:
             self.layers = nn.Sequential(
                 Transpose(
                     nn.Conv1d(
-                        input_size, filter_size, kernel, padding=(kernel - 1) // 2
+                        in_channels,
+                        filter_size,
+                        kernel_size,
+                        padding=(kernel_size - 1) // 2,
                     )
                 ),
-                activation(),
+                nn.ReLU(),
                 nn.LayerNorm(filter_size),
                 nn.Dropout(dropout),
-                Transpose(
-                    nn.Conv1d(
-                        input_size, filter_size, kernel, padding=(kernel - 1) // 2
-                    )
-                ),
-                activation(),
-                nn.LayerNorm(filter_size),
-                nn.Dropout(dropout),
-                nn.Linear(filter_size, 1),
             )
         else:
             self.layers = nn.Sequential(
                 Transpose(
                     nn.Sequential(
                         nn.Conv1d(
-                            input_size, input_size, kernel, padding=(kernel - 1) // 2
+                            in_channels,
+                            in_channels,
+                            kernel_size,
+                            padding=(kernel_size - 1) // 2,
                         ),
-                        nn.Conv1d(input_size, filter_size, 1),
+                        nn.Conv1d(in_channels, filter_size, 1),
                     )
                 ),
-                activation(),
+                nn.ReLU(),
                 nn.LayerNorm(filter_size),
                 nn.Dropout(dropout),
-                Transpose(
-                    nn.Sequential(
-                        nn.Conv1d(
-                            input_size, input_size, kernel, padding=(kernel - 1) // 2
-                        ),
-                        nn.Conv1d(input_size, filter_size, 1),
-                    )
-                ),
-                activation(),
-                nn.LayerNorm(filter_size),
-                nn.Dropout(dropout),
-                nn.Linear(filter_size, 1),
             )
 
-    def forward(self, x, mask=None):
-        out = self.layers(x)
-        out = out.squeeze(-1)
-        if mask is not None:
-            out = out.masked_fill(mask, 0)
-        return out
+    def forward(self, x):
+        return self.layers(x)

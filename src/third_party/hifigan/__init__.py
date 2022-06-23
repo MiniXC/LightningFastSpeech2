@@ -1,5 +1,8 @@
 import json
 import torch
+from pathlib import Path
+import os
+
 from .models import Generator
 
 
@@ -18,11 +21,11 @@ class Synthesiser:
         device="cuda:0",
         model="universal",
     ):
-        with open("third_party/hifigan/config.json", "r") as f:
+        with open(Path(__file__).parent / "config.json", "r") as f:
             config = json.load(f)
         config = AttrDict(config)
         vocoder = Generator(config)
-        ckpt = torch.load(f"third_party/hifigan/generator_{model}.pth.tar")
+        ckpt = torch.load(Path(__file__).parent / f"generator_{model}.pth.tar")
         vocoder.load_state_dict(ckpt["generator"])
         vocoder.eval()
         vocoder.remove_weight_norm()
