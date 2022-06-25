@@ -1,17 +1,17 @@
 from argparse import ArgumentParser
 
 import torch
+import torch.multiprocessing
 
-import configparser
 from fastspeech2.fastspeech2 import FastSpeech2
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor
 import os
 
-os.environ["WANDB_MODE"] = "offline"
+from alignments.datasets.libritts import LibrittsDataset
 
-import torch.multiprocessing
+os.environ["WANDB_MODE"] = "offline"
 
 torch.multiprocessing.set_sharing_strategy("file_system")
 
@@ -23,13 +23,18 @@ if __name__ == "__main__":
     lr_monitor = LearningRateMonitor(logging_interval="step")
 
     model = FastSpeech2(
-        train_ds_params={
-            "audio_dir": "../Data/LibriTTS/train-clean-360-aligned/",
-            "max_entries": 40_000,
-        },
-        valid_ds_params={
-            "audio_dir": "../Data/LibriTTS/dev-clean-aligned/"
-        },
+        LibrittsDataset(
+            "../data/dev-clean-aligned",
+            "../data/dev-clean",
+            "https://www.openslr.org/resources/60/dev-clean.tar.gz",
+            verbose=True,
+        ),
+        LibrittsDataset(
+            "../data/train-clean-aligned",
+            "../data/train-clean",
+            "https://www.openslr.org/resources/60/train-clean-100.tar.gz",
+            verbose=True,
+        ),
         valid_example_directory="examples"
     )
 

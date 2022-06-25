@@ -1,7 +1,6 @@
 .cache
 __pycache__
 wandb
-data
 lightning_logs
 LightningFastSpeech
 notebooks
@@ -15,3 +14,4 @@ __pypackages__
 run_longjob.sh
 *.lprof
 examples/*.png
+!src/data/*

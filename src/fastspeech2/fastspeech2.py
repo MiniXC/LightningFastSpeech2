@@ -1,5 +1,4 @@
 import os
-import json
 import multiprocessing
 
 import pytorch_lightning as pl
@@ -9,7 +8,6 @@ from torch.utils.data import DataLoader
 from torch.nn.modules.transformer import TransformerEncoder, TransformerEncoderLayer
 import wandb
 import pandas as pd
-from scipy.stats import ks_2samp
 
 from dataset.datasets import TTSDataset
 from .model import (
@@ -27,6 +25,8 @@ num_cpus = multiprocessing.cpu_count()
 class FastSpeech2(pl.LightningModule):
     def __init__(
         self,
+        train_ds=None,
+        valid_ds=None,
         lr=5e-03,
         batch_size=6,
         speaker_type="dvector",  # "none", "id", "dvector"
@@ -84,7 +84,15 @@ class FastSpeech2(pl.LightningModule):
         self.batch_size = batch_size
 
         # hparams
-        self.save_hyperparameters(ignore=["train_ds_params", "valid_ds_params", "valid_nexamples", "valid_example_directory" "batch_size"])
+        self.save_hyperparameters(ignore=[
+            "train_ds",
+            "valid_ds",
+            "train_ds_params", 
+            "valid_ds_params", 
+            "valid_nexamples", 
+            "valid_example_directory",
+            "batch_size",
+        ])
 
         # data
         if train_ds_params is not None:
@@ -101,9 +109,9 @@ class FastSpeech2(pl.LightningModule):
             train_ds_params["n_fft"] = n_fft
             train_ds_params["win_length"] = win_length
             train_ds_params["hop_length"] = hop_length
-            self.train_ds = TTSDataset(**train_ds_params)
+            self.train_ds = TTSDataset(train_ds, **train_ds_params)
         if valid_ds_params is not None:
-            self.valid_ds = self.train_ds.create_validation_dataset(**valid_ds_params)
+            self.valid_ds = self.train_ds.create_validation_dataset(valid_ds, **valid_ds_params)
 
         self.synth = Synthesiser()
 

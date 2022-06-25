@@ -35,7 +35,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm.rich import tqdm
 from tqdm.contrib.concurrent import process_map
 
-from dataset.audio_utils import dynamic_range_compression, get_alignment
+from dataset.audio_utils import dynamic_range_compression, dynamic_range_decompression
 from dataset.cwt import CWT
 from dataset.snr import SNR
 
@@ -49,8 +49,7 @@ np.seterr(divide="raise", invalid="raise")
 class TTSDataset(Dataset):
     def __init__(
         self,
-        audio_dir,  # can be several as well
-        alignment_dir=None,  # can be several as well
+        alignments_dataset,
         max_entries=None,
         stat_entries=10_000,
         sampling_rate=22050,
@@ -76,10 +75,6 @@ class TTSDataset(Dataset):
         priors=["pitch", "energy", "snr", "duration"],
     ):
         super().__init__()
-
-        self.dir = audio_dir
-        if alignment_dir is None:
-            alignment_dir = audio_dir
 
         # HPARAMS
         self.min_length = min_length
@@ -107,23 +102,9 @@ class TTSDataset(Dataset):
         # TODO: add this upstream
         self.phone_cache = {}
 
-        # TEXTGRID LOADING
-        if not isinstance(alignment_dir, list):
-            alignment_dir = [alignment_dir]
-        self.grid_files = {}
-        for ali_dir in alignment_dir:
-            for file in glob(os.path.join(ali_dir, "**/*.TextGrid"), recursive=True):
-                self.grid_files[Path(file).name.replace(".TextGrid", ".wav")] = file
-
         # AUDIO LOADING
-        if not isinstance(audio_dir, list):
-            audio_dir = [audio_dir]
-        entry_list = []
-        for aud_dir in audio_dir:
-            entry_list += list(glob(os.path.join(aud_dir, "**", "*.wav")))
-        if max_entries is not None:
-            entry_list = entry_list[:max_entries]
-        Random(shuffle_seed).shuffle(entry_list)
+        self.alignment_ds = alignments_dataset
+        # Random(shuffle_seed).shuffle(entry_list)
 
         # DATAFRAME
         self.entry_stats = {
@@ -137,10 +118,10 @@ class TTSDataset(Dataset):
             entry
             for entry in process_map(
                 self._create_entry,
-                entry_list,
+                self.alignment_ds,
                 chunksize=100,
                 max_workers=multiprocessing.cpu_count(),
-                desc="collecting textgrid and audio files",
+                desc="processing alignments",
                 tqdm_class=tqdm,
             )
             if entry is not None
@@ -286,14 +267,12 @@ class TTSDataset(Dataset):
 
     def create_validation_dataset(
         self,
-        audio_dir,  # can be several as well
-        alignment_dir=None,  # can be several as well
+        valid_ds,
         max_entries=None,
         shuffle_seed=42,
     ):
         ds = TTSDataset(
-            audio_dir,
-            alignment_dir=alignment_dir,
+            valid_ds,
             max_entries=max_entries,
             augment_duration=0,
             shuffle_seed=shuffle_seed,
@@ -529,23 +508,8 @@ class TTSDataset(Dataset):
                 dvec = np.mean(dvecs, axis=0)
                 np.save(speaker_path, dvec)
 
-    def _create_entry(self, audio_file):
-        extract_speaker = lambda x: x.split("/")[-2]
-        audio_name = Path(audio_file).name
-
-        try:
-            grid_file = self.grid_files[audio_name]
-            textgrid = tgt.io.read_textgrid(grid_file)
-        except KeyError:
-            self.entry_stats["missing_textgrids"] += 1
-            return None
-        ali = get_alignment(
-            textgrid.get_tier_by_name("phones"),
-            self.sampling_rate,
-            self.hop_length,
-        )
-
-        phones, durations, start, end = ali
+    def _create_entry(self, item):
+        start, end = item["phones"][0][0], item["phones"][-1][1]
 
         if end - start < self.min_length:
             self.entry_stats["too_short"] += 1
@@ -554,13 +518,16 @@ class TTSDataset(Dataset):
             self.entry_stats["too_long"] += 1
             return None
 
-        for i, phone in enumerate(phones):
-            add_stress = False
+        phones = []
+        durations = []
+
+        for i, p in enumerate(item["phones"]):
+            s, e, phone = p
             phone.replace("ˌ", "")
             r_phone = phone.replace("0", "").replace("1", "")
             if len(r_phone) > 0:
                 phone = r_phone
-            if phone not in ["spn", "sil"]:
+            if "[" not in phone:
                 o_phone = phone
                 if o_phone not in self.phone_cache:
                     phone = self.phone_converter(
@@ -568,30 +535,25 @@ class TTSDataset(Dataset):
                     )[0]
                     self.phone_cache[o_phone] = phone
                 phone = self.phone_cache[o_phone]
-                if add_stress:
-                    phone = "ˈ" + phone
-            else:
-                phone = "[SILENCE]"
-            phones[i] = phone
+            phones.append(phone)
+            durations.append(int(
+                np.round(e * self.sampling_rate / self.hop_length)
+                - np.round(s * self.sampling_rate / self.hop_length)
+            ))
+
         if start >= end:
             self.entry_stats["empty_textgrids"] += 1
             return None
 
-        try:
-            with open(audio_file.replace(".wav", ".lab"), "r") as f:
-                transcription = f.read()
-        except UnicodeDecodeError:
-            self.entry_stats["bad_transcriptions"] += 1
-            return None
         return (
             phones,
             durations,
             start,
             end,
-            audio_file,
-            extract_speaker(audio_file),
-            transcription,
-            audio_name,
+            item["wav"],
+            item["speaker"],
+            item["transcript"],
+            Path(item["wav"]).name,
         )
 
     def _create_stats(self, x):
