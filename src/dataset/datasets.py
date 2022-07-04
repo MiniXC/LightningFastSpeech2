@@ -7,6 +7,7 @@ from glob import glob
 from pathlib import Path
 from random import Random
 import warnings
+from attr import has
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -63,6 +64,7 @@ class TTSDataset(Dataset):
         source_phoneset="arpabet",
         shuffle_seed=42,
         overwrite_stats=False,
+        overwrite_stats_if_missing=True,
         _stats=None,
         # provided by model
         speaker_type="dvector",  # "none", "id", "dvector"
@@ -118,8 +120,8 @@ class TTSDataset(Dataset):
             entry
             for entry in process_map(
                 self._create_entry,
-                self.alignment_ds,
-                chunksize=100,
+                np.arange(len(self.alignment_ds)),
+                chunksize=10_000,
                 max_workers=multiprocessing.cpu_count(),
                 desc="processing alignments",
                 tqdm_class=tqdm,
@@ -201,7 +203,7 @@ class TTSDataset(Dataset):
             max_entries = len(self)
         if stat_entries > max_entries:
             stat_entries = max_entries
-        stat_path = Path(self.dir) / "stats.json"
+        stat_path = Path(self.alignment_ds.target_directory) / "stats.json"
         compute_stats = True
         if _stats is not None:
             self.stats = _stats
@@ -209,7 +211,21 @@ class TTSDataset(Dataset):
         elif stat_path.exists() and not overwrite_stats:
             with open(stat_path, "r") as f:
                 stats = json.load(f)
-            if True or ("samples" in stats and stats["samples"] == stat_entries):
+            for var in self.variances:
+                if var not in stats:
+                    if overwrite_stats_if_missing:
+                        compute_stats = True
+                        print(f"missing stats for {var}, overwriting")
+                    else:
+                        raise ValueError(f"{var} not in stats")
+            for prior in self.priors:
+                if f"{prior}_prior" not in stats:
+                    if overwrite_stats_if_missing:
+                        compute_stats = True
+                        print(f"missing stats for {prior}, overwriting")
+                    else:
+                        raise ValueError(f"{prior} not in stats")
+            if ("samples" in stats and stats["samples"] == stat_entries):
                 if "seed" in stats and stats["seed"] == shuffle_seed:
                     print("loading stats from file")
                     compute_stats = False
@@ -318,6 +334,7 @@ class TTSDataset(Dataset):
         end = int(self.sampling_rate * row["end"])
         audio = audio[0][start:end]
         audio = audio / torch.max(torch.abs(audio))
+        # audio = torch.clip(audio, -1, 1)
 
         # MEL SPECTROGRAM
         mel = self.mel_spectrogram(audio.unsqueeze(0))
@@ -347,6 +364,7 @@ class TTSDataset(Dataset):
                     var_val = variances[var]["original_signal"]
                 else:
                     var_val = variances[var]
+                print(self.variance_levels)
                 if self.variance_levels[self.variances.index(var)] == "phone":
                     priors[var] = np.mean(var_val[~unexpanded_silence_mask])
                 else:
@@ -463,7 +481,7 @@ class TTSDataset(Dataset):
                 variances[var] = self.cwt.decompose(variances[var])
             elif self.variance_transforms[i] == "log":
                 variances[var] = np.log(variances[var])
-            else:
+            elif hasattr(self, "stats"):
                 variances[var] = (variances[var] - self.stats[var]["mean"]) / self.stats[var]["std"]
 
         return variances
@@ -480,7 +498,7 @@ class TTSDataset(Dataset):
             desc="creating/loading utt. dvectors",
             total=len(self.data),
         ):
-            dvec_path = Path(row["audio"].replace(".wav", ".npy"))
+            dvec_path = row["audio"].with_suffix(".npy")
             if not dvec_path.exists():
                 audio, sampling_rate = torchaudio.load(row["audio"])
                 start = int(self.sampling_rate * row["start"])
@@ -504,11 +522,12 @@ class TTSDataset(Dataset):
             if not speaker_path.exists():
                 dvecs = []
                 for _, row in speaker_df.iterrows():
-                    dvecs.append(np.load(row["audio"].replace(".wav", ".npy")))
+                    dvecs.append(np.load(row["audio"].with_suffix(".npy")))
                 dvec = np.mean(dvecs, axis=0)
                 np.save(speaker_path, dvec)
 
-    def _create_entry(self, item):
+    def _create_entry(self, idx):
+        item = self.alignment_ds[idx]
         start, end = item["phones"][0][0], item["phones"][-1][1]
 
         if end - start < self.min_length:
@@ -558,6 +577,11 @@ class TTSDataset(Dataset):
 
     def _create_stats(self, x):
         result = {}
+        mel_val = x["mel"]
+        mel_val[x["silence_mask"]] = np.nan
+        result["mel"] = {}
+        result["mel"]["mean"] = torch.nanmean(mel_val)
+        result["mel"]["std"] = torch.std(mel_val[~torch.isnan(mel_val)])
         for i, var in enumerate(self.variances):
             if self.variance_transforms[i] == "cwt":
                 var_val = x[f"variances_{var}_original_signal"].float()

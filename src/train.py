@@ -8,34 +8,39 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor
 import os
+import matplotlib.pyplot as plt
 
 from alignments.datasets.libritts import LibrittsDataset
 
-os.environ["WANDB_MODE"] = "offline"
+os.environ["WANDB_MODE"] = "online"
 
 torch.multiprocessing.set_sharing_strategy("file_system")
 
-wandb_logger = WandbLogger(project="LightningFastSpeech")
+wandb_logger = WandbLogger(project="FastSpeech2")
 
 if __name__ == "__main__":
-    epochs = 1
+    epochs = 10
     validation_step = 1.0
     lr_monitor = LearningRateMonitor(logging_interval="step")
 
+    train_ds = LibrittsDataset(
+        "../data/train-clean-aligned",
+        "../data/train-clean",
+        "https://www.openslr.org/resources/60/train-clean-100.tar.gz",
+        verbose=True,
+    )
+
+    valid_ds = LibrittsDataset(
+        "../data/dev-clean-aligned",
+        "../data/dev-clean",
+        "https://www.openslr.org/resources/60/dev-clean.tar.gz",
+        verbose=True,
+    )
+
     model = FastSpeech2(
-        LibrittsDataset(
-            "../data/dev-clean-aligned",
-            "../data/dev-clean",
-            "https://www.openslr.org/resources/60/dev-clean.tar.gz",
-            verbose=True,
-        ),
-        LibrittsDataset(
-            "../data/train-clean-aligned",
-            "../data/train-clean",
-            "https://www.openslr.org/resources/60/train-clean-100.tar.gz",
-            verbose=True,
-        ),
-        valid_example_directory="examples"
+        train_ds,
+        valid_ds,
+        valid_example_directory="examples",
     )
 
     strategy = None # "ddp_find_unused_parameters_false"
@@ -50,6 +55,7 @@ if __name__ == "__main__":
         val_check_interval=validation_step,
         logger=wandb_logger,
         accumulate_grad_batches=6,
+        gradient_clip_val=1.0,
         callbacks=[lr_monitor],
         gpus=gpus,
         strategy=strategy,

@@ -64,22 +64,42 @@ class ConformerEncoderLayer(TransformerEncoderLayer):
         super().__init__(*args, **old_kwargs)
         del self.linear1
         del self.linear2
-        self.conv1 = nn.Conv1d(
-            kwargs["conv_in"],
-            kwargs["conv_filter_size"],
-            kernel_size=kwargs["conv_kernel"][0],
-            padding=(kwargs["conv_kernel"][0] - 1) // 2,
-        )
-        self.conv2 = nn.Conv1d(
-            kwargs["conv_filter_size"],
-            kwargs["conv_in"],
-            kernel_size=kwargs["conv_kernel"][1],
-            padding=(kwargs["conv_kernel"][1] - 1) // 2,
-        )
+        if "conv_depthwise" in kwargs and kwargs["conv_depthwise"]:
+            self.conv1 = nn.Sequential(
+                nn.Conv1d(
+                    kwargs["conv_in"],
+                    kwargs["conv_in"],
+                    kernel_size=kwargs["conv_kernel"][0],
+                    padding=(kwargs["conv_kernel"][0] - 1) // 2,
+                ),
+                nn.Conv1d(kwargs["conv_in"], kwargs["conv_filter_size"], 1),
+            )
+            self.conv2 = nn.Sequential(
+                nn.Conv1d(
+                    kwargs["conv_filter_size"],
+                    kwargs["conv_filter_size"],
+                    kernel_size=kwargs["conv_kernel"][1],
+                    padding=(kwargs["conv_kernel"][1] - 1) // 2,
+                ),
+                nn.Conv1d(kwargs["conv_filter_size"], kwargs["conv_in"], 1),
+            )
+        else:
+            self.conv1 = nn.Conv1d(
+                kwargs["conv_in"],
+                kwargs["conv_filter_size"],
+                kernel_size=kwargs["conv_kernel"][0],
+                padding=(kwargs["conv_kernel"][0] - 1) // 2,
+            )
+            self.conv2 = nn.Conv1d(
+                kwargs["conv_filter_size"],
+                kwargs["conv_in"],
+                kernel_size=kwargs["conv_kernel"][1],
+                padding=(kwargs["conv_kernel"][1] - 1) // 2,
+            )
 
     def _ff_block(self, x):
         x = self.conv2(
-            self.dropout(  # remove dropout for FastSpeech2
+            self.dropout(
                 self.activation(self.conv1(x.transpose(1, 2)))
             )
         ).transpose(1, 2)
@@ -215,7 +235,7 @@ class VarianceAdaptor(nn.Module):
                 else:
                     pred, out = self.encoders[var](x, None, src_mask)
                 result[f"variances_{var}"] = pred
-                x += out
+                x = x + out
 
         if not inference:
             duration_rounded = targets["duration"]
@@ -240,7 +260,7 @@ class VarianceAdaptor(nn.Module):
                 else:
                     pred, out = self.encoders[var](x, None, tgt_mask)
                 result[f"variances_{var}"] = pred
-                x += out
+                x = x + out
 
         result["x"] = x
         result["duration_prediction"] = duration_pred
@@ -257,7 +277,7 @@ class LengthRegulator(nn.Module):
             for i in range(x.shape[0])
         ]
         lengths = torch.tensor([t.shape[0] for t in repeated_list]).long()
-        max_length = min(lengths.max(), max_length)
+        max_length = min(lengths.max(), int(max_length))
         mask = ~(
             torch.arange(max_length).expand(len(lengths), max_length)
             < lengths.unsqueeze(1)

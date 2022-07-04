@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 from torch.nn.modules.transformer import TransformerEncoder, TransformerEncoderLayer
 import wandb
 import pandas as pd
+import matplotlib.pyplot as plt
 
 from dataset.datasets import TTSDataset
 from .model import (
@@ -19,6 +20,7 @@ from .model import (
 )
 from third_party.hifigan import Synthesiser
 from .loss import FastSpeech2Loss
+from .noam import NoamLR
 
 num_cpus = multiprocessing.cpu_count()
 
@@ -27,13 +29,14 @@ class FastSpeech2(pl.LightningModule):
         self,
         train_ds=None,
         valid_ds=None,
-        lr=5e-03,
+        lr=5e-05,
+        warmup_steps=4000,
         batch_size=6,
         speaker_type="dvector",  # "none", "id", "dvector"
         min_length=0.5,
         max_length=32,
         augment_duration=0.1,  # 0.1,
-        variances=[],#["pitch", "energy", "snr"],
+        variances=["pitch", "energy", "snr"],
         variance_levels=["frame", "frame", "frame"],
         variance_transforms=["none", "none", "none"],  # "cwt", "log", "none"
         variance_nlayers=[5, 5, 5],
@@ -42,14 +45,14 @@ class FastSpeech2(pl.LightningModule):
         variance_dropout=[0.5, 0.5, 0.5],
         variance_filter_size=256,
         variance_nbins=256,
-        variance_depthwise_conv=False,
+        variance_depthwise_conv=True,
         duration_nlayers=2,
         duration_loss_weight=1,
         duration_stochastic=False,
         duration_kernel_size=3,
         duration_dropout=0.5,
         duration_filter_size=256,
-        duration_depthwise_conv=False,
+        duration_depthwise_conv=True,
         priors=[],#["pitch", "energy", "snr", "duration"],
         mel_loss_weight=1,
         n_mels=80,
@@ -57,8 +60,8 @@ class FastSpeech2(pl.LightningModule):
         n_fft=1024,
         win_length=1024,
         hop_length=256,
-        train_ds_params=None,
-        valid_ds_params=None,
+        train_ds_kwargs=None,
+        valid_ds_kwargs=None,
         encoder_hidden=256,
         encoder_head=2,
         encoder_layers=4,
@@ -66,18 +69,23 @@ class FastSpeech2(pl.LightningModule):
         encoder_kernel_sizes=[9, 9, 9, 9],
         encoder_dim_feedforward=None,
         encoder_conformer=True,
+        encoder_depthwise_conv=True,
         decoder_hidden=256,
         decoder_head=2,
         decoder_layers=4,  # TODO: test with 6 layers
         decoder_dropout=0.1,
+        decoder_kernel_sizes=[9, 9, 9, 9],
         decoder_dim_feedforward=None,
         decoder_conformer=True,
-        decoder_kernel_sizes=[9, 9, 9, 9],
+        decoder_depthwise_conv=True,
         conv_filter_size=1024,
         valid_nexamples=10,
         valid_example_directory=None,
     ):
         super().__init__()
+
+        self.lr = lr
+        self.warmup_steps = warmup_steps
 
         self.valid_nexamples = valid_nexamples
         self.valid_example_directory = valid_example_directory
@@ -87,47 +95,53 @@ class FastSpeech2(pl.LightningModule):
         self.save_hyperparameters(ignore=[
             "train_ds",
             "valid_ds",
-            "train_ds_params", 
-            "valid_ds_params", 
+            "train_ds_kwargs", 
+            "valid_ds_kwargs", 
             "valid_nexamples", 
             "valid_example_directory",
             "batch_size",
         ])
 
         # data
-        if train_ds_params is not None:
-            train_ds_params["speaker_type"] = speaker_type
-            train_ds_params["min_length"] = min_length
-            train_ds_params["max_length"] = max_length
-            train_ds_params["augment_duration"] = augment_duration
-            train_ds_params["variances"] = variances
-            train_ds_params["variance_levels"] = variance_levels
-            train_ds_params["variance_transforms"] = variance_transforms
-            train_ds_params["priors"] = priors
-            train_ds_params["n_mels"] = n_mels
-            train_ds_params["sampling_rate"] = sampling_rate
-            train_ds_params["n_fft"] = n_fft
-            train_ds_params["win_length"] = win_length
-            train_ds_params["hop_length"] = hop_length
-            self.train_ds = TTSDataset(train_ds, **train_ds_params)
-        if valid_ds_params is not None:
-            self.valid_ds = self.train_ds.create_validation_dataset(valid_ds, **valid_ds_params)
+        if train_ds is not None:
+            if train_ds_kwargs is None:
+                train_ds_kwargs = {}
+            train_ds_kwargs["speaker_type"] = speaker_type
+            train_ds_kwargs["min_length"] = min_length
+            train_ds_kwargs["max_length"] = max_length
+            train_ds_kwargs["augment_duration"] = augment_duration
+            train_ds_kwargs["variances"] = variances
+            train_ds_kwargs["variance_levels"] = variance_levels
+            train_ds_kwargs["variance_transforms"] = variance_transforms
+            train_ds_kwargs["priors"] = priors
+            train_ds_kwargs["n_mels"] = n_mels
+            train_ds_kwargs["sampling_rate"] = sampling_rate
+            train_ds_kwargs["n_fft"] = n_fft
+            train_ds_kwargs["win_length"] = win_length
+            train_ds_kwargs["hop_length"] = hop_length
+            self.train_ds = TTSDataset(train_ds, **train_ds_kwargs)
+        if valid_ds is not None:
+            if valid_ds_kwargs is None:
+                valid_ds_kwargs = {}
+            self.valid_ds = self.train_ds.create_validation_dataset(valid_ds, **valid_ds_kwargs)
 
         self.synth = Synthesiser()
 
         # needed for inference without a dataset
-        self.stats = self.train_ds.stats
-        self.phone2id = self.train_ds.phone2id
-        if self.train_ds.speaker_type == "dvector":
-            self.speaker2dvector = self.train_ds.speaker2dvector
-        if self.train_ds.speaker_type == "id":
-            self.speaker2id = self.train_ds.speaker2id
+        if train_ds is not None:
+            self.stats = self.train_ds.stats
+            self.phone2id = self.train_ds.phone2id
+            if self.train_ds.speaker_type == "dvector":
+                self.speaker2dvector = self.train_ds.speaker2dvector
+            if self.train_ds.speaker_type == "id":
+                self.speaker2id = self.train_ds.speaker2id
 
         self.phone_embedding = nn.Embedding(
             len(self.phone2id), self.hparams.encoder_hidden, padding_idx=0
         )
 
         # encoder
+
         self.encoder = TransformerEncoder(
             ConformerEncoderLayer(
                 self.hparams.encoder_hidden,
@@ -141,35 +155,29 @@ class FastSpeech2(pl.LightningModule):
             num_layers=self.hparams.encoder_layers,
         )
 
-        # self.encoder = TransformerEncoder(
-        #     TransformerEncoderLayer(
-        #         self.hparams.encoder_hidden, self.hparams.encoder_head
-        #     ),
-        #     num_layers=self.hparams.encoder_layers,
-        # )
-
-        # if self.hparams.encoder_conformer:
-        #     if self.hparams.encoder_dim_feedforward is not None:
-        #         raise ValueError("encoder_dim_feedforward is not supported for conformer")
-        #     for i in range(self.hparams.encoder_layers):
-        #         self.encoder.layers[i] = ConformerEncoderLayer(
-        #             self.hparams.encoder_hidden,
-        #             self.hparams.encoder_head,
-        #             conv_in=self.hparams.encoder_hidden,
-        #             conv_filter_size=self.hparams.conv_filter_size,
-        #             conv_kernel=(self.hparams.encoder_kernel_sizes[i], 1),
-        #             batch_first=True,
-        #             dropout=self.hparams.encoder_dropout,
-        #         )
-        # else:
-        #     for i in range(self.hparams.encoder_layers):
-        #         self.encoder.layers[i] = TransformerEncoderLayer(
-        #             self.hparams.encoder_hidden,
-        #             self.hparams.encoder_head,
-        #             dim_feedforward=self.hparams.encoder_dim_feedforward,
-        #             batch_first=True,
-        #             dropout=self.hparams.encoder_dropout,
-        #         )
+        if self.hparams.encoder_conformer:
+            if self.hparams.encoder_dim_feedforward is not None:
+                print("encoder_dim_feedforward is ignored for conformer")
+            for i in range(self.hparams.encoder_layers):
+                self.encoder.layers[i] = ConformerEncoderLayer(
+                    self.hparams.encoder_hidden,
+                    self.hparams.encoder_head,
+                    conv_in=self.hparams.encoder_hidden,
+                    conv_filter_size=self.hparams.conv_filter_size,
+                    conv_kernel=(self.hparams.encoder_kernel_sizes[i], 1),
+                    batch_first=True,
+                    dropout=self.hparams.encoder_dropout,
+                    conv_depthwise=self.hparams.encoder_depthwise_conv,
+                )
+        else:
+            for i in range(self.hparams.encoder_layers):
+                self.encoder.layers[i] = TransformerEncoderLayer(
+                    self.hparams.encoder_hidden,
+                    self.hparams.encoder_head,
+                    dim_feedforward=self.hparams.encoder_dim_feedforward,
+                    batch_first=True,
+                    dropout=self.hparams.encoder_dropout,
+                )
         self.positional_encoding = PositionalEncoding(
             self.hparams.encoder_hidden, dropout=self.hparams.encoder_dropout
         )
@@ -197,6 +205,7 @@ class FastSpeech2(pl.LightningModule):
         ).to(self.device)
 
         # decoder
+
         self.decoder = TransformerEncoder(
             ConformerEncoderLayer(
                 self.hparams.decoder_hidden,
@@ -209,36 +218,30 @@ class FastSpeech2(pl.LightningModule):
             ),
             num_layers=self.hparams.decoder_layers,
         )
+        if self.hparams.decoder_conformer:
+            if self.hparams.decoder_dim_feedforward is not None:
+                print("decoder_dim_feedforward is ignored for conformer")
+            for i in range(self.hparams.decoder_layers):
+                self.decoder.layers[i] = ConformerEncoderLayer(
+                    self.hparams.decoder_hidden,
+                    self.hparams.decoder_head,
+                    conv_in=self.hparams.decoder_hidden,
+                    conv_filter_size=self.hparams.conv_filter_size,
+                    conv_kernel=(self.hparams.decoder_kernel_sizes[i], 1),
+                    batch_first=True,
+                    dropout=self.hparams.decoder_dropout,
+                    conv_depthwise=self.hparams.decoder_depthwise_conv,
+                )
+        else:
+            for i in range(self.hparams.decoder_layers):
+                self.decoder.layers[i] = TransformerEncoderLayer(
+                    self.hparams.decoder_hidden,
+                    self.hparams.decoder_head,
+                    dim_feedforward=self.hparams.decoder_dim_feedforward,
+                    batch_first=True,
+                    dropout=self.hparams.decoder_dropout,
+                )
 
-        # self.decoder = TransformerEncoder(
-        #     TransformerEncoderLayer(
-        #         self.hparams.decoder_hidden,
-        #         self.hparams.decoder_head,
-        #     ),
-        #     num_layers=self.hparams.decoder_layers,
-        # )
-        # if self.hparams.decoder_conformer:
-        #     if self.hparams.decoder_dim_feedforward is not None:
-        #         raise ValueError("decoder_dim_feedforward is not supported for conformer")
-        #     for i in range(self.hparams.decoder_layers):
-        #         self.decoder.layers[i] = ConformerEncoderLayer(
-        #             self.hparams.decoder_hidden,
-        #             self.hparams.decoder_head,
-        #             conv_in=self.hparams.decoder_hidden,
-        #             conv_filter_size=self.hparams.conv_filter_size,
-        #             conv_kernel=(self.hparams.decoder_kernel_sizes[i], 1),
-        #             batch_first=True,
-        #             dropout=self.hparams.decoder_dropout,
-        #         )
-        # else:
-        #     for i in range(self.hparams.decoder_layers):
-        #         self.decoder.layers[i] = TransformerEncoderLayer(
-        #             self.hparams.decoder_hidden,
-        #             self.hparams.decoder_head,
-        #             dim_feedforward=self.hparams.decoder_dim_feedforward,
-        #             batch_first=True,
-        #             dropout=self.hparams.decoder_dropout,
-        #         )
         self.linear = nn.Linear(
             self.hparams.decoder_hidden,
             self.hparams.n_mels,
@@ -296,12 +299,14 @@ class FastSpeech2(pl.LightningModule):
         speakers = targets["speaker"]
 
         src_mask = phones.eq(0)
+
         output = self.phone_embedding(phones)
 
         output = self.positional_encoding(output)
-        output = self.encoder(output, src_key_padding_mask=src_mask)
 
-        #output += self.speaker_embedding(speakers, output.shape[1])
+        output = output + self.speaker_embedding(speakers, output.shape[1])
+
+        output = self.encoder(output, src_key_padding_mask=src_mask)
 
         for prior in self.hparams.priors:
             output += self.prior_embeddings[prior](
@@ -317,7 +322,9 @@ class FastSpeech2(pl.LightningModule):
         )
 
         output = variance_output["x"]
+
         output = self.positional_encoding(output)
+
         output = self.decoder(output, src_key_padding_mask=variance_output["tgt_mask"])
 
         output = self.linear(output)
@@ -456,6 +463,7 @@ class FastSpeech2(pl.LightningModule):
 
     def validation_epoch_end(self, validation_step_outputs):
         if self.trainer.is_global_zero:
+            wandb.init(project="FastSpeech2")
             table = wandb.Table(
                 data=self.eval_log_data,
                 columns=[
@@ -475,21 +483,18 @@ class FastSpeech2(pl.LightningModule):
         self.optimizer = torch.optim.AdamW(
             self.parameters(),
             self.hparams.lr,
-            # betas=[0.8, 0.99],
-            # eps=1e-9,
+            # betas=[0.9, 0.98],
+            # eps=1e-8,
             # weight_decay=0.01
         )
 
-        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            self.optimizer,
-            max_lr=self.hparams.lr,
-            steps_per_epoch=len(self.train_ds) // self.batch_size,
-            epochs=self.trainer.max_epochs,
-        )
-
-        # self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        #     self.optimizer, self.epochs
+        # self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        #     self.optimizer,
+        #     max_lr=self.hparams.lr,
+        #     steps_per_epoch=len(self.train_ds) // self.batch_size,
+        #     epochs=10,
         # )
+        self.scheduler = NoamLR(self.optimizer, self.hparams.warmup_steps)
 
         sched = {
             "scheduler": self.scheduler,

@@ -1,1 +1,1 @@
-pdm run python train.py
+pdm run python src/train.py
