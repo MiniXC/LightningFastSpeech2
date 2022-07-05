@@ -5,6 +5,7 @@ import torch.multiprocessing
 
 from fastspeech2.fastspeech2 import FastSpeech2
 from pytorch_lightning import Trainer
+from pytorch_lightning.tuner.tuning import Tuner
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor
 import os
@@ -12,14 +13,14 @@ import matplotlib.pyplot as plt
 
 from alignments.datasets.libritts import LibrittsDataset
 
-os.environ["WANDB_MODE"] = "online"
+os.environ["WANDB_MODE"] = "offline"
 
 torch.multiprocessing.set_sharing_strategy("file_system")
 
 wandb_logger = WandbLogger(project="FastSpeech2")
 
 if __name__ == "__main__":
-    epochs = 10
+    epochs = 25
     validation_step = 1.0
     lr_monitor = LearningRateMonitor(logging_interval="step")
 
@@ -41,6 +42,7 @@ if __name__ == "__main__":
         train_ds,
         valid_ds,
         valid_example_directory="examples",
+        batch_size=12,
     )
 
     strategy = None # "ddp_find_unused_parameters_false"
@@ -48,13 +50,13 @@ if __name__ == "__main__":
 
     trainer = Trainer(
         accelerator="gpu",
-        # precision=16,
+        precision=16,
         default_root_dir="logs",
         min_epochs=epochs,
         max_epochs=epochs,
         val_check_interval=validation_step,
         logger=wandb_logger,
-        accumulate_grad_batches=6,
+        accumulate_grad_batches=4,
         gradient_clip_val=1.0,
         callbacks=[lr_monitor],
         gpus=gpus,
@@ -62,6 +64,3 @@ if __name__ == "__main__":
     )
     # TODO: check gradient clipping effect
     trainer.fit(model)
-
-# accelerator="cpu",
-#         detect_anomaly=True,

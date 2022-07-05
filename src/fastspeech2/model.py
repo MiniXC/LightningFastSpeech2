@@ -71,6 +71,7 @@ class ConformerEncoderLayer(TransformerEncoderLayer):
                     kwargs["conv_in"],
                     kernel_size=kwargs["conv_kernel"][0],
                     padding=(kwargs["conv_kernel"][0] - 1) // 2,
+                    groups=kwargs["conv_in"],
                 ),
                 nn.Conv1d(kwargs["conv_in"], kwargs["conv_filter_size"], 1),
             )
@@ -80,6 +81,7 @@ class ConformerEncoderLayer(TransformerEncoderLayer):
                     kwargs["conv_filter_size"],
                     kernel_size=kwargs["conv_kernel"][1],
                     padding=(kwargs["conv_kernel"][1] - 1) // 2,
+                    groups=kwargs["conv_in"],
                 ),
                 nn.Conv1d(kwargs["conv_filter_size"], kwargs["conv_in"], 1),
             )
@@ -114,14 +116,14 @@ class SpeakerEmbedding(nn.Module):
         if speaker_type == "dvector":
             self.projection = nn.Linear(256, embedding_dim)
         elif speaker_type == "id":
-            self.speaker_embedding(nspeakers)
+            self.speaker_embedding = nn.Embedding(nspeakers, embedding_dim)
 
-    def forward(self, x, input_length):
+    def forward(self, x, input_length, output_shape):
         if self.speaker_type == "dvector":
             out = self.projection(x)
         elif self.speaker_type == "id":
             out = self.speaker_embedding(x)
-        return out.reshape(-1, 1, self.embedding_dim).repeat_interleave(
+        return out.reshape(-1, 1, output_shape).repeat_interleave(
             input_length, dim=1
         )
 
@@ -437,6 +439,7 @@ class VarianceConvolutionLayer(nn.Module):
                             in_channels,
                             kernel_size,
                             padding=(kernel_size - 1) // 2,
+                            groups=in_channels,
                         ),
                         nn.Conv1d(in_channels, filter_size, 1),
                     )

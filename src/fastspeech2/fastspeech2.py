@@ -9,6 +9,7 @@ from torch.nn.modules.transformer import TransformerEncoder, TransformerEncoderL
 import wandb
 import pandas as pd
 import matplotlib.pyplot as plt
+from scipy.spatial.distance import jensenshannon
 
 from dataset.datasets import TTSDataset
 from .model import (
@@ -29,7 +30,7 @@ class FastSpeech2(pl.LightningModule):
         self,
         train_ds=None,
         valid_ds=None,
-        lr=5e-05,
+        lr=2e-04,
         warmup_steps=4000,
         batch_size=6,
         speaker_type="dvector",  # "none", "id", "dvector"
@@ -38,16 +39,16 @@ class FastSpeech2(pl.LightningModule):
         augment_duration=0.1,  # 0.1,
         variances=["pitch", "energy", "snr"],
         variance_levels=["frame", "frame", "frame"],
-        variance_transforms=["none", "none", "none"],  # "cwt", "log", "none"
+        variance_transforms=["cwt", "none", "none"],  # "cwt", "log", "none"
         variance_nlayers=[5, 5, 5],
-        variance_loss_weights=[1, 1, 1],
+        variance_loss_weights=[1e-1, 1e-1, 1e-1],
         variance_kernel_size=[3, 3, 3],
         variance_dropout=[0.5, 0.5, 0.5],
         variance_filter_size=256,
         variance_nbins=256,
         variance_depthwise_conv=True,
         duration_nlayers=2,
-        duration_loss_weight=1,
+        duration_loss_weight=5e-1,
         duration_stochastic=False,
         duration_kernel_size=3,
         duration_dropout=0.5,
@@ -66,19 +67,20 @@ class FastSpeech2(pl.LightningModule):
         encoder_head=2,
         encoder_layers=4,
         encoder_dropout=0.1,
-        encoder_kernel_sizes=[9, 9, 9, 9],
+        encoder_kernel_sizes=[5, 25, 13, 9],
         encoder_dim_feedforward=None,
         encoder_conformer=True,
         encoder_depthwise_conv=True,
+        encoder_conv_filter_size=1024,
         decoder_hidden=256,
         decoder_head=2,
         decoder_layers=4,  # TODO: test with 6 layers
         decoder_dropout=0.1,
-        decoder_kernel_sizes=[9, 9, 9, 9],
+        decoder_kernel_sizes=[17, 21, 9, 13],
         decoder_dim_feedforward=None,
         decoder_conformer=True,
         decoder_depthwise_conv=True,
-        conv_filter_size=1024,
+        decoder_conv_filter_size=1024,
         valid_nexamples=10,
         valid_example_directory=None,
     ):
@@ -147,10 +149,11 @@ class FastSpeech2(pl.LightningModule):
                 self.hparams.encoder_hidden,
                 self.hparams.encoder_head,
                 conv_in=self.hparams.encoder_hidden,
-                conv_filter_size=self.hparams.conv_filter_size,
+                conv_filter_size=self.hparams.encoder_conv_filter_size,
                 conv_kernel=(self.hparams.encoder_kernel_sizes[0], 1),
                 batch_first=True,
                 dropout=self.hparams.encoder_dropout,
+                conv_depthwise=self.hparams.encoder_depthwise_conv,
             ),
             num_layers=self.hparams.encoder_layers,
         )
@@ -163,7 +166,7 @@ class FastSpeech2(pl.LightningModule):
                     self.hparams.encoder_hidden,
                     self.hparams.encoder_head,
                     conv_in=self.hparams.encoder_hidden,
-                    conv_filter_size=self.hparams.conv_filter_size,
+                    conv_filter_size=self.hparams.encoder_conv_filter_size,
                     conv_kernel=(self.hparams.encoder_kernel_sizes[i], 1),
                     batch_first=True,
                     dropout=self.hparams.encoder_dropout,
@@ -205,16 +208,16 @@ class FastSpeech2(pl.LightningModule):
         ).to(self.device)
 
         # decoder
-
         self.decoder = TransformerEncoder(
             ConformerEncoderLayer(
                 self.hparams.decoder_hidden,
                 self.hparams.decoder_head,
                 conv_in=self.hparams.decoder_hidden,
-                conv_filter_size=self.hparams.conv_filter_size,
+                conv_filter_size=self.hparams.decoder_conv_filter_size,
                 conv_kernel=(self.hparams.decoder_kernel_sizes[0], 1),
                 batch_first=True,
                 dropout=self.hparams.decoder_dropout,
+                conv_depthwise=self.hparams.encoder_depthwise_conv,
             ),
             num_layers=self.hparams.decoder_layers,
         )
@@ -226,7 +229,7 @@ class FastSpeech2(pl.LightningModule):
                     self.hparams.decoder_hidden,
                     self.hparams.decoder_head,
                     conv_in=self.hparams.decoder_hidden,
-                    conv_filter_size=self.hparams.conv_filter_size,
+                    conv_filter_size=self.hparams.decoder_conv_filter_size,
                     conv_kernel=(self.hparams.decoder_kernel_sizes[i], 1),
                     batch_first=True,
                     dropout=self.hparams.decoder_dropout,
@@ -304,7 +307,7 @@ class FastSpeech2(pl.LightningModule):
 
         output = self.positional_encoding(output)
 
-        output = output + self.speaker_embedding(speakers, output.shape[1])
+        output = output + self.speaker_embedding(speakers, output.shape[1], output.shape[-1])
 
         output = self.encoder(output, src_key_padding_mask=src_mask)
 
@@ -324,6 +327,8 @@ class FastSpeech2(pl.LightningModule):
         output = variance_output["x"]
 
         output = self.positional_encoding(output)
+
+        output = output + self.speaker_embedding(speakers, output.shape[1], output.shape[-1])
 
         output = self.decoder(output, src_key_padding_mask=variance_output["tgt_mask"])
 
@@ -369,20 +374,27 @@ class FastSpeech2(pl.LightningModule):
             sync_dist=True,
         )
 
-        if batch_idx == 0:
+        if batch_idx == 0 and self.trainer.is_global_zero:
             self.eval_log_data = []
-            # self.variance_dict = {
-            #     "duration": {"pred": [], "true": []}
-            # }
-            # for var in self.hparams.variances:
-            #     self.variance_dict[var] = {"pred": [], "true": []}
+            self.results_dict = {
+                "duration": {"pred": [], "true": []},
+                "mel": {"pred": [], "true": []},
+            }
+            for var in self.hparams.variances:
+                self.results_dict[var] = {"pred": [], "true": []}
 
         inference_result = self(batch, inference=True)
 
-        # self.variance_dict["duration"]["pred"] += list(inference_result["duration_rounded"])
-        # self.variance_dict["duration"]["true"] += list(batch["duration_rounded"])
-        # for var in self.hparams.variances:
-        #     self.variance_dict[var] += list(inference_result[var])
+        # duration
+        self.results_dict["duration"]["pred"] += list(inference_result["duration_rounded"])
+        self.results_dict["duration"]["true"] += list(batch["duration_rounded"])
+
+        # mel
+        self.results_dict["mel"]["pred"] += list(inference_result["mel"][~inference_result["tgt_mask"]])
+        self.results_dict["mel"]["true"] += list(batch["mel"][~result["tgt_mask"]])
+
+        for var in self.hparams.variances:
+            self.results_dict[var] += list(inference_result[var])
 
         if (
             self.eval_log_data is not None
@@ -475,6 +487,13 @@ class FastSpeech2(pl.LightningModule):
                 ],
             )
             wandb.log({"examples": table})
+            for key in self.results_dict.keys():
+                if key != "mel":
+                    print({f"js_d_{key}": jensenshannon(self.results_dict[key]['pred'], self.results_dict[key]['true'])})
+                    wandb.log({f"js_d_{key}": jensenshannon(self.results_dict[key]['pred'], self.results_dict[key]['true'])})
+                else:
+                    print({f"js_d_{key}": jensenshannon(self.results_dict[key]['pred'], self.results_dict[key]['true'], axis=0)})
+                    wandb.log({f"js_d_{key}": jensenshannon(self.results_dict[key]['pred'], self.results_dict[key]['true'], axis=0)})
             self.eval_log_data = None
             
 
@@ -483,9 +502,9 @@ class FastSpeech2(pl.LightningModule):
         self.optimizer = torch.optim.AdamW(
             self.parameters(),
             self.hparams.lr,
-            # betas=[0.9, 0.98],
-            # eps=1e-8,
-            # weight_decay=0.01
+            betas=[0.9, 0.98],
+            eps=1e-8,
+            weight_decay=0.01
         )
 
         # self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
