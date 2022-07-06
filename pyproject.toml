@@ -26,15 +26,14 @@ dependencies = [
     "kaleido==0.2.1",
     "snreval>=1.2",
     "audiomentations>=0.24.0",
-    "pickle5>=0.0.11",
     "black>=22.3.0",
     "crepe>=0.0.12",
     "textgrid>=1.5",
     "rich>=12.4.4",
     "alignments>=0.0.3",
-]
+    "g2p-en>=2.1.0"]
 license = {text = "MIT"}
-requires-python = ">=3.7,<3.11"
+requires-python = ">=3.8,<3.10"
 [project.urls]
 Homepage = ""
 

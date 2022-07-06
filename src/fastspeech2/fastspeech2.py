@@ -1,5 +1,6 @@
 import os
 import multiprocessing
+from pathlib import Path
 
 import pytorch_lightning as pl
 import torch
@@ -8,8 +9,10 @@ from torch.utils.data import DataLoader
 from torch.nn.modules.transformer import TransformerEncoder, TransformerEncoderLayer
 import wandb
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial.distance import jensenshannon
+from sklearn.neighbors import KernelDensity
 
 from dataset.datasets import TTSDataset
 from .model import (
@@ -127,7 +130,7 @@ class FastSpeech2(pl.LightningModule):
                 valid_ds_kwargs = {}
             self.valid_ds = self.train_ds.create_validation_dataset(valid_ds, **valid_ds_kwargs)
 
-        self.synth = Synthesiser()
+        self.synth = Synthesiser(device=self.device)
 
         # needed for inference without a dataset
         if train_ds is not None:
@@ -385,93 +388,110 @@ class FastSpeech2(pl.LightningModule):
 
         inference_result = self(batch, inference=True)
 
-        # duration
-        self.results_dict["duration"]["pred"] += list(inference_result["duration_rounded"])
-        self.results_dict["duration"]["true"] += list(batch["duration_rounded"])
-
-        # mel
-        self.results_dict["mel"]["pred"] += list(inference_result["mel"][~inference_result["tgt_mask"]])
-        self.results_dict["mel"]["true"] += list(batch["mel"][~result["tgt_mask"]])
-
-        for var in self.hparams.variances:
-            self.results_dict[var] += list(inference_result[var])
-
         if (
             self.eval_log_data is not None
             and len(self.eval_log_data) < self.valid_nexamples
             and self.trainer.is_global_zero
         ):
-            for i in range(len(batch["mel"])):
-                if len(self.eval_log_data) >= self.valid_nexamples:
-                    break
-                pred_mel = inference_result["mel"][i][~inference_result["tgt_mask"][i]].cpu()
-                true_mel = batch["mel"][i][~result["tgt_mask"][i]].cpu()
-                pred_dict = {
-                    "mel": pred_mel,
-                    "duration": inference_result["duration_rounded"][i][~inference_result["src_mask"][i]].cpu(),
-                    "phones": batch["phones"][i],
-                    "text": batch["text"][i],
-                    "variances": {},
-                    "priors": {},
-                }
-                for j, var in enumerate(self.hparams.variances):
-                    if self.hparams.variance_levels[j] == "phone":
-                        mask = "src_mask"
-                    elif self.hparams.variance_levels[j] == "frame":
-                        mask = "tgt_mask"
-                    if self.hparams.variance_transforms[j] == "cwt":
-                        pred_dict["variances"][var] = {}
-                        pred_dict["variances"][var]["spectrogram"] = inference_result[f"variances_{var}"]["spectrogram"][i][~inference_result[mask][i]].cpu()
-                        pred_dict["variances"][var]["original_signal"] = inference_result[f"variances_{var}"]["reconstructed_signal"][i][~inference_result[mask][i]].cpu()
-                    else:
-                        pred_dict["variances"][var] = inference_result[f"variances_{var}"][i][~inference_result[mask][i]].cpu()
-                true_dict = {
-                    "mel": true_mel,
-                    "duration": batch["duration"][i][~result["src_mask"][i]].cpu(),
-                    "phones": batch["phones"][i],
-                    "text": batch["text"][i],
-                    "variances": {},
-                    "priors": {},
-                }
-                for j, var in enumerate(self.hparams.variances):
-                    if self.hparams.variance_levels[j] == "phone":
-                        mask = "src_mask"
-                    elif self.hparams.variance_levels[j] == "frame":
-                        mask = "tgt_mask"
-                    if self.hparams.variance_transforms[j] == "cwt":
-                        true_dict["variances"][var] = {}
-                        true_dict["variances"][var]["spectrogram"] = batch[f"variances_{var}_spectrogram"][i][~result[mask][i]].cpu()
-                        true_dict["variances"][var]["original_signal"] = batch[f"variances_{var}_original_signal"][i][~result[mask][i]].cpu()
-                    else:
-                        true_dict["variances"][var] = batch[f"variances_{var}"][i][~result[mask][i]].cpu()
+            left_to_add = self.valid_nexamples - len(self.eval_log_data)
+            self._add_to_results_dict(inference_result, batch, result, left_to_add)
+            self._log_table_to_wandb(inference_result, batch, result)
+            
 
-                for prior in self.hparams.priors:
-                    true_dict["priors"][prior] = batch[f"priors_{prior}"][i]
-                    pred_dict["priors"][prior] = batch[f"priors_{prior}"][i]
-
-                if pred_dict["duration"].sum() == 0:
-                    print("WARNING: duration is zero (common at beginning of training)")
+    def _log_table_to_wandb(self, inference_result, batch, result):
+        for i in range(len(batch["mel"])):
+            if len(self.eval_log_data) >= self.valid_nexamples:
+                break
+            pred_mel = inference_result["mel"][i][~inference_result["tgt_mask"][i]].cpu()
+            true_mel = batch["mel"][i][~result["tgt_mask"][i]].cpu()
+            pred_dict = {
+                "mel": pred_mel,
+                "duration": inference_result["duration_rounded"][i][~inference_result["src_mask"][i]].cpu(),
+                "phones": batch["phones"][i],
+                "text": batch["text"][i],
+                "variances": {},
+                "priors": {},
+            }
+            for j, var in enumerate(self.hparams.variances):
+                if self.hparams.variance_levels[j] == "phone":
+                    mask = "src_mask"
+                elif self.hparams.variance_levels[j] == "frame":
+                    mask = "tgt_mask"
+                if self.hparams.variance_transforms[j] == "cwt":
+                    pred_dict["variances"][var] = {}
+                    pred_dict["variances"][var]["spectrogram"] = inference_result[f"variances_{var}"]["spectrogram"][i][~inference_result[mask][i]].cpu()
+                    pred_dict["variances"][var]["original_signal"] = inference_result[f"variances_{var}"]["reconstructed_signal"][i][~inference_result[mask][i]].cpu()
                 else:
-                    pred_fig = self.valid_ds.plot(pred_dict, show=False)
-                    true_fig = self.valid_ds.plot(true_dict, show=False)
-                    if self.valid_example_directory is not None:
-                        pred_fig.save(
-                            os.path.join(self.valid_example_directory, f"pred_{batch['id'][i]}.png")
-                        )
-                        true_fig.save(
-                            os.path.join(self.valid_example_directory, f"true_{batch['id'][i]}.png")
-                        )
-                    pred_audio = self.synth(pred_mel.to("cuda:0"))[0]
-                    true_audio = self.synth(true_mel.to("cuda:0"))[0]
-                    self.eval_log_data.append(
-                        [
-                            batch["text"][i],
-                            wandb.Image(pred_fig),
-                            wandb.Image(true_fig),
-                            wandb.Audio(pred_audio, sample_rate=22050),
-                            wandb.Audio(true_audio, sample_rate=22050),
-                        ]
+                    pred_dict["variances"][var] = inference_result[f"variances_{var}"][i][~inference_result[mask][i]].cpu()
+            true_dict = {
+                "mel": true_mel,
+                "duration": batch["duration"][i][~result["src_mask"][i]].cpu(),
+                "phones": batch["phones"][i],
+                "text": batch["text"][i],
+                "variances": {},
+                "priors": {},
+            }
+            for j, var in enumerate(self.hparams.variances):
+                if self.hparams.variance_levels[j] == "phone":
+                    mask = "src_mask"
+                elif self.hparams.variance_levels[j] == "frame":
+                    mask = "tgt_mask"
+                if self.hparams.variance_transforms[j] == "cwt":
+                    true_dict["variances"][var] = {}
+                    true_dict["variances"][var]["spectrogram"] = batch[f"variances_{var}_spectrogram"][i][~result[mask][i]].cpu()
+                    true_dict["variances"][var]["original_signal"] = batch[f"variances_{var}_original_signal"][i][~result[mask][i]].cpu()
+                else:
+                    true_dict["variances"][var] = batch[f"variances_{var}"][i][~result[mask][i]].cpu()
+
+            for prior in self.hparams.priors:
+                true_dict["priors"][prior] = batch[f"priors_{prior}"][i]
+                pred_dict["priors"][prior] = batch[f"priors_{prior}"][i]
+
+            if pred_dict["duration"].sum() == 0:
+                print("WARNING: duration is zero (common at beginning of training)")
+            else:
+                pred_fig = self.valid_ds.plot(pred_dict, show=False)
+                true_fig = self.valid_ds.plot(true_dict, show=False)
+                if self.valid_example_directory is not None:
+                    Path(self.valid_example_directory).mkdir(parents=True, exist_ok=True)
+                    pred_fig.save(
+                        os.path.join(self.valid_example_directory, f"pred_{batch['id'][i]}.png")
                     )
+                    true_fig.save(
+                        os.path.join(self.valid_example_directory, f"true_{batch['id'][i]}.png")
+                    )
+                pred_audio = self.synth(pred_mel.to(self.device).float())[0]
+                true_audio = self.synth(true_mel.to(self.device).float())[0]
+                self.eval_log_data.append(
+                    [
+                        batch["text"][i],
+                        wandb.Image(pred_fig),
+                        wandb.Image(true_fig),
+                        wandb.Audio(pred_audio, sample_rate=22050),
+                        wandb.Audio(true_audio, sample_rate=22050),
+                    ]
+                )
+
+    def _add_to_results_dict(self, inference_result, batch, result, add_n):
+        # duration
+        self.results_dict["duration"]["pred"] += list(inference_result["duration_rounded"][~inference_result["src_mask"]])[:add_n]
+        self.results_dict["duration"]["true"] += list(batch["duration"][~result["src_mask"]])[:add_n]
+
+        # mel
+        self.results_dict["mel"]["pred"] += list(inference_result["mel"][~inference_result["tgt_mask"]])[:add_n]
+        self.results_dict["mel"]["true"] += list(batch["mel"][~result["tgt_mask"]])[:add_n]
+
+        for i, var in enumerate(self.hparams.variances):
+            if self.hparams.variance_levels[i] == "phone":
+                mask = "src_mask"
+            elif self.hparams.variance_levels[i] == "frame":
+                mask = "tgt_mask"
+            if self.hparams.variance_transforms[i] == "cwt":
+                self.results_dict[var]["pred"] += list(inference_result[f"variances_{var}"]["reconstructed_signal"][~inference_result[mask]])[:add_n]
+                self.results_dict[var]["true"] += list(batch[f"variances_{var}_original_signal"][~result[mask]])[:add_n]
+            else:
+                self.results_dict[var]["pred"] += list(inference_result[f"variances_{var}"][~inference_result[mask]])[:add_n]
+                self.results_dict[var]["true"] += list(batch[f"variances_{var}"][~result[mask]])[:add_n]
 
     def validation_epoch_end(self, validation_step_outputs):
         if self.trainer.is_global_zero:
@@ -488,17 +508,39 @@ class FastSpeech2(pl.LightningModule):
             )
             wandb.log({"examples": table})
             for key in self.results_dict.keys():
+                self.results_dict[key]['pred'] = [x.cpu().numpy() for x in self.results_dict[key]['pred']]
+                self.results_dict[key]['true'] = [x.cpu().numpy() for x in self.results_dict[key]['true']]
                 if key != "mel":
-                    print({f"js_d_{key}": jensenshannon(self.results_dict[key]['pred'], self.results_dict[key]['true'])})
-                    wandb.log({f"js_d_{key}": jensenshannon(self.results_dict[key]['pred'], self.results_dict[key]['true'])})
+                    pred_list = np.random.choice(np.array(self.results_dict[key]['pred']), size=1_000).reshape(-1, 1)
+                    true_list = np.random.choice(np.array(self.results_dict[key]['true']), size=1_000).reshape(-1, 1)
+                    kde_pred = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(pred_list)
+                    kde_true = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(true_list)
+                    min_val = min(min(pred_list), min(true_list))
+                    max_val = max(max(pred_list), max(true_list))
+                    arange = np.arange(min_val, max_val, (max_val - min_val) / 100).reshape(-1, 1)
+                    wandb.log({f"eval/jensenshannon_{key}": jensenshannon(np.exp(kde_pred.score_samples(arange)), np.exp(kde_true.score_samples(arange)))})
+                    wandb.log({f"eval/mae_{key}": np.mean(np.abs(np.array(self.results_dict[key]['pred']) - np.array(self.results_dict[key]['true'])))})
                 else:
-                    print({f"js_d_{key}": jensenshannon(self.results_dict[key]['pred'], self.results_dict[key]['true'], axis=0)})
-                    wandb.log({f"js_d_{key}": jensenshannon(self.results_dict[key]['pred'], self.results_dict[key]['true'], axis=0)})
+                    mels = []
+                    mels_mae = []
+                    for i in range(self.hparams.n_mels):
+                        pred_res = np.array([x[i] for x in self.results_dict[key]['pred']])
+                        true_res = np.array([x[i] for x in self.results_dict[key]['true']])
+                        pred_list = np.random.choice(pred_res, size=1_000).reshape(-1, 1)
+                        true_list = np.random.choice(true_res, size=1_000).reshape(-1, 1)
+                        kde_pred = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(pred_list)
+                        kde_true = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(true_list)
+                        min_val = min(min(pred_list), min(true_list))
+                        max_val = max(max(pred_list), max(true_list))
+                        arange = np.arange(min_val, max_val, (max_val - min_val) / 100).reshape(-1, 1)
+                        mels.append(jensenshannon(np.exp(kde_pred.score_samples(arange)), np.exp(kde_true.score_samples(arange))))
+                        mels_mae.append(np.mean(np.abs(pred_res - true_res)))
+                    wandb.log({f"eval/jensenshannon_{key}": mels})
+                    wandb.log({f"eval/mae_{key}": mels_mae})
             self.eval_log_data = None
             
 
     def configure_optimizers(self):
-        # "betas": [0.8, 0.99], "eps": 1e-9, "weight_decay": 0.01}
         self.optimizer = torch.optim.AdamW(
             self.parameters(),
             self.hparams.lr,
@@ -507,12 +549,6 @@ class FastSpeech2(pl.LightningModule):
             weight_decay=0.01
         )
 
-        # self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        #     self.optimizer,
-        #     max_lr=self.hparams.lr,
-        #     steps_per_epoch=len(self.train_ds) // self.batch_size,
-        #     epochs=10,
-        # )
         self.scheduler = NoamLR(self.optimizer, self.hparams.warmup_steps)
 
         sched = {
@@ -522,12 +558,77 @@ class FastSpeech2(pl.LightningModule):
 
         return [self.optimizer], [sched]
 
+    @staticmethod
+    def add_model_specific_args(parent_parser):
+        parser = parent_parser.add_argument_group("FastSpeech2")
+        parser.add_argument("--lr", type=float, default=2e-04)
+        parser.add_argument("--warmup_steps", type=int, default=4000)
+        parser.add_argument("--batch_size", type=int, default=6)
+        parser.add_argument("--speaker_type", type=str, default="dvector")
+        parser.add_argument("--min_length", type=float, default=0.5)
+        parser.add_argument("--max_length", type=float, default=32)
+        parser.add_argument("--augment_duration", type=float, default=0.1)
+        parser.add_argument("--variances", nargs="+", type=str, default=["pitch", "energy", "snr"])
+        parser.add_argument("--variance_levels", nargs="+", type=str, default=["frame", "frame", "frame"])
+        parser.add_argument("--variance_transforms", nargs="+", type=str, default=["cwt", "none", "none"])
+        parser.add_argument("--variance_nlayers", nargs="+", type=int, default=[5, 5, 5])
+        parser.add_argument("--variance_loss_weights", nargs="+", type=float, default=[1e-1, 1e-1, 1e-1])
+        parser.add_argument("--variance_kernel_size", nargs="+", type=int, default=[3, 3, 3])
+        parser.add_argument("--variance_dropout", nargs="+", type=float, default=[0.5, 0.5, 0.5])
+        parser.add_argument("--variance_filter_size", type=int, default=256)
+        parser.add_argument("--variance_nbins", type=int, default=256)
+        parser.add_argument("--variance_depthwise_conv", type=bool, default=True)
+        parser.add_argument("--duration_nlayers", type=int, default=2)
+        parser.add_argument("--duration_loss_weight", type=float, default=5e-1)
+        parser.add_argument("--duration_stochastic", type=bool, default=False)
+        parser.add_argument("--duration_kernel_size", type=int, default=3)
+        parser.add_argument("--duration_dropout", type=float, default=0.5)
+        parser.add_argument("--duration_filter_size", type=int, default=256)
+        parser.add_argument("--duration_depthwise_conv", type=bool, default=True)
+        parser.add_argument("--priors", nargs="+", type=str, default=[])
+        parser.add_argument("--mel_loss_weight", type=float, default=1)
+        parser.add_argument("--n_mels", type=int, default=80)
+        parser.add_argument("--sampling_rate", type=int, default=22050)
+        parser.add_argument("--n_fft", type=int, default=1024)
+        parser.add_argument("--win_length", type=int, default=1024)
+        parser.add_argument("--hop_length", type=int, default=256)
+        parser.add_argument("--encoder_hidden", type=int, default=256)
+        parser.add_argument("--encoder_head", type=int, default=2)
+        parser.add_argument("--encoder_layers", type=int, default=4)
+        parser.add_argument("--encoder_dropout", type=float, default=0.1)
+        parser.add_argument("--encoder_kernel_sizes", nargs="+", type=int, default=[5, 25, 13, 9])
+        parser.add_argument("--encoder_dim_feedforward", type=int, default=None)
+        parser.add_argument("--encoder_conformer", type=bool, default=True)
+        parser.add_argument("--encoder_depthwise_conv", type=bool, default=True)
+        parser.add_argument("--encoder_conv_filter_size", type=int, default=1024)
+        parser.add_argument("--decoder_hidden", type=int, default=256)
+        parser.add_argument("--decoder_head", type=int, default=2)
+        parser.add_argument("--decoder_layers", type=int, default=4)
+        parser.add_argument("--decoder_dropout", type=float, default=0.1)
+        parser.add_argument("--decoder_kernel_sizes", nargs="+", type=int, default=[17, 21, 9, 13])
+        parser.add_argument("--decoder_dim_feedforward", type=int, default=None)
+        parser.add_argument("--decoder_conformer", type=bool, default=True)
+        parser.add_argument("--decoder_depthwise_conv", type=bool, default=True)
+        parser.add_argument("--decoder_conv_filter_size", type=int, default=1024)
+        parser.add_argument("--valid_nexamples", type=int, default=10)
+        parser.add_argument("--valid_example_directory", type=str, default=None)
+        return parent_parser
+
+    @staticmethod
+    def add_dataset_specific_args(parent_parser):
+        parent_parser = TTSDataset.add_model_specific_args(parent_parser, "Train")
+        parser = parent_parser.add_argument_group("Valid Dataset")
+        parser.add_argument("--valid_max_entries", type=int, default=None)
+        parser.add_argument("--valid_shuffle_seed", type=int, default=42)
+        return parent_parser
+
     def train_dataloader(self):
         return DataLoader(
             self.train_ds,
             batch_size=self.batch_size,
             collate_fn=self.train_ds._collate_fn,
             num_workers=num_cpus,
+            prefetch_factor=5,
         )
 
     def val_dataloader(self):
@@ -536,4 +637,5 @@ class FastSpeech2(pl.LightningModule):
             batch_size=self.batch_size,
             collate_fn=self.valid_ds._collate_fn,
             num_workers=num_cpus,
+            prefetch_factor=5,
         )

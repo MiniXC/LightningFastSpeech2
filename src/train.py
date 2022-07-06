@@ -1,4 +1,6 @@
 from argparse import ArgumentParser
+import os
+import inspect
 
 import torch
 import torch.multiprocessing
@@ -8,59 +10,88 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.tuner.tuning import Tuner
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor
-import os
+from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 import matplotlib.pyplot as plt
 
 from alignments.datasets.libritts import LibrittsDataset
 
-os.environ["WANDB_MODE"] = "offline"
-
 torch.multiprocessing.set_sharing_strategy("file_system")
 
-wandb_logger = WandbLogger(project="FastSpeech2")
-
 if __name__ == "__main__":
-    epochs = 25
-    validation_step = 1.0
+    parser = ArgumentParser()
+
+    parser = Trainer.add_argparse_args(parser)
+
+    parser.add_argument("--early_stopping", type=bool, default=True)
+    parser.add_argument("--early_stopping_patience", type=int, default=3)
+
     lr_monitor = LearningRateMonitor(logging_interval="step")
+    callbacks = [lr_monitor]
+
+    parser.add_argument("--train_target_path", type=str, default="../data/train-clean-aligned")
+    parser.add_argument("--train_source_path", type=str, default="../data/train-clean")
+    parser.add_argument("--train_source_url", type=str, default="https://www.openslr.org/resources/60/train-clean-100.tar.gz")
+
+    parser.add_argument("--valid_target_path", type=str, default="../data/dev-clean-aligned")
+    parser.add_argument("--valid_source_path", type=str, default="../data/dev-clean")
+    parser.add_argument("--valid_source_url", type=str, default="https://www.openslr.org/resources/60/dev-clean.tar.gz")
+
+    parser = FastSpeech2.add_model_specific_args(parser)
+    parser = FastSpeech2.add_dataset_specific_args(parser)
+
+    parser.add_argument("--wandb_project", type=str, default="fastspeech2")
+    parser.add_argument("--wandb_mode", type=str, default="online")
+
+    parser.add_argument("--visible_gpus", type=int, default=0)
+
+    args = parser.parse_args()
+    var_args = vars(args)
+
+    os.environ["WANDB_MODE"] = var_args["wandb_mode"]
+    wandb_logger = WandbLogger(project=var_args["wandb_project"])
 
     train_ds = LibrittsDataset(
-        "../data/train-clean-aligned",
-        "../data/train-clean",
-        "https://www.openslr.org/resources/60/train-clean-100.tar.gz",
+        var_args["train_target_path"],
+        var_args["train_source_path"],
+        var_args["train_source_url"],
         verbose=True,
     )
 
     valid_ds = LibrittsDataset(
-        "../data/dev-clean-aligned",
-        "../data/dev-clean",
-        "https://www.openslr.org/resources/60/dev-clean.tar.gz",
+        var_args["valid_target_path"],
+        var_args["valid_source_path"],
+        var_args["valid_source_url"],
         verbose=True,
     )
+
+    model_args = {k: v for k, v in var_args.items() if k in inspect.signature(FastSpeech2).parameters}
+
+    del var_args["train_target_path"]
+    del var_args["train_source_path"]
+    del var_args["train_source_url"]
+    del var_args["valid_target_path"]
+    del var_args["valid_source_path"]
+    del var_args["valid_source_url"]
+    del var_args["valid_nexamples"]
+    del var_args["valid_example_directory"]
 
     model = FastSpeech2(
         train_ds,
         valid_ds,
-        valid_example_directory="examples",
-        batch_size=12,
+        train_ds_kwargs={k.replace("train_", ""): v for k, v in var_args.items() if k.startswith("train_")},
+        valid_ds_kwargs={k.replace("valid_", ""): v for k, v in var_args.items() if k.startswith("valid_")},
+        **model_args,
     )
 
-    strategy = None # "ddp_find_unused_parameters_false"
-    gpus = 1
+    if var_args["early_stopping"]:
+        callbacks.append(EarlyStopping(monitor="eval/total_loss", patience=var_args["early_stopping_patience"]))
 
-    trainer = Trainer(
-        accelerator="gpu",
-        precision=16,
+    trainer = Trainer.from_argparse_args(
+        args,
+        callbacks=callbacks,
         default_root_dir="logs",
-        min_epochs=epochs,
-        max_epochs=epochs,
-        val_check_interval=validation_step,
         logger=wandb_logger,
-        accumulate_grad_batches=4,
-        gradient_clip_val=1.0,
-        callbacks=[lr_monitor],
-        gpus=gpus,
-        strategy=strategy,
+        strategy=None,
     )
-    # TODO: check gradient clipping effect
+
     trainer.fit(model)
