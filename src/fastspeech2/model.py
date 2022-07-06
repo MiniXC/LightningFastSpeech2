@@ -309,6 +309,9 @@ class VarianceEncoder(nn.Module):
         self.predictor = VariancePredictor(
             nlayers, in_channels, filter_size, kernel_size, dropout, depthwise, cwt
         )
+        if cwt:
+            min = torch.log(min)
+            max = torch.log(max)
         self.bins = nn.Parameter(
             torch.linspace(min, max, nbins - 1),
             requires_grad=False,
@@ -327,11 +330,14 @@ class VarianceEncoder(nn.Module):
         else:
             prediction, out_conv = self.predictor(x, mask, return_conv=True)
             mean_std = self.mean_std_linear(torch.mean(out_conv, axis=1))
-            print(mean_std.shape)
             mean, std = mean_std[:, 0], mean_std[:, 1]
 
         if tgt is not None:
-            embedding = self.embedding(torch.bucketize(tgt * self.std + self.mean, self.bins).to(x.device))
+            if self.cwt:
+                tgt = torch.log(tgt)
+            else:
+                tgt = tgt * self.std + self.mean
+            embedding = self.embedding(torch.bucketize(tgt, self.bins).to(x.device))
         else:
             if self.cwt:
                 tmp_prediction = []
@@ -360,7 +366,7 @@ class VarianceEncoder(nn.Module):
             else:
                 return (
                     {
-                        "reconstructed_signal": prediction,
+                        "reconstructed_signal": torch.exp(prediction),
                         "spectrogram": spectrogram,
                         "mean": mean,
                         "std": std,
