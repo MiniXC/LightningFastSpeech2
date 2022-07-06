@@ -106,7 +106,6 @@ class TTSDataset(Dataset):
 
         # AUDIO LOADING
         self.alignment_ds = alignments_dataset
-        # Random(shuffle_seed).shuffle(entry_list)
 
         # DATAFRAME
         self.entry_stats = {
@@ -128,6 +127,8 @@ class TTSDataset(Dataset):
             )
             if entry is not None
         ]
+        Random(shuffle_seed).shuffle(entries)
+
         print("data loading stats:")
         for key in self.entry_stats:
             print(f"{key}: {self.entry_stats[key]}")

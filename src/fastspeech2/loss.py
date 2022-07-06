@@ -71,9 +71,9 @@ class FastSpeech2Loss(nn.Module):
                             self.l1_loss,
                             variance_mask,
                             cwt=True,
-                        )
-                        + self.mse_loss(result[f"variances_{variance}"]["mean"].float(), torch.tensor(target[f"variances_{variance}_mean"]).to(result[f"variances_{variance}"]["mean"].device).float())
-                        + self.mse_loss(result[f"variances_{variance}"]["std"].float(), torch.tensor(target[f"variances_{variance}_std"]).to(result[f"variances_{variance}"]["std"].device).float())
+                        ) * self.loss_alphas[variance]
+                        + self.mse_loss(result[f"variances_{variance}"]["mean"].float(), torch.tensor(target[f"variances_{variance}_mean"]).to(result[f"variances_{variance}"]["mean"].device).float()) * self.loss_alphas[variance]
+                        + self.mse_loss(result[f"variances_{variance}"]["std"].float(), torch.tensor(target[f"variances_{variance}_std"]).to(result[f"variances_{variance}"]["std"].device).float()) * self.loss_alphas[variance]
                     )
                 else:
                     losses[variance] = (

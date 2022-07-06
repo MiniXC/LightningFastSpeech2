@@ -4,6 +4,7 @@ CUDA_VISIBLE_DEVICES="1" pdm run python src/train.py \
 --accumulate_grad_batches 8 \
 --precision 16 \
 --max_epochs 30 \
+--gradient_clip_val 1.0 \
 --decoder_depthwise_conv False \
 --encoder_depthwise_conv False \
 --duration_depthwise_conv False \

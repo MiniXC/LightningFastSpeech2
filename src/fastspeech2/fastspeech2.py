@@ -33,7 +33,7 @@ class FastSpeech2(pl.LightningModule):
         self,
         train_ds=None,
         valid_ds=None,
-        lr=2e-04,
+        lr=1e-04,
         warmup_steps=4000,
         batch_size=6,
         speaker_type="dvector",  # "none", "id", "dvector"
@@ -44,7 +44,7 @@ class FastSpeech2(pl.LightningModule):
         variance_levels=["frame", "frame", "frame"],
         variance_transforms=["cwt", "none", "none"],  # "cwt", "log", "none"
         variance_nlayers=[5, 5, 5],
-        variance_loss_weights=[1e-1, 1e-1, 1e-1],
+        variance_loss_weights=[5e-2, 5e-2, 5e-2],
         variance_kernel_size=[3, 3, 3],
         variance_dropout=[0.5, 0.5, 0.5],
         variance_filter_size=256,
@@ -511,8 +511,8 @@ class FastSpeech2(pl.LightningModule):
                 self.results_dict[key]['pred'] = [x.cpu().numpy() for x in self.results_dict[key]['pred']]
                 self.results_dict[key]['true'] = [x.cpu().numpy() for x in self.results_dict[key]['true']]
                 if key != "mel":
-                    pred_list = np.random.choice(np.array(self.results_dict[key]['pred']), size=1_000).reshape(-1, 1)
-                    true_list = np.random.choice(np.array(self.results_dict[key]['true']), size=1_000).reshape(-1, 1)
+                    pred_list = np.random.choice(np.array(self.results_dict[key]['pred']), size=500).reshape(-1, 1)
+                    true_list = np.random.choice(np.array(self.results_dict[key]['true']), size=500).reshape(-1, 1)
                     kde_pred = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(pred_list)
                     kde_true = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(true_list)
                     min_val = min(min(pred_list), min(true_list))
@@ -526,8 +526,8 @@ class FastSpeech2(pl.LightningModule):
                     for i in range(self.hparams.n_mels):
                         pred_res = np.array([x[i] for x in self.results_dict[key]['pred']])
                         true_res = np.array([x[i] for x in self.results_dict[key]['true']])
-                        pred_list = np.random.choice(pred_res, size=1_000).reshape(-1, 1)
-                        true_list = np.random.choice(true_res, size=1_000).reshape(-1, 1)
+                        pred_list = np.random.choice(pred_res, size=500).reshape(-1, 1)
+                        true_list = np.random.choice(true_res, size=500).reshape(-1, 1)
                         kde_pred = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(pred_list)
                         kde_true = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(true_list)
                         min_val = min(min(pred_list), min(true_list))
@@ -535,8 +535,14 @@ class FastSpeech2(pl.LightningModule):
                         arange = np.arange(min_val, max_val, (max_val - min_val) / 100).reshape(-1, 1)
                         mels.append(jensenshannon(np.exp(kde_pred.score_samples(arange)), np.exp(kde_true.score_samples(arange))))
                         mels_mae.append(np.mean(np.abs(pred_res - true_res)))
-                    wandb.log({f"eval/jensenshannon_{key}": mels})
-                    wandb.log({f"eval/mae_{key}": mels_mae})
+                    js_lv = [[label+1, val] for (label, val) in zip(list(range(self.hparams.n_mels)), mels)]
+                    js_table = wandb.Table(data=js_lv, columns = ["MEL Channel", "Jensen Shannon Divergence"])
+                    wandb.log({"eval/jensenshannon_{key}" : wandb.plot.bar(js_table, "MEL Channel", "Jensen Shannon Divergence",
+                                                title="MEL Divergence")})
+                    mae_lv = [[label+1, val] for (label, val) in zip(list(range(self.hparams.n_mels)), mels_mae)]
+                    mae_table = wandb.Table(data=mae_lv, columns = ["MEL Channel", "MAE"])
+                    wandb.log({"eval/mae_{key}" : wandb.plot.bar(mae_table, "MEL Channel", "MAE",
+                                                title="MEL MAE")})
             self.eval_log_data = None
             
 
