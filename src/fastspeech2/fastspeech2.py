@@ -521,28 +521,25 @@ class FastSpeech2(pl.LightningModule):
                     wandb.log({f"eval/jensenshannon_{key}": jensenshannon(np.exp(kde_pred.score_samples(arange)), np.exp(kde_true.score_samples(arange)))})
                     wandb.log({f"eval/mae_{key}": np.mean(np.abs(np.array(self.results_dict[key]['pred']) - np.array(self.results_dict[key]['true'])))})
                 else:
-                    mels = []
-                    mels_mae = []
-                    for i in range(self.hparams.n_mels):
-                        pred_res = np.array([x[i] for x in self.results_dict[key]['pred']])
-                        true_res = np.array([x[i] for x in self.results_dict[key]['true']])
-                        pred_list = np.random.choice(pred_res, size=500).reshape(-1, 1)
-                        true_list = np.random.choice(true_res, size=500).reshape(-1, 1)
-                        kde_pred = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(pred_list)
-                        kde_true = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(true_list)
-                        min_val = min(min(pred_list), min(true_list))
-                        max_val = max(max(pred_list), max(true_list))
-                        arange = np.arange(min_val, max_val, (max_val - min_val) / 100).reshape(-1, 1)
-                        mels.append(jensenshannon(np.exp(kde_pred.score_samples(arange)), np.exp(kde_true.score_samples(arange))))
-                        mels_mae.append(np.mean(np.abs(pred_res - true_res)))
-                    js_lv = [[label+1, val] for (label, val) in zip(list(range(self.hparams.n_mels)), mels)]
-                    js_table = wandb.Table(data=js_lv, columns = ["MEL Channel", "Jensen Shannon Divergence"])
-                    wandb.log({"eval/jensenshannon_{key}" : wandb.plot.bar(js_table, "MEL Channel", "Jensen Shannon Divergence",
-                                                title="MEL Divergence")})
-                    mae_lv = [[label+1, val] for (label, val) in zip(list(range(self.hparams.n_mels)), mels_mae)]
-                    mae_table = wandb.Table(data=mae_lv, columns = ["MEL Channel", "MAE"])
-                    wandb.log({"eval/mae_{key}" : wandb.plot.bar(mae_table, "MEL Channel", "MAE",
-                                                title="MEL MAE")})
+                    pred_res = np.concatenate([np.array([x[i] for x in self.results_dict[key]['pred']]) for i in range(self.hparams.n_mels)])
+                    true_res = np.concatenate([np.array([x[i] for x in self.results_dict[key]['true']]) for i in range(self.hparams.n_mels)])
+                    pred_list = np.random.choice(pred_res, size=500).reshape(-1, 1)
+                    true_list = np.random.choice(true_res, size=500).reshape(-1, 1)
+                    kde_pred = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(pred_list)
+                    kde_true = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(true_list)
+                    min_val = min(min(pred_list), min(true_list))
+                    max_val = max(max(pred_list), max(true_list))
+                    arange = np.arange(min_val, max_val, (max_val - min_val) / 100).reshape(-1, 1)
+                    wandb.log(
+                        {
+                            f"eval/jensenshannon_{key}": jensenshannon(np.exp(kde_pred.score_samples(arange)), np.exp(kde_true.score_samples(arange))),
+                        }
+                    )
+                    wandb.log(
+                        {
+                            f"eval/mae_{key}": np.mean(np.abs(pred_res - true_res)),
+                        }
+                    )
             self.eval_log_data = None
             
 

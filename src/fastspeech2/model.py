@@ -327,6 +327,7 @@ class VarianceEncoder(nn.Module):
         else:
             prediction, out_conv = self.predictor(x, mask, return_conv=True)
             mean_std = self.mean_std_linear(torch.mean(out_conv, axis=1))
+            print(mean_std.shape)
             mean, std = mean_std[:, 0], mean_std[:, 1]
 
         if tgt is not None:

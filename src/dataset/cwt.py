@@ -17,7 +17,7 @@ def wavelet_decomposition(signal, wavelet, n_scales=10, tau=0.2833425):
 
 def wavelet_recomposition(wavelet_matrix):
     signal = wavelet_matrix.sum(axis=0)
-    signal = (signal - signal.mean()) / signal.std()
+    signal = (signal - signal.mean()) / (signal.std()  + 1e-7)
     return signal
 
 

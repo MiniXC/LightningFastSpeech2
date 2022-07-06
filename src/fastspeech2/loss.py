@@ -28,12 +28,10 @@ class FastSpeech2Loss(nn.Module):
         self.loss_alphas = loss_alphas
 
     @staticmethod
-    def get_loss(pred, truth, loss, mask, unsqueeze=False, cwt=False):
+    def get_loss(pred, truth, loss, mask, unsqueeze=False):
         truth.requires_grad = False
         if unsqueeze:
             mask = mask.unsqueeze(-1)
-        if cwt:
-            mask = torch.stack([mask] * 10, dim=-1)
         pred = pred.masked_select(mask)
         truth = truth.masked_select(mask)
         return loss(pred, truth)
@@ -70,7 +68,7 @@ class FastSpeech2Loss(nn.Module):
                             variances_target[variance].float(),
                             self.l1_loss,
                             variance_mask,
-                            cwt=True,
+                            unsqueeze=True,
                         ) * self.loss_alphas[variance]
                         + self.mse_loss(result[f"variances_{variance}"]["mean"].float(), torch.tensor(target[f"variances_{variance}_mean"]).to(result[f"variances_{variance}"]["mean"].device).float()) * self.loss_alphas[variance]
                         + self.mse_loss(result[f"variances_{variance}"]["std"].float(), torch.tensor(target[f"variances_{variance}_std"]).to(result[f"variances_{variance}"]["std"].device).float()) * self.loss_alphas[variance]
