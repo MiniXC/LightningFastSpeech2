@@ -331,6 +331,12 @@ class FastSpeech2(pl.LightningModule):
 
         output = self.positional_encoding(output)
 
+        for prior in self.hparams.priors:
+            output += self.prior_embeddings[prior](
+                torch.tensor(targets[f"priors_{prior}"]).to(self.device), 
+                output.shape[1]
+            )
+
         output = output + self.speaker_embedding(speakers, output.shape[1], output.shape[-1])
 
         output = self.decoder(output, src_key_padding_mask=variance_output["tgt_mask"])
@@ -535,11 +541,6 @@ class FastSpeech2(pl.LightningModule):
                             f"eval/jensenshannon_{key}": jensenshannon(np.exp(kde_pred.score_samples(arange)), np.exp(kde_true.score_samples(arange))),
                         }
                     )
-                    wandb.log(
-                        {
-                            f"eval/mae_{key}": np.mean(np.abs(pred_res - true_res)),
-                        }
-                    )
             self.eval_log_data = None
             
 
@@ -575,7 +576,7 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--variance_levels", nargs="+", type=str, default=["frame", "frame", "frame"])
         parser.add_argument("--variance_transforms", nargs="+", type=str, default=["cwt", "none", "none"])
         parser.add_argument("--variance_nlayers", nargs="+", type=int, default=[5, 5, 5])
-        parser.add_argument("--variance_loss_weights", nargs="+", type=float, default=[1e-1, 1e-1, 1e-1])
+        parser.add_argument("--variance_loss_weights", nargs="+", type=float, default=[1, 1e-1, 1e-1])
         parser.add_argument("--variance_kernel_size", nargs="+", type=int, default=[3, 3, 3])
         parser.add_argument("--variance_dropout", nargs="+", type=float, default=[0.5, 0.5, 0.5])
         parser.add_argument("--variance_filter_size", type=int, default=256)

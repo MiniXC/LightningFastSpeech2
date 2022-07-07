@@ -348,7 +348,9 @@ class TTSDataset(Dataset):
         if self.augment_duration > 0:
             duration = self._augment_duration(duration)
         dur_sum = sum(duration)
-        unexpanded_silence_mask = np.array(row["phones"]) == self.phone2id["[SILENCE]"]
+        silence_ids = [v for k, v in self.phone2id.items() if "[" in k]
+        silence_masks = [np.array(row["phones"]) == s for s in silence_ids]
+        unexpanded_silence_mask = np.logical_or.reduce(silence_masks)
         silence_mask = TTSDataset._expand(unexpanded_silence_mask, duration)
 
         # VARIANCES
@@ -365,7 +367,6 @@ class TTSDataset(Dataset):
                     var_val = variances[var]["original_signal"]
                 else:
                     var_val = variances[var]
-                print(self.variance_levels)
                 if self.variance_levels[self.variances.index(var)] == "phone":
                     priors[var] = np.mean(var_val[~unexpanded_silence_mask])
                 else:
@@ -797,8 +798,8 @@ class TTSDataset(Dataset):
                     extent=[0, audio_len, 1, 10],
                     cmap="PRGn",
                     aspect="auto",
-                    vmax=abs(spectrogram).max(),
-                    vmin=-abs(spectrogram).max(),
+                    vmax=1,
+                    vmin=-1,
                     interpolation="gaussian",
                 )
                 cwt_ax[-1].set_ylabel(f"{var.title()} Frequency")

@@ -62,17 +62,21 @@ class FastSpeech2Loss(nn.Module):
                 else:
                     raise ValueError("Unknown variance level: {}".format(level))
                 if transform == "cwt":
-                    losses[variance] = (
-                        FastSpeech2Loss.get_loss(
-                            variances_pred[variance].float(),
-                            variances_target[variance].float(),
-                            self.l1_loss,
-                            variance_mask,
-                            unsqueeze=True,
-                        ) * self.loss_alphas[variance]
-                        + self.mse_loss(result[f"variances_{variance}"]["mean"].float(), torch.tensor(target[f"variances_{variance}_mean"]).to(result[f"variances_{variance}"]["mean"].device).float()) * self.loss_alphas[variance]
-                        + self.mse_loss(result[f"variances_{variance}"]["std"].float(), torch.tensor(target[f"variances_{variance}_std"]).to(result[f"variances_{variance}"]["std"].device).float()) * self.loss_alphas[variance]
-                    )
+                    losses[variance + "_cwt"] = FastSpeech2Loss.get_loss(
+                        variances_pred[variance].float(),
+                        variances_target[variance].float(),
+                        self.l1_loss,
+                        variance_mask,
+                        unsqueeze=True,
+                    ) * self.loss_alphas[variance]
+                    losses[variance + "_mean"] = self.mse_loss(
+                        result[f"variances_{variance}"]["mean"].float(),
+                        torch.tensor(target[f"variances_{variance}_mean"]).to(result[f"variances_{variance}"]["mean"].device).float()
+                    ) * self.loss_alphas[variance]
+                    losses[variance + "_std"] = self.mse_loss(
+                        result[f"variances_{variance}"]["std"].float(),
+                        torch.tensor(target[f"variances_{variance}_std"]).to(result[f"variances_{variance}"]["std"].device).float()
+                    ) * self.loss_alphas[variance]
                 else:
                     losses[variance] = (
                         FastSpeech2Loss.get_loss(
