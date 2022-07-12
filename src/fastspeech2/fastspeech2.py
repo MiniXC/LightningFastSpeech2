@@ -162,13 +162,15 @@ class FastSpeech2(pl.LightningModule):
             self.stats = self.train_ds.stats
             self.phone2id = self.train_ds.phone2id
             if self.train_ds.speaker_type == "dvector":
-                self.speaker2dvector = self.train_ds.speaker2dvector
+                # self.speaker2dvector = self.train_ds.speaker2dvector
+                pass
             if self.train_ds.speaker_type == "id":
                 self.speaker2id = self.train_ds.speaker2id
 
-        self.phone_embedding = nn.Embedding(
-            len(self.phone2id), self.hparams.encoder_hidden, padding_idx=0
-        )
+        if hasattr(self, "phone2id"):
+            self.phone_embedding = nn.Embedding(
+                len(self.phone2id), self.hparams.encoder_hidden, padding_idx=0
+            )
 
         # encoder
 
@@ -214,28 +216,29 @@ class FastSpeech2(pl.LightningModule):
         )
 
         # variances
-        self.variance_adaptor = VarianceAdaptor(
-            self.stats,
-            self.hparams.variances,
-            self.hparams.variance_levels,
-            self.hparams.variance_transforms,
-            self.hparams.variance_nlayers,
-            self.hparams.variance_kernel_size,
-            self.hparams.variance_dropout,
-            self.hparams.variance_filter_size,
-            self.hparams.variance_nbins,
-            self.hparams.variance_depthwise_conv,
-            self.hparams.duration_nlayers,
-            self.hparams.duration_stochastic,
-            self.hparams.duration_kernel_size,
-            self.hparams.duration_dropout,
-            self.hparams.duration_filter_size,
-            self.hparams.duration_depthwise_conv,
-            self.hparams.encoder_hidden,
-            self.hparams.max_length
-            * self.hparams.sampling_rate
-            / self.hparams.hop_length,
-        ).to(self.device)
+        if hasattr(self, "stats"):
+            self.variance_adaptor = VarianceAdaptor(
+                self.stats,
+                self.hparams.variances,
+                self.hparams.variance_levels,
+                self.hparams.variance_transforms,
+                self.hparams.variance_nlayers,
+                self.hparams.variance_kernel_size,
+                self.hparams.variance_dropout,
+                self.hparams.variance_filter_size,
+                self.hparams.variance_nbins,
+                self.hparams.variance_depthwise_conv,
+                self.hparams.duration_nlayers,
+                self.hparams.duration_stochastic,
+                self.hparams.duration_kernel_size,
+                self.hparams.duration_dropout,
+                self.hparams.duration_filter_size,
+                self.hparams.duration_depthwise_conv,
+                self.hparams.encoder_hidden,
+                self.hparams.max_length
+                * self.hparams.sampling_rate
+                / self.hparams.hop_length,
+            ).to(self.device)
 
         # decoder
         self.decoder = TransformerEncoder(
@@ -281,14 +284,15 @@ class FastSpeech2(pl.LightningModule):
         )
 
         # priors
-        self.prior_embeddings = {}
-        for prior in self.hparams.priors:
-            self.prior_embeddings[prior] = PriorEmbedding(
-                self.hparams.encoder_hidden,
-                self.hparams.variance_nbins,
-                self.stats[f"{prior}_prior"],
-            ).to(self.device)
-        self.prior_embeddings = nn.ModuleDict(self.prior_embeddings)
+        if hasattr(self, "stats"):
+            self.prior_embeddings = {}
+            for prior in self.hparams.priors:
+                self.prior_embeddings[prior] = PriorEmbedding(
+                    self.hparams.encoder_hidden,
+                    self.hparams.variance_nbins,
+                    self.stats[f"{prior}_prior"],
+                ).to(self.device)
+            self.prior_embeddings = nn.ModuleDict(self.prior_embeddings)
 
         # speaker
         if self.hparams.speaker_type == "dvector":
@@ -297,11 +301,12 @@ class FastSpeech2(pl.LightningModule):
                 self.hparams.speaker_type,
             )
         elif self.hparams.speaker_type == "id":
-            self.speaker_embedding = SpeakerEmbedding(
-                self.hparams.encoder_hidden,
-                self.hparams.speaker_type,
-                len(self.speaker2id),
-            )
+            if hasattr(self, "speaker2id"):
+                self.speaker_embedding = SpeakerEmbedding(
+                    self.hparams.encoder_hidden,
+                    self.hparams.speaker_type,
+                    len(self.speaker2id),
+                )
 
         # loss
         loss_weights = {
@@ -323,11 +328,57 @@ class FastSpeech2(pl.LightningModule):
 
     def on_load_checkpoint(self, checkpoint):
         self.stats = checkpoint["stats"]
+        self.variance_adaptor = VarianceAdaptor(
+            self.stats,
+            self.hparams.variances,
+            self.hparams.variance_levels,
+            self.hparams.variance_transforms,
+            self.hparams.variance_nlayers,
+            self.hparams.variance_kernel_size,
+            self.hparams.variance_dropout,
+            self.hparams.variance_filter_size,
+            self.hparams.variance_nbins,
+            self.hparams.variance_depthwise_conv,
+            self.hparams.duration_nlayers,
+            self.hparams.duration_stochastic,
+            self.hparams.duration_kernel_size,
+            self.hparams.duration_dropout,
+            self.hparams.duration_filter_size,
+            self.hparams.duration_depthwise_conv,
+            self.hparams.encoder_hidden,
+            self.hparams.max_length
+            * self.hparams.sampling_rate
+            / self.hparams.hop_length,
+        ).to(self.device)
+        self.prior_embeddings = {}
+        for prior in self.hparams.priors:
+            self.prior_embeddings[prior] = PriorEmbedding(
+                self.hparams.encoder_hidden,
+                self.hparams.variance_nbins,
+                self.stats[f"{prior}_prior"],
+            ).to(self.device)
+        self.prior_embeddings = nn.ModuleDict(self.prior_embeddings)
         self.phone2id = checkpoint["phone2id"]
+        self.phone_embedding = nn.Embedding(
+            len(self.phone2id), self.hparams.encoder_hidden, padding_idx=0
+        )
+        if "speaker2id" in checkpoint:
+            self.speaker2id = checkpoint["speaker2id"]
+            self.speaker_embedding = SpeakerEmbedding(
+                self.hparams.encoder_hidden,
+                self.hparams.speaker_type,
+                len(self.speaker2id),
+            )
+        if "speaker2dvector" in checkpoint:
+            self.speaker2dvector = checkpoint["speaker2dvector"]
 
     def on_save_checkpoint(self, checkpoint):
         checkpoint["stats"] = self.stats
         checkpoint["phone2id"] = self.phone2id
+        if hasattr(self, "speaker2id"):
+            checkpoint["speaker2id"] = self.speaker2id
+        if hasattr(self, "speaker2dvector"):
+            checkpoint["speaker2dvector"] = self.speaker2dvector
 
     def forward(self, targets, inference=False):
         phones = targets["phones"].to(self.device)
@@ -363,6 +414,8 @@ class FastSpeech2(pl.LightningModule):
                         - self.hparams.tf_linear_schedule_start
                     )
                 )
+
+        self.log("tf_ratio", tf_ratio)
 
         variance_output = self.variance_adaptor(
             output,

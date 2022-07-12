@@ -7,6 +7,7 @@ CUDA_VISIBLE_DEVICES="3" pdm run python src/train.py \
 --gradient_clip_val 1.0 \
 --variance_levels frame frame frame \
 --variance_transforms none none none \
---variance_early_stopping none \
---wandb_name "no_early_stop_frame" \
+--priors energy snr pitch \
+--variance_early_stopping js \
+--wandb_name "priors_early_stop_js_frame" \
 --train_target_path "../data/train-clean-aligned"

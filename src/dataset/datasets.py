@@ -396,6 +396,7 @@ class TTSDataset(Dataset):
             result["speaker"] = self.speaker2dvector[row["speaker"]]
         elif self.speaker_type == "id":
             result["speaker"] = self.speaker2id[row["speaker"]]
+        result["speaker_key"] = row["speaker"]
 
         return result
 

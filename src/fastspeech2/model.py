@@ -233,7 +233,7 @@ class VarianceAdaptor(nn.Module):
         src_mask,
         targets,
         inference=False,
-        tf_rate=1.0,
+        tf_ratio=1.0,
     ):
         if not self.duration_stochastic:
             duration_pred = self.duration_predictor(x, src_mask)
@@ -247,7 +247,7 @@ class VarianceAdaptor(nn.Module):
 
         result = {}
 
-        tf_val = np.random.uniform(0, 1) < tf_rate
+        tf_val = np.random.uniform(0, 1) <= tf_ratio
 
         for i, var in enumerate(self.variances):
             if self.variance_levels[i] == "phone":

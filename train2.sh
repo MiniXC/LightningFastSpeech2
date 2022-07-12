@@ -8,5 +8,6 @@ CUDA_VISIBLE_DEVICES="2" pdm run python src/train.py \
 --variance_levels frame frame frame \
 --variance_transforms none none none \
 --variance_early_stopping js \
---wandb_name "early_stop_js_frame" \
+--wandb_name "tf_early_stop_js_frame" \
+--tf_linear_schedule True \
 --train_target_path "../data/train-clean-aligned"

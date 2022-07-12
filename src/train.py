@@ -60,7 +60,7 @@ if __name__ == "__main__":
     parser.add_argument("--wandb_mode", type=str, default="online")
     parser.add_argument("--wandb_name", type=str, default=None)
     parser.add_argument("--wandb_checkpoint", type=bool, default=True)
-    parser.add_argument("--wandb_checkpoint_key", type=str, default="eval/softdtw_mel")
+    parser.add_argument("--wandb_checkpoint_key", type=str, default="eval/mel_loss")
     parser.add_argument("--wandb_checkpoint_mode", type=str, default="min")
 
     parser.add_argument("--visible_gpus", type=int, default=0)
