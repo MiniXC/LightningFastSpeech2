@@ -1,5 +1,6 @@
 import math
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn.modules.transformer import TransformerEncoderLayer, TransformerEncoder
@@ -310,8 +311,8 @@ class VarianceEncoder(nn.Module):
             nlayers, in_channels, filter_size, kernel_size, dropout, depthwise, cwt
         )
         if cwt:
-            min = torch.log(min)
-            max = torch.log(max)
+            min = np.log(min)
+            max = np.log(max)
         self.bins = nn.Parameter(
             torch.linspace(min, max, nbins - 1),
             requires_grad=False,

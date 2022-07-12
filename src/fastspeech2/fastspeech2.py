@@ -1,6 +1,8 @@
 import os
 import multiprocessing
 from pathlib import Path
+import random
+import string
 
 import pytorch_lightning as pl
 import torch
@@ -23,6 +25,7 @@ from .model import (
     SpeakerEmbedding,
 )
 from third_party.hifigan import Synthesiser
+from third_party.softdtw import SoftDTW
 from .loss import FastSpeech2Loss
 from .noam import NoamLR
 
@@ -86,6 +89,9 @@ class FastSpeech2(pl.LightningModule):
         decoder_conv_filter_size=1024,
         valid_nexamples=10,
         valid_example_directory=None,
+        variance_early_stopping="none", # "mae", "js", "none"
+        variance_early_stopping_patience=4,
+        variance_early_stopping_directory="variance_encoders",
     ):
         super().__init__()
 
@@ -96,6 +102,12 @@ class FastSpeech2(pl.LightningModule):
         self.valid_example_directory = valid_example_directory
         self.batch_size = batch_size
 
+        if variance_early_stopping != "none":
+            letters = string.ascii_lowercase
+            random_dir = ''.join(random.choice(letters) for i in range(10))
+            self.variance_encoder_dir = Path(variance_early_stopping_directory) / random_dir
+            self.variance_encoder_dir.mkdir(parents=True, exist_ok=True)
+
         # hparams
         self.save_hyperparameters(ignore=[
             "train_ds",
@@ -105,6 +117,7 @@ class FastSpeech2(pl.LightningModule):
             "valid_nexamples", 
             "valid_example_directory",
             "batch_size",
+            "variance_early_stopping_directory"
         ])
 
         # data
@@ -513,6 +526,8 @@ class FastSpeech2(pl.LightningModule):
                 ],
             )
             wandb.log({"examples": table})
+            if not hasattr(self, "best_variances") and self.hparams.variance_early_stopping:
+                self.best_variances = {}
             for key in self.results_dict.keys():
                 self.results_dict[key]['pred'] = [x.cpu().numpy() for x in self.results_dict[key]['pred']]
                 self.results_dict[key]['true'] = [x.cpu().numpy() for x in self.results_dict[key]['true']]
@@ -524,8 +539,38 @@ class FastSpeech2(pl.LightningModule):
                     min_val = min(min(pred_list), min(true_list))
                     max_val = max(max(pred_list), max(true_list))
                     arange = np.arange(min_val, max_val, (max_val - min_val) / 100).reshape(-1, 1)
-                    wandb.log({f"eval/jensenshannon_{key}": jensenshannon(np.exp(kde_pred.score_samples(arange)), np.exp(kde_true.score_samples(arange)))})
-                    wandb.log({f"eval/mae_{key}": np.mean(np.abs(np.array(self.results_dict[key]['pred']) - np.array(self.results_dict[key]['true'])))})
+                    var_js = jensenshannon(np.exp(kde_pred.score_samples(arange)), np.exp(kde_true.score_samples(arange)))
+                    var_mae = np.mean(np.abs(np.array(self.results_dict[key]['pred']) - np.array(self.results_dict[key]['true'])))
+                    if (
+                        self.hparams.variance_early_stopping != "none"
+                        and not (key in self.best_variances and self.best_variances[key][1] == -1)
+                        and key != "duration"
+                    ):
+                        if key not in self.best_variances:
+                            if self.hparams.variance_early_stopping == "mae":
+                                self.best_variances[key] = [var_mae, 1]
+                            elif self.hparams.variance_early_stopping == "js":
+                                self.best_variances[key] = [var_js, 1]
+                            torch.save(self.variance_adaptor.encoders[key].state_dict(), self.variance_encoder_dir / f"{key}_encoder_best.pt")
+                        else:
+                            if var_js < self.best_variances[key][0] and self.hparams.variance_early_stopping == "js":
+                                self.best_variances[key] = [var_js, 1]
+                                torch.save(self.variance_adaptor.encoders[key].state_dict(), self.variance_encoder_dir / f"{key}_encoder_best.pt")
+                            elif var_mae < self.best_variances[key][0] and self.hparams.variance_early_stopping == "mae":
+                                self.best_variances[key] = [var_mae, 1]
+                                torch.save(self.variance_adaptor.encoders[key].state_dict(), self.variance_encoder_dir/ f"{key}_encoder_best.pt")
+                            else:
+                                self.best_variances[key][1] += 1
+                            if self.hparams.variance_early_stopping_patience <= self.best_variances[key][1]:
+                                self.best_variances[key][1] = -1
+                                self.variance_adaptor.encoders[key].load_state_dict(torch.load(self.variance_encoder_dir / f"{key}_encoder_best.pt"))
+                                # freeze encoder
+                                print(f"Freezing encoder {key}")
+                                for param in self.variance_adaptor.encoders[key].parameters():
+                                    param.requires_grad = False
+                                
+                    self.log_dict({f"eval/jensenshannon_{key}": var_js})
+                    self.log_dict({f"eval/mae_{key}": var_mae})
                 else:
                     pred_res = np.concatenate([np.array([x[i] for x in self.results_dict[key]['pred']]) for i in range(self.hparams.n_mels)])
                     true_res = np.concatenate([np.array([x[i] for x in self.results_dict[key]['true']]) for i in range(self.hparams.n_mels)])
@@ -536,9 +581,12 @@ class FastSpeech2(pl.LightningModule):
                     min_val = min(min(pred_list), min(true_list))
                     max_val = max(max(pred_list), max(true_list))
                     arange = np.arange(min_val, max_val, (max_val - min_val) / 100).reshape(-1, 1)
-                    wandb.log(
+                    mel_js = jensenshannon(np.exp(kde_pred.score_samples(arange)), np.exp(kde_true.score_samples(arange)))
+                    mel_softdtw = SoftDTW(normalize=True)(torch.tensor(self.results_dict[key]['pred']).float(), torch.tensor(self.results_dict[key]['true']).float())
+                    self.log_dict(
                         {
-                            f"eval/jensenshannon_{key}": jensenshannon(np.exp(kde_pred.score_samples(arange)), np.exp(kde_true.score_samples(arange))),
+                            f"eval/jensenshannon_{key}": mel_js,
+                            f"eval/softdtw_{key}": mel_softdtw,
                         }
                     )
             self.eval_log_data = None
@@ -616,6 +664,9 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--decoder_conv_filter_size", type=int, default=1024)
         parser.add_argument("--valid_nexamples", type=int, default=10)
         parser.add_argument("--valid_example_directory", type=str, default=None)
+        parser.add_argument("--variance_early_stopping", type=str, default="none")
+        parser.add_argument("--variance_early_stopping_patience", type=int, default=4)
+        parser.add_argument("--variance_early_stopping_directory", type=str, default="variance_encoders")
         return parent_parser
 
     @staticmethod

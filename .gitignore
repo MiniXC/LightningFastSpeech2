@@ -1,5 +1,6 @@
 .cache
 __pycache__
+variance_encoders
 wandb
 lightning_logs
 LightningFastSpeech

@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "alignments"
-version = "0.0.3"
+version = "0.0.5"
 requires_python = ">=3.6"
 summary = ""
 dependencies = [
@@ -556,7 +556,7 @@ dependencies = [
 [[package]]
 name = "protobuf"
 version = "3.19.4"
-requires_python = ">=3.5"
+requires_python = ">=3.7"
 summary = "Protocol Buffers"
 
 [[package]]
@@ -683,10 +683,8 @@ name = "resampy"
 version = "0.2.2"
 summary = "Efficient signal resampling"
 dependencies = [
-    "numba>=0.32",
-    "numpy>=1.10",
-    "scipy>=0.13",
-    "six>=1.3",
+    "numba>=0.47",
+    "numpy>=1.17",
 ]
 
 [[package]]
@@ -917,7 +915,7 @@ summary = "Backported and Experimental Type Hints for Python 3.7+"
 [[package]]
 name = "urllib3"
 version = "1.26.9"
-requires_python = ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*, <4"
+requires_python = ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*, !=3.5.*, <4"
 summary = "HTTP library with thread-safe connection pooling, file post, and more."
 
 [[package]]
@@ -981,7 +979,7 @@ summary = "Backport of pathlib-compatible object wrapper for zip files"
 
 [metadata]
 lock_version = "3.1"
-content_hash = "sha256:0a7920e16d6e6e0535942e1265880aac620988a3858f01df99621a5c0774691f"
+content_hash = "sha256:5eeab601dc63a9e449648d953df6576adc585df4a8460d0797026000a8004af0"
 
 [metadata.files]
 "absl-py 1.1.0" = [
@@ -1066,9 +1064,9 @@ content_hash = "sha256:0a7920e16d6e6e0535942e1265880aac620988a3858f01df99621a5c0
     {file = "aiosignal-1.2.0-py3-none-any.whl", hash = "sha256:26e62109036cd181df6e6ad646f91f0dcfd05fe16d0cb924138ff2ab75d64e3a"},
     {file = "aiosignal-1.2.0.tar.gz", hash = "sha256:78ed67db6c7b7ced4f98e495e572106d5c432a93e1ddd1bf475e1dc05f5b7df2"},
 ]
-"alignments 0.0.3" = [
-    {file = "alignments-0.0.3-py3-none-any.whl", hash = "sha256:fa4cbb7ad501c077ffa080de4f08ef176e55828418b170001083e1674ca35f79"},
-    {file = "alignments-0.0.3.tar.gz", hash = "sha256:2ca8c236c44c5b01e411cc12468b6341c0386311ff41fd282c78cd887a81ff96"},
+"alignments 0.0.5" = [
+    {file = "alignments-0.0.5-py3-none-any.whl", hash = "sha256:d31aa860d47d8564843431fa5fb361a9c2ad79fddb36d55c839c78098d417c7b"},
+    {file = "alignments-0.0.5.tar.gz", hash = "sha256:988d4ceab8a336d115d03e106ca6989fffe487e222ed496b579a8554943b5057"},
 ]
 "appdirs 1.4.4" = [
     {file = "appdirs-1.4.4-py2.py3-none-any.whl", hash = "sha256:a841dacd6b99318a741b166adb07e19ee71a274450e68237b4650ca1055ab128"},
