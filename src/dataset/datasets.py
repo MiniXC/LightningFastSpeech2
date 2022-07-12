@@ -226,7 +226,7 @@ class TTSDataset(Dataset):
                         print(f"missing stats for {prior}, overwriting")
                     else:
                         raise ValueError(f"{prior} not in stats")
-            if ("samples" in stats and stats["samples"] == stat_entries):
+            if "samples" in stats and stats["samples"] == stat_entries:
                 if "seed" in stats and stats["seed"] == shuffle_seed:
                     print("loading stats from file")
                     compute_stats = False
@@ -484,7 +484,9 @@ class TTSDataset(Dataset):
             elif self.variance_transforms[i] == "log":
                 variances[var] = np.log(variances[var])
             elif hasattr(self, "stats"):
-                variances[var] = (variances[var] - self.stats[var]["mean"]) / self.stats[var]["std"]
+                variances[var] = (
+                    variances[var] - self.stats[var]["mean"]
+                ) / self.stats[var]["std"]
 
         return variances
 
@@ -557,10 +559,12 @@ class TTSDataset(Dataset):
                     self.phone_cache[o_phone] = phone
                 phone = self.phone_cache[o_phone]
             phones.append(phone)
-            durations.append(int(
-                np.round(e * self.sampling_rate / self.hop_length)
-                - np.round(s * self.sampling_rate / self.hop_length)
-            ))
+            durations.append(
+                int(
+                    np.round(e * self.sampling_rate / self.hop_length)
+                    - np.round(s * self.sampling_rate / self.hop_length)
+                )
+            )
 
         if start >= end:
             self.entry_stats["empty_textgrids"] += 1
@@ -836,8 +840,12 @@ class TTSDataset(Dataset):
         parser.add_argument(f"--{split_name}_fmin", type=int, default=0)
         parser.add_argument(f"--{split_name}_fmax", type=int, default=8000)
         parser.add_argument(f"--{split_name}_pitch_quality", type=float, default=0.25)
-        parser.add_argument(f"--{split_name}_source_phoneset", type=str, default="arpabet")
+        parser.add_argument(
+            f"--{split_name}_source_phoneset", type=str, default="arpabet"
+        )
         parser.add_argument(f"--{split_name}_shuffle_seed", type=int, default=42)
         parser.add_argument(f"--{split_name}_overwrite_stats", type=bool, default=False)
-        parser.add_argument(f"--{split_name}_overwrite_stats_if_missing", type=bool, default=True)
+        parser.add_argument(
+            f"--{split_name}_overwrite_stats_if_missing", type=bool, default=True
+        )
         return parent_parser

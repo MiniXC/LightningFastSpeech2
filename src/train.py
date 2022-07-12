@@ -29,16 +29,29 @@ if __name__ == "__main__":
     lr_monitor = LearningRateMonitor(logging_interval="step")
     callbacks = [lr_monitor]
 
-    parser.add_argument("--train_target_path", type=str, default="../data/train-clean-360-aligned")
-    parser.add_argument("--train_source_path", type=str, default="../data/train-clean-360")
-    parser.add_argument("--train_source_url", type=str, default="https://www.openslr.org/resources/60/train-clean-360.tar.gz")
+    parser.add_argument(
+        "--train_target_path", type=str, default="../data/train-clean-360-aligned"
+    )
+    parser.add_argument(
+        "--train_source_path", type=str, default="../data/train-clean-360"
+    )
+    parser.add_argument(
+        "--train_source_url",
+        type=str,
+        default="https://www.openslr.org/resources/60/train-clean-360.tar.gz",
+    )
     parser.add_argument("--train_tmp_path", type=str, default="../tmp")
 
-    parser.add_argument("--valid_target_path", type=str, default="../data/dev-clean-aligned")
+    parser.add_argument(
+        "--valid_target_path", type=str, default="../data/dev-clean-aligned"
+    )
     parser.add_argument("--valid_source_path", type=str, default="../data/dev-clean")
-    parser.add_argument("--valid_source_url", type=str, default="https://www.openslr.org/resources/60/dev-clean.tar.gz")
+    parser.add_argument(
+        "--valid_source_url",
+        type=str,
+        default="https://www.openslr.org/resources/60/dev-clean.tar.gz",
+    )
     parser.add_argument("--valid_tmp_path", type=str, default="../tmp")
-
 
     parser = FastSpeech2.add_model_specific_args(parser)
     parser = FastSpeech2.add_dataset_specific_args(parser)
@@ -59,7 +72,9 @@ if __name__ == "__main__":
     if var_args["wandb_name"] is None:
         wandb_logger = WandbLogger(project=var_args["wandb_project"])
     else:
-        wandb_logger = WandbLogger(project=var_args["wandb_project"], name=var_args["wandb_name"])
+        wandb_logger = WandbLogger(
+            project=var_args["wandb_project"], name=var_args["wandb_name"]
+        )
 
     train_ds = LibrittsDataset(
         target_directory=var_args["train_target_path"],
@@ -77,7 +92,11 @@ if __name__ == "__main__":
         tmp_directory=var_args["valid_tmp_path"],
     )
 
-    model_args = {k: v for k, v in var_args.items() if k in inspect.signature(FastSpeech2).parameters}
+    model_args = {
+        k: v
+        for k, v in var_args.items()
+        if k in inspect.signature(FastSpeech2).parameters
+    }
 
     del var_args["train_target_path"]
     del var_args["train_source_path"]
@@ -93,16 +112,33 @@ if __name__ == "__main__":
     model = FastSpeech2(
         train_ds,
         valid_ds,
-        train_ds_kwargs={k.replace("train_", ""): v for k, v in var_args.items() if k.startswith("train_")},
-        valid_ds_kwargs={k.replace("valid_", ""): v for k, v in var_args.items() if k.startswith("valid_")},
+        train_ds_kwargs={
+            k.replace("train_", ""): v
+            for k, v in var_args.items()
+            if k.startswith("train_")
+        },
+        valid_ds_kwargs={
+            k.replace("valid_", ""): v
+            for k, v in var_args.items()
+            if k.startswith("valid_")
+        },
         **model_args,
     )
 
     if var_args["wandb_checkpoint"]:
-        callbacks.append(ModelCheckpoint(monitor=var_args["wandb_checkpoint_key"], mode=var_args["wandb_checkpoint_mode"]))
+        callbacks.append(
+            ModelCheckpoint(
+                monitor=var_args["wandb_checkpoint_key"],
+                mode=var_args["wandb_checkpoint_mode"],
+            )
+        )
 
     if var_args["early_stopping"]:
-        callbacks.append(EarlyStopping(monitor="eval/total_loss", patience=var_args["early_stopping_patience"]))
+        callbacks.append(
+            EarlyStopping(
+                monitor="eval/total_loss", patience=var_args["early_stopping_patience"]
+            )
+        )
 
     trainer = Trainer.from_argparse_args(
         args,

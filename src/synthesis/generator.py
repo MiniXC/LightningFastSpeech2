@@ -4,7 +4,8 @@ from third_party.hifigan import Synthesiser
 from fastspeech2.fastspeech2 import FastSpeech2
 from .g2p import G2P
 
-class SpeechGenerator():
+
+class SpeechGenerator:
     def __init__(self, model_path: str, g2p_model: G2P):
         self.model_path = model_path
         self.synth = Synthesiser()

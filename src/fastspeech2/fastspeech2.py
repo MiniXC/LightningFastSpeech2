@@ -31,6 +31,7 @@ from .noam import NoamLR
 
 num_cpus = multiprocessing.cpu_count()
 
+
 class FastSpeech2(pl.LightningModule):
     def __init__(
         self,
@@ -60,7 +61,7 @@ class FastSpeech2(pl.LightningModule):
         duration_dropout=0.5,
         duration_filter_size=256,
         duration_depthwise_conv=True,
-        priors=[],#["pitch", "energy", "snr", "duration"],
+        priors=[],  # ["pitch", "energy", "snr", "duration"],
         mel_loss_weight=1,
         n_mels=80,
         sampling_rate=22050,
@@ -89,9 +90,14 @@ class FastSpeech2(pl.LightningModule):
         decoder_conv_filter_size=1024,
         valid_nexamples=10,
         valid_example_directory=None,
-        variance_early_stopping="none", # "mae", "js", "none"
+        variance_early_stopping="none",  # "mae", "js", "none"
         variance_early_stopping_patience=4,
         variance_early_stopping_directory="variance_encoders",
+        tf_ratio=1.0,
+        tf_linear_schedule=False,
+        tf_linear_schedule_start=0,
+        tf_linear_schedule_end=20,
+        tf_linear_schedule_end_ratio=0.0,
     ):
         super().__init__()
 
@@ -104,21 +110,25 @@ class FastSpeech2(pl.LightningModule):
 
         if variance_early_stopping != "none":
             letters = string.ascii_lowercase
-            random_dir = ''.join(random.choice(letters) for i in range(10))
-            self.variance_encoder_dir = Path(variance_early_stopping_directory) / random_dir
+            random_dir = "".join(random.choice(letters) for i in range(10))
+            self.variance_encoder_dir = (
+                Path(variance_early_stopping_directory) / random_dir
+            )
             self.variance_encoder_dir.mkdir(parents=True, exist_ok=True)
 
         # hparams
-        self.save_hyperparameters(ignore=[
-            "train_ds",
-            "valid_ds",
-            "train_ds_kwargs", 
-            "valid_ds_kwargs", 
-            "valid_nexamples", 
-            "valid_example_directory",
-            "batch_size",
-            "variance_early_stopping_directory"
-        ])
+        self.save_hyperparameters(
+            ignore=[
+                "train_ds",
+                "valid_ds",
+                "train_ds_kwargs",
+                "valid_ds_kwargs",
+                "valid_nexamples",
+                "valid_example_directory",
+                "batch_size",
+                "variance_early_stopping_directory",
+            ]
+        )
 
         # data
         if train_ds is not None:
@@ -141,7 +151,9 @@ class FastSpeech2(pl.LightningModule):
         if valid_ds is not None:
             if valid_ds_kwargs is None:
                 valid_ds_kwargs = {}
-            self.valid_ds = self.train_ds.create_validation_dataset(valid_ds, **valid_ds_kwargs)
+            self.valid_ds = self.train_ds.create_validation_dataset(
+                valid_ds, **valid_ds_kwargs
+            )
 
         self.synth = Synthesiser(device=self.device)
 
@@ -220,7 +232,9 @@ class FastSpeech2(pl.LightningModule):
             self.hparams.duration_filter_size,
             self.hparams.duration_depthwise_conv,
             self.hparams.encoder_hidden,
-            self.hparams.max_length * self.hparams.sampling_rate / self.hparams.hop_length,
+            self.hparams.max_length
+            * self.hparams.sampling_rate
+            / self.hparams.hop_length,
         ).to(self.device)
 
         # decoder
@@ -301,7 +315,9 @@ class FastSpeech2(pl.LightningModule):
             self.hparams.variance_levels,
             self.hparams.variance_transforms,
             self.hparams.duration_stochastic,
-            self.hparams.max_length * self.hparams.sampling_rate / self.hparams.hop_length,
+            self.hparams.max_length
+            * self.hparams.sampling_rate
+            / self.hparams.hop_length,
             loss_weights,
         )
 
@@ -323,21 +339,37 @@ class FastSpeech2(pl.LightningModule):
 
         output = self.positional_encoding(output)
 
-        output = output + self.speaker_embedding(speakers, output.shape[1], output.shape[-1])
+        output = output + self.speaker_embedding(
+            speakers, output.shape[1], output.shape[-1]
+        )
 
         output = self.encoder(output, src_key_padding_mask=src_mask)
 
         for prior in self.hparams.priors:
             output += self.prior_embeddings[prior](
-                torch.tensor(targets[f"priors_{prior}"]).to(self.device), 
-                output.shape[1]
+                torch.tensor(targets[f"priors_{prior}"]).to(self.device),
+                output.shape[1],
             )
+
+        tf_ratio = self.hparams.tf_ratio
+
+        if self.hparams.tf_linear_schedule:
+            if self.current_epoch > self.hparams.tf_linear_schedule_start:
+                tf_ratio = tf_ratio - (
+                    (tf_ratio - self.hparams.tf_linear_schedule_end_ratio)
+                    * (self.current_epoch - self.hparams.tf_linear_schedule_start)
+                    / (
+                        self.hparams.tf_linear_schedule_end
+                        - self.hparams.tf_linear_schedule_start
+                    )
+                )
 
         variance_output = self.variance_adaptor(
             output,
             src_mask,
             targets,
             inference=inference,
+            tf_ratio=tf_ratio,
         )
 
         output = variance_output["x"]
@@ -346,11 +378,13 @@ class FastSpeech2(pl.LightningModule):
 
         for prior in self.hparams.priors:
             output += self.prior_embeddings[prior](
-                torch.tensor(targets[f"priors_{prior}"]).to(self.device), 
-                output.shape[1]
+                torch.tensor(targets[f"priors_{prior}"]).to(self.device),
+                output.shape[1],
             )
 
-        output = output + self.speaker_embedding(speakers, output.shape[1], output.shape[-1])
+        output = output + self.speaker_embedding(
+            speakers, output.shape[1], output.shape[-1]
+        )
 
         output = self.decoder(output, src_key_padding_mask=variance_output["tgt_mask"])
 
@@ -372,10 +406,7 @@ class FastSpeech2(pl.LightningModule):
     def training_step(self, batch):
         result = self(batch)
         losses = self.loss(result, batch)
-        log_dict = {
-            f"train/{k}_loss": v.item()
-            for k, v in losses.items()
-        }
+        log_dict = {f"train/{k}_loss": v.item() for k, v in losses.items()}
         self.log_dict(
             log_dict,
             batch_size=self.batch_size,
@@ -386,10 +417,7 @@ class FastSpeech2(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         result = self(batch)
         losses = self.loss(result, batch)
-        log_dict = {
-            f"eval/{k}_loss": v.item()
-            for k, v in losses.items()
-        }
+        log_dict = {f"eval/{k}_loss": v.item() for k, v in losses.items()}
         self.log_dict(
             log_dict,
             batch_size=self.batch_size,
@@ -415,17 +443,20 @@ class FastSpeech2(pl.LightningModule):
             left_to_add = self.valid_nexamples - len(self.eval_log_data)
             self._add_to_results_dict(inference_result, batch, result, left_to_add)
             self._log_table_to_wandb(inference_result, batch, result)
-            
 
     def _log_table_to_wandb(self, inference_result, batch, result):
         for i in range(len(batch["mel"])):
             if len(self.eval_log_data) >= self.valid_nexamples:
                 break
-            pred_mel = inference_result["mel"][i][~inference_result["tgt_mask"][i]].cpu()
+            pred_mel = inference_result["mel"][i][
+                ~inference_result["tgt_mask"][i]
+            ].cpu()
             true_mel = batch["mel"][i][~result["tgt_mask"][i]].cpu()
             pred_dict = {
                 "mel": pred_mel,
-                "duration": inference_result["duration_rounded"][i][~inference_result["src_mask"][i]].cpu(),
+                "duration": inference_result["duration_rounded"][i][
+                    ~inference_result["src_mask"][i]
+                ].cpu(),
                 "phones": batch["phones"][i],
                 "text": batch["text"][i],
                 "variances": {},
@@ -438,10 +469,16 @@ class FastSpeech2(pl.LightningModule):
                     mask = "tgt_mask"
                 if self.hparams.variance_transforms[j] == "cwt":
                     pred_dict["variances"][var] = {}
-                    pred_dict["variances"][var]["spectrogram"] = inference_result[f"variances_{var}"]["spectrogram"][i][~inference_result[mask][i]].cpu()
-                    pred_dict["variances"][var]["original_signal"] = inference_result[f"variances_{var}"]["reconstructed_signal"][i][~inference_result[mask][i]].cpu()
+                    pred_dict["variances"][var]["spectrogram"] = inference_result[
+                        f"variances_{var}"
+                    ]["spectrogram"][i][~inference_result[mask][i]].cpu()
+                    pred_dict["variances"][var]["original_signal"] = inference_result[
+                        f"variances_{var}"
+                    ]["reconstructed_signal"][i][~inference_result[mask][i]].cpu()
                 else:
-                    pred_dict["variances"][var] = inference_result[f"variances_{var}"][i][~inference_result[mask][i]].cpu()
+                    pred_dict["variances"][var] = inference_result[f"variances_{var}"][
+                        i
+                    ][~inference_result[mask][i]].cpu()
             true_dict = {
                 "mel": true_mel,
                 "duration": batch["duration"][i][~result["src_mask"][i]].cpu(),
@@ -457,10 +494,16 @@ class FastSpeech2(pl.LightningModule):
                     mask = "tgt_mask"
                 if self.hparams.variance_transforms[j] == "cwt":
                     true_dict["variances"][var] = {}
-                    true_dict["variances"][var]["spectrogram"] = batch[f"variances_{var}_spectrogram"][i][~result[mask][i]].cpu()
-                    true_dict["variances"][var]["original_signal"] = batch[f"variances_{var}_original_signal"][i][~result[mask][i]].cpu()
+                    true_dict["variances"][var]["spectrogram"] = batch[
+                        f"variances_{var}_spectrogram"
+                    ][i][~result[mask][i]].cpu()
+                    true_dict["variances"][var]["original_signal"] = batch[
+                        f"variances_{var}_original_signal"
+                    ][i][~result[mask][i]].cpu()
                 else:
-                    true_dict["variances"][var] = batch[f"variances_{var}"][i][~result[mask][i]].cpu()
+                    true_dict["variances"][var] = batch[f"variances_{var}"][i][
+                        ~result[mask][i]
+                    ].cpu()
 
             for prior in self.hparams.priors:
                 true_dict["priors"][prior] = batch[f"priors_{prior}"][i]
@@ -472,12 +515,18 @@ class FastSpeech2(pl.LightningModule):
                 pred_fig = self.valid_ds.plot(pred_dict, show=False)
                 true_fig = self.valid_ds.plot(true_dict, show=False)
                 if self.valid_example_directory is not None:
-                    Path(self.valid_example_directory).mkdir(parents=True, exist_ok=True)
+                    Path(self.valid_example_directory).mkdir(
+                        parents=True, exist_ok=True
+                    )
                     pred_fig.save(
-                        os.path.join(self.valid_example_directory, f"pred_{batch['id'][i]}.png")
+                        os.path.join(
+                            self.valid_example_directory, f"pred_{batch['id'][i]}.png"
+                        )
                     )
                     true_fig.save(
-                        os.path.join(self.valid_example_directory, f"true_{batch['id'][i]}.png")
+                        os.path.join(
+                            self.valid_example_directory, f"true_{batch['id'][i]}.png"
+                        )
                     )
                 pred_audio = self.synth(pred_mel.to(self.device).float())[0]
                 true_audio = self.synth(true_mel.to(self.device).float())[0]
@@ -493,12 +542,20 @@ class FastSpeech2(pl.LightningModule):
 
     def _add_to_results_dict(self, inference_result, batch, result, add_n):
         # duration
-        self.results_dict["duration"]["pred"] += list(inference_result["duration_rounded"][~inference_result["src_mask"]])[:add_n]
-        self.results_dict["duration"]["true"] += list(batch["duration"][~result["src_mask"]])[:add_n]
+        self.results_dict["duration"]["pred"] += list(
+            inference_result["duration_rounded"][~inference_result["src_mask"]]
+        )[:add_n]
+        self.results_dict["duration"]["true"] += list(
+            batch["duration"][~result["src_mask"]]
+        )[:add_n]
 
         # mel
-        self.results_dict["mel"]["pred"] += list(inference_result["mel"][~inference_result["tgt_mask"]])[:add_n]
-        self.results_dict["mel"]["true"] += list(batch["mel"][~result["tgt_mask"]])[:add_n]
+        self.results_dict["mel"]["pred"] += list(
+            inference_result["mel"][~inference_result["tgt_mask"]]
+        )[:add_n]
+        self.results_dict["mel"]["true"] += list(batch["mel"][~result["tgt_mask"]])[
+            :add_n
+        ]
 
         for i, var in enumerate(self.hparams.variances):
             if self.hparams.variance_levels[i] == "phone":
@@ -506,11 +563,21 @@ class FastSpeech2(pl.LightningModule):
             elif self.hparams.variance_levels[i] == "frame":
                 mask = "tgt_mask"
             if self.hparams.variance_transforms[i] == "cwt":
-                self.results_dict[var]["pred"] += list(inference_result[f"variances_{var}"]["reconstructed_signal"][~inference_result[mask]])[:add_n]
-                self.results_dict[var]["true"] += list(batch[f"variances_{var}_original_signal"][~result[mask]])[:add_n]
+                self.results_dict[var]["pred"] += list(
+                    inference_result[f"variances_{var}"]["reconstructed_signal"][
+                        ~inference_result[mask]
+                    ]
+                )[:add_n]
+                self.results_dict[var]["true"] += list(
+                    batch[f"variances_{var}_original_signal"][~result[mask]]
+                )[:add_n]
             else:
-                self.results_dict[var]["pred"] += list(inference_result[f"variances_{var}"][~inference_result[mask]])[:add_n]
-                self.results_dict[var]["true"] += list(batch[f"variances_{var}"][~result[mask]])[:add_n]
+                self.results_dict[var]["pred"] += list(
+                    inference_result[f"variances_{var}"][~inference_result[mask]]
+                )[:add_n]
+                self.results_dict[var]["true"] += list(
+                    batch[f"variances_{var}"][~result[mask]]
+                )[:add_n]
 
     def validation_epoch_end(self, validation_step_outputs):
         if self.trainer.is_global_zero:
@@ -526,24 +593,52 @@ class FastSpeech2(pl.LightningModule):
                 ],
             )
             wandb.log({"examples": table})
-            if not hasattr(self, "best_variances") and self.hparams.variance_early_stopping:
+            if (
+                not hasattr(self, "best_variances")
+                and self.hparams.variance_early_stopping
+            ):
                 self.best_variances = {}
             for key in self.results_dict.keys():
-                self.results_dict[key]['pred'] = [x.cpu().numpy() for x in self.results_dict[key]['pred']]
-                self.results_dict[key]['true'] = [x.cpu().numpy() for x in self.results_dict[key]['true']]
+                self.results_dict[key]["pred"] = [
+                    x.cpu().numpy() for x in self.results_dict[key]["pred"]
+                ]
+                self.results_dict[key]["true"] = [
+                    x.cpu().numpy() for x in self.results_dict[key]["true"]
+                ]
                 if key != "mel":
-                    pred_list = np.random.choice(np.array(self.results_dict[key]['pred']), size=500).reshape(-1, 1)
-                    true_list = np.random.choice(np.array(self.results_dict[key]['true']), size=500).reshape(-1, 1)
-                    kde_pred = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(pred_list)
-                    kde_true = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(true_list)
+                    pred_list = np.random.choice(
+                        np.array(self.results_dict[key]["pred"]), size=500
+                    ).reshape(-1, 1)
+                    true_list = np.random.choice(
+                        np.array(self.results_dict[key]["true"]), size=500
+                    ).reshape(-1, 1)
+                    kde_pred = KernelDensity(kernel="gaussian", bandwidth=0.1).fit(
+                        pred_list
+                    )
+                    kde_true = KernelDensity(kernel="gaussian", bandwidth=0.1).fit(
+                        true_list
+                    )
                     min_val = min(min(pred_list), min(true_list))
                     max_val = max(max(pred_list), max(true_list))
-                    arange = np.arange(min_val, max_val, (max_val - min_val) / 100).reshape(-1, 1)
-                    var_js = jensenshannon(np.exp(kde_pred.score_samples(arange)), np.exp(kde_true.score_samples(arange)))
-                    var_mae = np.mean(np.abs(np.array(self.results_dict[key]['pred']) - np.array(self.results_dict[key]['true'])))
+                    arange = np.arange(
+                        min_val, max_val, (max_val - min_val) / 100
+                    ).reshape(-1, 1)
+                    var_js = jensenshannon(
+                        np.exp(kde_pred.score_samples(arange)),
+                        np.exp(kde_true.score_samples(arange)),
+                    )
+                    var_mae = np.mean(
+                        np.abs(
+                            np.array(self.results_dict[key]["pred"])
+                            - np.array(self.results_dict[key]["true"])
+                        )
+                    )
                     if (
                         self.hparams.variance_early_stopping != "none"
-                        and not (key in self.best_variances and self.best_variances[key][1] == -1)
+                        and not (
+                            key in self.best_variances
+                            and self.best_variances[key][1] == -1
+                        )
                         and key != "duration"
                     ):
                         if key not in self.best_variances:
@@ -551,38 +646,87 @@ class FastSpeech2(pl.LightningModule):
                                 self.best_variances[key] = [var_mae, 1]
                             elif self.hparams.variance_early_stopping == "js":
                                 self.best_variances[key] = [var_js, 1]
-                            torch.save(self.variance_adaptor.encoders[key].state_dict(), self.variance_encoder_dir / f"{key}_encoder_best.pt")
+                            torch.save(
+                                self.variance_adaptor.encoders[key].state_dict(),
+                                self.variance_encoder_dir / f"{key}_encoder_best.pt",
+                            )
                         else:
-                            if var_js < self.best_variances[key][0] and self.hparams.variance_early_stopping == "js":
+                            if (
+                                var_js < self.best_variances[key][0]
+                                and self.hparams.variance_early_stopping == "js"
+                            ):
                                 self.best_variances[key] = [var_js, 1]
-                                torch.save(self.variance_adaptor.encoders[key].state_dict(), self.variance_encoder_dir / f"{key}_encoder_best.pt")
-                            elif var_mae < self.best_variances[key][0] and self.hparams.variance_early_stopping == "mae":
+                                torch.save(
+                                    self.variance_adaptor.encoders[key].state_dict(),
+                                    self.variance_encoder_dir
+                                    / f"{key}_encoder_best.pt",
+                                )
+                            elif (
+                                var_mae < self.best_variances[key][0]
+                                and self.hparams.variance_early_stopping == "mae"
+                            ):
                                 self.best_variances[key] = [var_mae, 1]
-                                torch.save(self.variance_adaptor.encoders[key].state_dict(), self.variance_encoder_dir/ f"{key}_encoder_best.pt")
+                                torch.save(
+                                    self.variance_adaptor.encoders[key].state_dict(),
+                                    self.variance_encoder_dir
+                                    / f"{key}_encoder_best.pt",
+                                )
                             else:
                                 self.best_variances[key][1] += 1
-                            if self.hparams.variance_early_stopping_patience <= self.best_variances[key][1]:
+                            if (
+                                self.hparams.variance_early_stopping_patience
+                                <= self.best_variances[key][1]
+                            ):
                                 self.best_variances[key][1] = -1
-                                self.variance_adaptor.encoders[key].load_state_dict(torch.load(self.variance_encoder_dir / f"{key}_encoder_best.pt"))
+                                self.variance_adaptor.encoders[key].load_state_dict(
+                                    torch.load(
+                                        self.variance_encoder_dir
+                                        / f"{key}_encoder_best.pt"
+                                    )
+                                )
                                 # freeze encoder
                                 print(f"Freezing encoder {key}")
-                                for param in self.variance_adaptor.encoders[key].parameters():
+                                for param in self.variance_adaptor.encoders[
+                                    key
+                                ].parameters():
                                     param.requires_grad = False
-                                
+
                     self.log_dict({f"eval/jensenshannon_{key}": var_js})
                     self.log_dict({f"eval/mae_{key}": var_mae})
                 else:
-                    pred_res = np.concatenate([np.array([x[i] for x in self.results_dict[key]['pred']]) for i in range(self.hparams.n_mels)])
-                    true_res = np.concatenate([np.array([x[i] for x in self.results_dict[key]['true']]) for i in range(self.hparams.n_mels)])
+                    pred_res = np.concatenate(
+                        [
+                            np.array([x[i] for x in self.results_dict[key]["pred"]])
+                            for i in range(self.hparams.n_mels)
+                        ]
+                    )
+                    true_res = np.concatenate(
+                        [
+                            np.array([x[i] for x in self.results_dict[key]["true"]])
+                            for i in range(self.hparams.n_mels)
+                        ]
+                    )
                     pred_list = np.random.choice(pred_res, size=500).reshape(-1, 1)
                     true_list = np.random.choice(true_res, size=500).reshape(-1, 1)
-                    kde_pred = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(pred_list)
-                    kde_true = KernelDensity(kernel='gaussian', bandwidth=0.1).fit(true_list)
+                    kde_pred = KernelDensity(kernel="gaussian", bandwidth=0.1).fit(
+                        pred_list
+                    )
+                    kde_true = KernelDensity(kernel="gaussian", bandwidth=0.1).fit(
+                        true_list
+                    )
                     min_val = min(min(pred_list), min(true_list))
                     max_val = max(max(pred_list), max(true_list))
-                    arange = np.arange(min_val, max_val, (max_val - min_val) / 100).reshape(-1, 1)
-                    mel_js = jensenshannon(np.exp(kde_pred.score_samples(arange)), np.exp(kde_true.score_samples(arange)))
-                    mel_softdtw = SoftDTW(normalize=True)(torch.tensor(self.results_dict[key]['pred']).float(), torch.tensor(self.results_dict[key]['true']).float())
+                    arange = np.arange(
+                        min_val, max_val, (max_val - min_val) / 100
+                    ).reshape(-1, 1)
+                    mel_js = jensenshannon(
+                        np.exp(kde_pred.score_samples(arange)),
+                        np.exp(kde_true.score_samples(arange)),
+                    )
+                    mel_softdtw = SoftDTW(normalize=True)(
+                        torch.tensor(self.results_dict[key]["pred"]).float(),
+                        torch.tensor(self.results_dict[key]["true"]).float(),
+                    )
                     self.log_dict(
                         {
                             f"eval/jensenshannon_{key}": mel_js,
@@ -590,7 +734,6 @@ class FastSpeech2(pl.LightningModule):
                         }
                     )
             self.eval_log_data = None
-            
 
     def configure_optimizers(self):
         self.optimizer = torch.optim.AdamW(
@@ -598,7 +741,7 @@ class FastSpeech2(pl.LightningModule):
             self.hparams.lr,
             betas=[0.9, 0.98],
             eps=1e-8,
-            weight_decay=0.01
+            weight_decay=0.01,
         )
 
         self.scheduler = NoamLR(self.optimizer, self.hparams.warmup_steps)
@@ -667,6 +810,11 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--variance_early_stopping", type=str, default="none")
         parser.add_argument("--variance_early_stopping_patience", type=int, default=4)
         parser.add_argument("--variance_early_stopping_directory", type=str, default="variance_encoders")
+        parser.add_argument("--tf_ratio", type=float, default=1.0)
+        parser.add_argument("--tf_linear_schedule", type=bool, default=False)
+        parser.add_argument("--tf_linear_schedule_start", type=int, default=0)
+        parser.add_argument("--tf_linear_schedule_end", type=int, default=20)
+        parser.add_argument("--tf_linear_schedule_end_ratio", type=float, default=0.0)
         return parent_parser
 
     @staticmethod

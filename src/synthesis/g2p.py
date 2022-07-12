@@ -3,17 +3,20 @@ import unicodedata
 
 from phones.convert import Converter
 
+
 class G2P(ABC):
     @abstractmethod
     def __call__(self, text):
         raise NotImplementedError
 
+
 class EnglishG2P(G2P):
     def __init__(self):
         from g2p_en import G2p
+
         self.g2p = G2p()
         self.converter = Converter()
-    
+
     def __call__(self, text):
         phones = self.g2p(text)
         result = []
