@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "alignments"
-version = "0.0.5"
+version = "0.0.6"
 requires_python = ">=3.6"
 summary = ""
 dependencies = [
@@ -1064,9 +1064,9 @@ content_hash = "sha256:5eeab601dc63a9e449648d953df6576adc585df4a8460d0797026000a
     {file = "aiosignal-1.2.0-py3-none-any.whl", hash = "sha256:26e62109036cd181df6e6ad646f91f0dcfd05fe16d0cb924138ff2ab75d64e3a"},
     {file = "aiosignal-1.2.0.tar.gz", hash = "sha256:78ed67db6c7b7ced4f98e495e572106d5c432a93e1ddd1bf475e1dc05f5b7df2"},
 ]
-"alignments 0.0.5" = [
-    {file = "alignments-0.0.5-py3-none-any.whl", hash = "sha256:d31aa860d47d8564843431fa5fb361a9c2ad79fddb36d55c839c78098d417c7b"},
-    {file = "alignments-0.0.5.tar.gz", hash = "sha256:988d4ceab8a336d115d03e106ca6989fffe487e222ed496b579a8554943b5057"},
+"alignments 0.0.6" = [
+    {file = "alignments-0.0.6-py3-none-any.whl", hash = "sha256:39ae0869f6e1ebc350eb315e4056e03a04f5e4578a1212d1151dd1744525af49"},
+    {file = "alignments-0.0.6.tar.gz", hash = "sha256:db5eeba8daff0d1df018325a07bfaf3f5264816fd422c3c50b27041ab1696606"},
 ]
 "appdirs 1.4.4" = [
     {file = "appdirs-1.4.4-py2.py3-none-any.whl", hash = "sha256:a841dacd6b99318a741b166adb07e19ee71a274450e68237b4650ca1055ab128"},

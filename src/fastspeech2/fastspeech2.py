@@ -81,7 +81,7 @@ class FastSpeech2(pl.LightningModule):
         encoder_conv_filter_size=1024,
         decoder_hidden=256,
         decoder_head=2,
-        decoder_layers=4,  # TODO: test with 6 layers
+        decoder_layers=4,
         decoder_dropout=0.1,
         decoder_kernel_sizes=[17, 21, 9, 13],
         decoder_dim_feedforward=None,
@@ -162,8 +162,7 @@ class FastSpeech2(pl.LightningModule):
             self.stats = self.train_ds.stats
             self.phone2id = self.train_ds.phone2id
             if self.train_ds.speaker_type == "dvector":
-                # self.speaker2dvector = self.train_ds.speaker2dvector
-                pass
+                self.speaker2dvector = self.train_ds.speaker2dvector
             if self.train_ds.speaker_type == "id":
                 self.speaker2id = self.train_ds.speaker2id
 

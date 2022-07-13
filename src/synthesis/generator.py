@@ -1,3 +1,4 @@
+from audioop import mul
 from pathlib import Path
 import shutil
 
@@ -6,17 +7,31 @@ import torchaudio
 from torch.utils.data import DataLoader
 import numpy as np
 from tqdm.auto import tqdm
+import multiprocessing
 
 from third_party.hifigan import Synthesiser
 from fastspeech2.fastspeech2 import FastSpeech2
 from .g2p import G2P
 from copy import deepcopy
 
+def int16_samples_to_float32(y):
+    """Convert int16 numpy array of audio samples to float32."""
+    if y.dtype != np.int16:
+        if y.dtype == np.float32:
+            return y
+        elif y.dtype == torch.float32:
+            return y.numpy()
+        else:
+            raise ValueError(f"input samples not int16 or float32, but {y.dtype}")
+    return y.astype(np.float32) / np.iinfo(np.int16).max
 
 class SpeechGenerator:
-    def __init__(self, model_path: str, g2p_model: G2P, device: str = "cuda:0", overwrite: bool = False):
+    def __init__(self, model_path: str, g2p_model: G2P, device: str = "cuda:0", synth_device: str = None, overwrite: bool = False):
         self.model_path = model_path
-        self.synth = Synthesiser(device=device)
+        if synth_device is None:
+            self.synth = Synthesiser(device=device)
+        else:
+            self.synth = Synthesiser(device=synth_device)
         self.model = FastSpeech2.load_from_checkpoint(self.model_path)
         self.model.eval()
         self.g2p = g2p_model
@@ -56,7 +71,7 @@ class SpeechGenerator:
             mels.append(self.synth(pred_mel)[0])
         return mels
 
-    def generate_from_dataset(self, dataset, target_dir, hours=10, speaker2dvector=None, batch_size=4):
+    def generate_from_dataset(self, dataset, target_dir, hours=10, speaker2dvector=None, batch_size=6):
         if speaker2dvector is not None:
             self.model.speaker2dvector = speaker2dvector
         if Path(target_dir).exists() and not self.overwrite:
@@ -102,11 +117,14 @@ class SpeechGenerator:
                 batch_size=batch_size,
                 shuffle=False,
                 collate_fn=dataset._collate_fn,
-                num_workers=16,
+                num_workers=multiprocessing.cpu_count(),
             ):
                 speaker_keys = []
                 for i in range(len(item["speaker_key"])):
-                    speaker_key = dataset2model[item["speaker_key"][i]]
+                    if item["speaker_key"][i] in dataset2model:
+                        speaker_key = dataset2model[item["speaker_key"][i]]
+                    else:
+                        speaker_key = item["speaker_key"][i]
                     if speaker_key not in self.model.speaker2dvector.keys():
                         print(f"WARNING: Speaker {speaker_key} not found in model, random speaker will be used")
                         speaker_key = list(self.model.speaker2dvector.keys())[np.random.randint(len(self.model.speaker2dvector))]
@@ -116,10 +134,13 @@ class SpeechGenerator:
                 for i, audio in enumerate(audios):
                     save_dir = Path(target_dir, Path(speaker_keys[i]).name)
                     save_dir.mkdir(parents=True, exist_ok=True)
-                    torchaudio.save(save_dir / Path(item["id"][i]).with_suffix(".wav"), torch.tensor(audio).unsqueeze(0).cpu(), sample_rate=22050, encoding="PCM_S")
+                    audio = int16_samples_to_float32(audio)
+                    torchaudio.save(save_dir / Path(item["id"][i]).with_suffix(".wav"), torch.tensor(audio).unsqueeze(0), sample_rate=22050)
                     open(save_dir / Path(item["id"][i]).with_suffix(".lab"), "w").write(item["text"][i])
                     add_hours = len(audio) / self.model.hparams.sampling_rate / 3600
                     pbar.update(add_hours)
                     total_hours += add_hours
                     if total_hours > hours:
+                        break
+                if total_hours > hours:
                         break

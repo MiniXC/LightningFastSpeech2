@@ -117,8 +117,8 @@ class FastSpeech2Loss(nn.Module):
         # MEL SPECTROGRAM LOSS
         losses["mel"] = (
             FastSpeech2Loss.get_loss(
-                result["mel"].float(),
-                target["mel"].float(),
+                result["mel"], #.float(),
+                target["mel"], #.float(),
                 self.l1_loss,
                 tgt_mask,
                 unsqueeze=True,

@@ -82,6 +82,7 @@ if __name__ == "__main__":
         source_url=var_args["train_source_url"],
         verbose=True,
         tmp_directory=var_args["train_tmp_path"],
+        chunk_size=10_000,
     )
 
     valid_ds = LibrittsDataset(
