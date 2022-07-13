@@ -1,13 +1,15 @@
 CUDA_VISIBLE_DEVICES="2" pdm run python src/train.py \
 --accelerator gpu \
---batch_size 12 \
---accumulate_grad_batches 4 \
+--batch_size 8 \
+--accumulate_grad_batches 6 \
 --precision 16 \
 --max_epochs 30 \
 --gradient_clip_val 1.0 \
---variance_levels frame frame frame \
+--variance_levels phone phone phone \
 --variance_transforms none none none \
 --variance_early_stopping js \
---wandb_name "tf_early_stop_js_frame" \
---tf_linear_schedule True \
---train_target_path "../data/train-clean-aligned"
+--decoder_layers 6 \
+--decoder_kernel_sizes 9 9 9 9 9 9 \
+--priors energy snr pitch duration \
+--wandb_name "early_stop_js_priors" \
+--train_target_path "../data/train-clean-360-aligned"

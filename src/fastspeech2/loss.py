@@ -117,8 +117,8 @@ class FastSpeech2Loss(nn.Module):
         # MEL SPECTROGRAM LOSS
         losses["mel"] = (
             FastSpeech2Loss.get_loss(
-                result["mel"], #.float(),
-                target["mel"], #.float(),
+                result["mel"],
+                target["mel"],
                 self.l1_loss,
                 tgt_mask,
                 unsqueeze=True,
@@ -135,7 +135,7 @@ class FastSpeech2Loss(nn.Module):
                 src_mask,
             )
         else:
-            losses["duration"] = torch.sum(result["duration_prediction"].float())
+            losses["duration"] = torch.sum(result["duration_prediction"])
         losses["duration"] *= self.loss_alphas["duration"]
 
         # TOTAL LOSS

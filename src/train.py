@@ -59,9 +59,11 @@ if __name__ == "__main__":
     parser.add_argument("--wandb_project", type=str, default="fastspeech2")
     parser.add_argument("--wandb_mode", type=str, default="online")
     parser.add_argument("--wandb_name", type=str, default=None)
-    parser.add_argument("--wandb_checkpoint", type=bool, default=True)
-    parser.add_argument("--wandb_checkpoint_key", type=str, default="eval/mel_loss")
-    parser.add_argument("--wandb_checkpoint_mode", type=str, default="min")
+    parser.add_argument("--checkpoint", type=bool, default=True)
+    parser.add_argument("--checkpoint_key", type=str, default="eval/mel_loss")
+    parser.add_argument("--checkpoint_mode", type=str, default="min")
+    parser.add_argument("--checkpoint_path", type=str, default="models")
+    parser.add_argument("--checkpoint_filename", type=str, default=None)
 
     parser.add_argument("--visible_gpus", type=int, default=0)
 
@@ -91,6 +93,7 @@ if __name__ == "__main__":
         source_url=var_args["valid_source_url"],
         verbose=True,
         tmp_directory=var_args["valid_tmp_path"],
+        chunk_size=10_000,
     )
 
     model_args = {
@@ -126,18 +129,23 @@ if __name__ == "__main__":
         **model_args,
     )
 
-    if var_args["wandb_checkpoint"]:
+    if var_args["checkpoint_filename"] is None and var_args["wandb_name"] is not None:
+        var_args["checkpoint_filename"] = var_args["wandb_name"]
+
+    if var_args["checkpoint"]:
         callbacks.append(
             ModelCheckpoint(
-                monitor=var_args["wandb_checkpoint_key"],
-                mode=var_args["wandb_checkpoint_mode"],
+                monitor=var_args["checkpoint_key"],
+                mode=var_args["checkpoint_mode"],
+                filename=var_args["checkpoint_filename"],
+                dirpath=var_args["checkpoint_path"],
             )
         )
 
     if var_args["early_stopping"]:
         callbacks.append(
             EarlyStopping(
-                monitor="eval/total_loss", patience=var_args["early_stopping_patience"]
+                monitor="eval/mel_loss", patience=var_args["early_stopping_patience"]
             )
         )
 

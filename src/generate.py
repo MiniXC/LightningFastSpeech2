@@ -17,8 +17,3 @@ if __name__ == "__main__":
     )
     generator = SpeechGenerator("models/early_stop_mae_phone.ckpt", EnglishG2P(), device="cuda:2", synth_device="cuda:3", overwrite=True)
     generator.generate_from_dataset(transfer_ds, "../Data/synth/early_stop_mae_phone", speaker2dvector=orig_ds.speaker2dvector)
-    # audio = generator.generate_sample_from_text(
-    #     "Hello, this is an important test!",
-    #     speaker2dvector=train_ds.speaker2dvector,
-    # )
-    # torchaudio.save("test.wav", torch.tensor(audio).unsqueeze(0), sample_rate=22050, encoding="PCM_S")

@@ -367,10 +367,15 @@ class TTSDataset(Dataset):
                     var_val = variances[var]["original_signal"]
                 else:
                     var_val = variances[var]
+                mean = 0
+                std = 1
+                if hasattr(self, "stats"):
+                    mean = self.stats[var]["mean"]
+                    std = self.stats[var]["std"]
                 if self.variance_levels[self.variances.index(var)] == "phone":
-                    priors[var] = np.mean(var_val[~unexpanded_silence_mask])
+                    priors[var] = np.mean(var_val[~unexpanded_silence_mask] * std + mean)
                 else:
-                    priors[var] = np.mean(var_val[~silence_mask])
+                    priors[var] = np.mean(var_val[~silence_mask] * std + mean)
 
         # TEXT & PHONES
         text = row["text"]
