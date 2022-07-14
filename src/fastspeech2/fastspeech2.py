@@ -98,11 +98,13 @@ class FastSpeech2(pl.LightningModule):
         tf_linear_schedule_start=0,
         tf_linear_schedule_end=20,
         tf_linear_schedule_end_ratio=0.0,
+        num_workers=num_cpus,
     ):
         super().__init__()
 
         self.lr = lr
         self.warmup_steps = warmup_steps
+        self.num_workers = num_workers
 
         self.valid_nexamples = valid_nexamples
         self.valid_example_directory = valid_example_directory
@@ -457,7 +459,7 @@ class FastSpeech2(pl.LightningModule):
 
     def training_step(self, batch):
         result = self(batch)
-        losses = self.loss(result, batch, frozen_components=self.variance_adaptor.frozen_components)
+        losses = self.loss(result, batch) #frozen_components=self.variance_adaptor.frozen_components)
         log_dict = {f"train/{k}_loss": v.item() for k, v in losses.items()}
         self.log_dict(
             log_dict,
@@ -691,6 +693,7 @@ class FastSpeech2(pl.LightningModule):
                             key in self.best_variances
                             and self.best_variances[key][1] == -1
                         )
+                        and key != "duration" # TODO: add duration to early stopping
                     ):
                         if key not in self.best_variances:
                             if self.hparams.variance_early_stopping == "mae":
@@ -863,6 +866,7 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--tf_linear_schedule_start", type=int, default=0)
         parser.add_argument("--tf_linear_schedule_end", type=int, default=20)
         parser.add_argument("--tf_linear_schedule_end_ratio", type=float, default=0.0)
+        parser.add_argument("--num_workers", type=int, default=num_cpus)
         return parent_parser
 
     @staticmethod
@@ -878,7 +882,7 @@ class FastSpeech2(pl.LightningModule):
             self.train_ds,
             batch_size=self.batch_size,
             collate_fn=self.train_ds._collate_fn,
-            num_workers=num_cpus,
+            num_workers=self.num_workers,
             prefetch_factor=5,
         )
 
@@ -887,6 +891,6 @@ class FastSpeech2(pl.LightningModule):
             self.valid_ds,
             batch_size=self.batch_size,
             collate_fn=self.valid_ds._collate_fn,
-            num_workers=num_cpus,
+            num_workers=self.num_workers,
             prefetch_factor=5,
         )
