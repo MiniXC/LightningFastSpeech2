@@ -112,6 +112,7 @@ class SpeechGenerator:
                     del model_dvectors[closest_speaker]
             pbar = tqdm(total=hours, desc="Generating Audio")
             total_hours = 0
+            np.random.seed(42)
             for item in DataLoader(
                 dataset,
                 batch_size=batch_size,

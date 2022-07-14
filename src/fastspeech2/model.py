@@ -227,6 +227,17 @@ class VarianceAdaptor(nn.Module):
             )
         self.encoders = nn.ModuleDict(self.encoders)
 
+        self.frozen_components = []
+
+    def freeze(self, component):
+        if component == "duration":
+            for param in self.duration_predictor.parameters():
+                param.requires_grad = False
+        else:
+            for param in self.encoders[component].parameters():
+                param.requires_grad = False
+        self.frozen_components.append(component)
+
     def forward(
         self,
         x,
@@ -234,6 +245,7 @@ class VarianceAdaptor(nn.Module):
         targets,
         inference=False,
         tf_ratio=1.0,
+        oracles=[],
     ):
         if not self.duration_stochastic:
             duration_pred = self.duration_predictor(x, src_mask)
@@ -251,7 +263,7 @@ class VarianceAdaptor(nn.Module):
 
         for i, var in enumerate(self.variances):
             if self.variance_levels[i] == "phone":
-                if not inference and tf_val:
+                if (not inference and tf_val) or var in oracles:
                     if self.variance_transforms[i] == "cwt":
                         pred, out = self.encoders[var](
                             x, targets[f"variances_{var}_signal"], src_mask
@@ -280,7 +292,7 @@ class VarianceAdaptor(nn.Module):
 
         for i, var in enumerate(self.variances):
             if self.variance_levels[i] == "frame":
-                if not inference and tf_val:
+                if (not inference and tf_val) or var in oracles:
                     if self.variance_transforms[i] == "cwt":
                         pred, out = self.encoders[var](
                             x, targets[f"variances_{var}_signal"], tgt_mask

@@ -37,7 +37,7 @@ class FastSpeech2Loss(nn.Module):
         truth = truth.masked_select(mask)
         return loss(pred, truth)
 
-    def forward(self, result, target):
+    def forward(self, result, target, frozen_components=[]):
         variances_pred = {var: result[f"variances_{var}"] for var in self.variances}
         variances_target = {
             var: target[f"variances_{var}"]
@@ -139,6 +139,7 @@ class FastSpeech2Loss(nn.Module):
         losses["duration"] *= self.loss_alphas["duration"]
 
         # TOTAL LOSS
-        losses["total"] = sum(losses.values())
+        total_loss = sum([v for k,v in losses.items() if not any(f in k for f in frozen_components)])
+        losses["total"] = total_loss
 
         return losses

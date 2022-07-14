@@ -457,7 +457,7 @@ class FastSpeech2(pl.LightningModule):
 
     def training_step(self, batch):
         result = self(batch)
-        losses = self.loss(result, batch)
+        losses = self.loss(result, batch, frozen_components=self.variance_adaptor.frozen_components)
         log_dict = {f"train/{k}_loss": v.item() for k, v in losses.items()}
         self.log_dict(
             log_dict,
@@ -691,7 +691,6 @@ class FastSpeech2(pl.LightningModule):
                             key in self.best_variances
                             and self.best_variances[key][1] == -1
                         )
-                        and key != "duration"
                     ):
                         if key not in self.best_variances:
                             if self.hparams.variance_early_stopping == "mae":
@@ -738,10 +737,7 @@ class FastSpeech2(pl.LightningModule):
                                 )
                                 # freeze encoder
                                 print(f"Freezing encoder {key}")
-                                for param in self.variance_adaptor.encoders[
-                                    key
-                                ].parameters():
-                                    param.requires_grad = False
+                                self.variance_adaptor.freeze_encoder(key)
 
                     self.log_dict({f"eval/jensenshannon_{key}": var_js})
                     self.log_dict({f"eval/mae_{key}": var_mae})
