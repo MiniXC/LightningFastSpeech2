@@ -48,9 +48,7 @@ class SpeechGenerator:
         else:
             return None
 
-    def generate_sample_from_text(self, text, speaker=None, speaker2dvector=None):
-        if speaker2dvector is not None:
-            self.model.speaker2dvector = speaker2dvector
+    def generate_sample_from_text(self, text, speaker=None):
         ids = [self.model.phone2id[x] for x in self.g2p(text) if x in self.model.phone2id]
         batch = {}
         if self.model.hparams.speaker_type == "dvector":
@@ -63,17 +61,23 @@ class SpeechGenerator:
         batch["phones"] = torch.tensor([ids]).to(self.device)
         return self.generate_samples(batch)[0]
 
-    def generate_samples(self, batch):
+    def generate_samples(self, batch, increase_diversity={}):
         result = self.model(batch, inference=True)
+        if len(increase_diversity) > 0:
+            for key, value in increase_diversity.items():
+                batch[key] = result[key].float() * np.random.uniform(1.0-value/2, 1.0+value/2)
+                if key == "duration":
+                    batch[key] = torch.round(batch[key]).int()
+                batch[key] = batch[key].to(self.device)
+            result = self.model(batch, inference=False)
         mels = []
         for i in range(len(result["mel"])):
             pred_mel = result["mel"][i][~result["tgt_mask"][i]].cpu()
             mels.append(self.synth(pred_mel)[0])
         return mels
 
-    def generate_from_dataset(self, dataset, target_dir, hours=10, speaker2dvector=None, batch_size=6):
-        if speaker2dvector is not None:
-            self.model.speaker2dvector = speaker2dvector
+    def generate_from_dataset(self, dataset, target_dir, hours=10, batch_size=6, increase_diversity={}):
+        dataset.stats = self.model.stats
         if Path(target_dir).exists() and not self.overwrite:
             print("Target directory exists, not overwriting")
             return
@@ -131,7 +135,7 @@ class SpeechGenerator:
                         speaker_key = list(self.model.speaker2dvector.keys())[np.random.randint(len(self.model.speaker2dvector))]
                     speaker_keys.append(speaker_key)
                 item["speaker"] = torch.tensor([self.model.speaker2dvector[x] for x in speaker_keys]).to(self.device)
-                audios = self.generate_samples(item)
+                audios = self.generate_samples(item, increase_diversity=increase_diversity)
                 for i, audio in enumerate(audios):
                     save_dir = Path(target_dir, Path(speaker_keys[i]).name)
                     save_dir.mkdir(parents=True, exist_ok=True)
