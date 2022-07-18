@@ -31,6 +31,15 @@ from .noam import NoamLR
 
 num_cpus = multiprocessing.cpu_count()
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 class FastSpeech2(pl.LightningModule):
     def __init__(
@@ -129,6 +138,7 @@ class FastSpeech2(pl.LightningModule):
                 "valid_example_directory",
                 "batch_size",
                 "variance_early_stopping_directory",
+                "num_workers"
             ]
         )
 
@@ -740,7 +750,7 @@ class FastSpeech2(pl.LightningModule):
                                 )
                                 # freeze encoder
                                 print(f"Freezing encoder {key}")
-                                self.variance_adaptor.freeze_encoder(key)
+                                self.variance_adaptor.freeze(key)
 
                     self.log_dict({f"eval/jensenshannon_{key}": var_js})
                     self.log_dict({f"eval/mae_{key}": var_mae})
@@ -823,14 +833,14 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--variance_dropout", nargs="+", type=float, default=[0.5, 0.5, 0.5])
         parser.add_argument("--variance_filter_size", type=int, default=256)
         parser.add_argument("--variance_nbins", type=int, default=256)
-        parser.add_argument("--variance_depthwise_conv", type=bool, default=True)
+        parser.add_argument("--variance_depthwise_conv", type=str2bool, default=True)
         parser.add_argument("--duration_nlayers", type=int, default=2)
         parser.add_argument("--duration_loss_weight", type=float, default=5e-1)
-        parser.add_argument("--duration_stochastic", type=bool, default=False)
+        parser.add_argument("--duration_stochastic", type=str2bool, default=False)
         parser.add_argument("--duration_kernel_size", type=int, default=3)
         parser.add_argument("--duration_dropout", type=float, default=0.5)
         parser.add_argument("--duration_filter_size", type=int, default=256)
-        parser.add_argument("--duration_depthwise_conv", type=bool, default=True)
+        parser.add_argument("--duration_depthwise_conv", type=str2bool, default=True)
         parser.add_argument("--priors", nargs="+", type=str, default=[])
         parser.add_argument("--mel_loss_weight", type=float, default=1)
         parser.add_argument("--n_mels", type=int, default=80)
@@ -844,8 +854,8 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--encoder_dropout", type=float, default=0.1)
         parser.add_argument("--encoder_kernel_sizes", nargs="+", type=int, default=[5, 25, 13, 9])
         parser.add_argument("--encoder_dim_feedforward", type=int, default=None)
-        parser.add_argument("--encoder_conformer", type=bool, default=True)
-        parser.add_argument("--encoder_depthwise_conv", type=bool, default=True)
+        parser.add_argument("--encoder_conformer", type=str2bool, default=True)
+        parser.add_argument("--encoder_depthwise_conv", type=str2bool, default=True)
         parser.add_argument("--encoder_conv_filter_size", type=int, default=1024)
         parser.add_argument("--decoder_hidden", type=int, default=256)
         parser.add_argument("--decoder_head", type=int, default=2)
@@ -853,8 +863,8 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--decoder_dropout", type=float, default=0.1)
         parser.add_argument("--decoder_kernel_sizes", nargs="+", type=int, default=[17, 21, 9, 13])
         parser.add_argument("--decoder_dim_feedforward", type=int, default=None)
-        parser.add_argument("--decoder_conformer", type=bool, default=True)
-        parser.add_argument("--decoder_depthwise_conv", type=bool, default=True)
+        parser.add_argument("--decoder_conformer", type=str2bool, default=True)
+        parser.add_argument("--decoder_depthwise_conv", type=str2bool, default=True)
         parser.add_argument("--decoder_conv_filter_size", type=int, default=1024)
         parser.add_argument("--valid_nexamples", type=int, default=10)
         parser.add_argument("--valid_example_directory", type=str, default=None)
@@ -862,7 +872,7 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--variance_early_stopping_patience", type=int, default=4)
         parser.add_argument("--variance_early_stopping_directory", type=str, default="variance_encoders")
         parser.add_argument("--tf_ratio", type=float, default=1.0)
-        parser.add_argument("--tf_linear_schedule", type=bool, default=False)
+        parser.add_argument("--tf_linear_schedule", type=str2bool, default=False)
         parser.add_argument("--tf_linear_schedule_start", type=int, default=0)
         parser.add_argument("--tf_linear_schedule_end", type=int, default=20)
         parser.add_argument("--tf_linear_schedule_end_ratio", type=float, default=0.0)

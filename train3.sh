@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES="2" pdm run python src/train.py \
+CUDA_VISIBLE_DEVICES="1" pdm run python src/train.py \
 --accelerator gpu \
 --batch_size 8 \
 --accumulate_grad_batches 6 \
@@ -11,7 +11,10 @@ CUDA_VISIBLE_DEVICES="2" pdm run python src/train.py \
 --decoder_layers 6 \
 --decoder_kernel_sizes 9 9 9 9 9 9 \
 --priors energy snr pitch duration \
+--duration_stochastic True \
+--duration_depthwise_conv False \
 --wandb_mode online \
---wandb_name "early_stop_js_priors" \
+--wandb_name "stochastic" \
 --train_target_path "../data/train-clean-360-aligned" \
---checkpoint_path models
+--checkpoint_path models \
+--num_workers 4
