@@ -190,7 +190,7 @@ class VarianceAdaptor(nn.Module):
                 raise NotImplementedError(
                     "Depthwise convolution not implemented for Flow-Based duration prediction"
                 )
-            self.duration_predictor = StochasticDurationPredictor(
+            self.duration_predictor = StochasticDurationPredictorWrapper(
                 duration_nlayers,
                 encoder_hidden,
                 duration_filter_size,
@@ -252,10 +252,10 @@ class VarianceAdaptor(nn.Module):
         else:
             if not inference:
                 duration_pred = self.duration_predictor(
-                    x, src_mask, targets["duration"]
+                    x.detach(), src_mask, targets["duration"]
                 )
             else:
-                duration_pred = self.duration_predictor(x, src_mask, inference=True)
+                duration_pred = self.duration_predictor(x.detach(), src_mask, inference=True)
 
         result = {}
 
@@ -423,7 +423,7 @@ class VarianceEncoder(nn.Module):
                 )
 
 
-class StochasticDurationPredictor(nn.Module):
+class StochasticDurationPredictorWrapper(nn.Module):
     def __init__(self, nlayers, in_channels, filter_size, kernel_size, dropout):
         super().__init__()
 

@@ -16,3 +16,4 @@ run_longjob.sh
 *.lprof
 examples/*.png
 !src/data/*
+sampling_values

@@ -26,7 +26,7 @@ def int16_samples_to_float32(y):
     return y.astype(np.float32) / np.iinfo(np.int16).max
 
 class SpeechGenerator:
-    def __init__(self, model_path: str, g2p_model: G2P, device: str = "cuda:0", synth_device: str = None, overwrite: bool = False):
+    def __init__(self, model_path: str, g2p_model: G2P, device: str = "cuda:0", synth_device: str = None, overwrite: bool = False, sampling_path: str = None):
         self.model_path = model_path
         if synth_device is None:
             self.synth = Synthesiser(device=device)
@@ -38,6 +38,7 @@ class SpeechGenerator:
         self.device = device
         self.model.to(self.device)
         self.overwrite = overwrite
+        self.sampling_path = sampling_path
 
     @property
     def speakers(self):
@@ -61,22 +62,116 @@ class SpeechGenerator:
         batch["phones"] = torch.tensor([ids]).to(self.device)
         return self.generate_samples(batch)[0]
 
-    def generate_samples(self, batch, increase_diversity={}):
+    def generate_samples(
+        self,
+        batch,
+        increase_diversity={},
+        fixed_diversity={},
+        sampling_diversity={},
+    ):
         result = self.model(batch, inference=True)
+
+        changed_diversity = len(increase_diversity) > 0 or len(fixed_diversity) > 0 or len(sampling_diversity) > 0
+
+        if changed_diversity:
+            for var in self.model.hparams.variances:
+                batch["variances_" + var] = result["variances_" + var]
+            batch["duration"] = result["duration_rounded"]
+
+        # random factor
         if len(increase_diversity) > 0:
             for key, value in increase_diversity.items():
-                batch[key] = result[key].float() * np.random.uniform(1.0-value/2, 1.0+value/2)
                 if key == "duration":
+                    batch[key] = result[key+"_rounded"].float() * np.random.uniform(1.0-value/2, 1.0+value/2)
                     batch[key] = torch.round(batch[key]).int()
-                batch[key] = batch[key].to(self.device)
+                else:
+                    batch[key] = result[key].float() * np.random.uniform(1.0-value/2, 1.0+value/2)
+            
+        # fixed value
+        if len(fixed_diversity) > 0:
+            for key, value in fixed_diversity.items():
+                if key == "duration":
+                    batch[key][:] = (value - self.model.stats[key]["mean"]) / self.model.stats[key]["std"]
+                else:
+                    stat_key = key.replace("variances_", "")
+                    batch[key][:] = (value - self.model.stats[stat_key]["mean"]) / self.model.stats[stat_key]["std"]
+        
+        # sampling
+        if len(sampling_diversity) > 0:
+            for key, value in sampling_diversity.items():
+                rand_vals = np.random.uniform(0, 1, batch[key].shape)
+                sampling_mask = (rand_vals < value) & ~batch["phones"].eq(0).numpy()
+                sampling_len = np.sum(sampling_mask)
+                sampling_mask = torch.tensor(sampling_mask)
+                samples = np.random.choice(self.sampling_dict[key], sampling_len, replace=False)
+                batch[key][sampling_mask] = torch.tensor(samples).to(batch[key].dtype).to(batch[key].device)
+
+        if changed_diversity:
+            for key in batch.keys():
+                try:
+                    batch[key] = batch[key].to(self.device)
+                except:
+                    pass
             result = self.model(batch, inference=False)
         mels = []
         for i in range(len(result["mel"])):
-            pred_mel = result["mel"][i][~result["tgt_mask"][i]].cpu()
+            if changed_diversity:
+                pred_mel = result["mel"][i][:torch.sum(batch["duration"][i])].cpu()
+            else:
+                pred_mel = result["mel"][i][:torch.sum(result["duration_rounded"][i])].cpu()
             mels.append(self.synth(pred_mel)[0])
         return mels
 
-    def generate_from_dataset(self, dataset, target_dir, hours=10, batch_size=6, increase_diversity={}):
+    def _create_sampling_dict(self, dataset, variances, batch_size):
+        self.sampling_dict = {}
+        done_vars = []
+        if self.sampling_path is not None:
+            for key in variances:
+                if Path(self.sampling_path, key + ".npy").exists():
+                    self.sampling_dict[key] = np.load(self.sampling_path + "/" + key + ".npy")
+        if all([k in self.sampling_dict for k in variances]):
+            return
+        else:
+            for k in self.sampling_dict:
+                done_vars.append(k)
+        for item in tqdm(DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            collate_fn=dataset._collate_fn,
+            num_workers=multiprocessing.cpu_count(),
+        ), desc="Creating sampling dict"):
+            for key, value in item.items():
+                if key not in done_vars and key in variances and (key not in self.sampling_dict or len(self.sampling_dict[key]) < 1_000_000):
+                    if key == "duration":
+                        var_lvl = "phone"
+                    else:
+                        var_key = key.replace("variances_", "")
+                        var_idx = self.model.hparams.variances.index(var_key)
+                        var_lvl = self.model.hparams.variance_levels[var_idx]
+                    if var_lvl == "phone":
+                        var_vals = value[~item["phones"].eq(0)].cpu().numpy().flatten().tolist()
+                    elif var_lvl == "frame":
+                        var_vals = value[~item["tgt_mask"]].cpu().numpy().flatten().tolist()
+                    if key not in self.sampling_dict:
+                        self.sampling_dict[key] = var_vals
+        for key in self.sampling_dict.keys():
+            self.sampling_dict[key] = np.array(self.sampling_dict[key])
+            if self.sampling_path is not None:
+                Path(self.sampling_path).mkdir(parents=True, exist_ok=True)
+                np.save(self.sampling_path + "/" + key + ".npy", self.sampling_dict[key])
+        
+
+    def generate_from_dataset(
+        self,
+        dataset,
+        target_dir,
+        hours=10,
+        batch_size=6,
+        increase_diversity={},
+        fixed_diversity={},
+        sampling_diversity={},
+    ):
         dataset.stats = self.model.stats
         if Path(target_dir).exists() and not self.overwrite:
             print("Target directory exists, not overwriting")
@@ -117,6 +212,8 @@ class SpeechGenerator:
             pbar = tqdm(total=hours, desc="Generating Audio")
             total_hours = 0
             np.random.seed(42)
+            if len(sampling_diversity) > 0:
+                self._create_sampling_dict(dataset, sampling_diversity.keys(), batch_size * 10)
             for item in DataLoader(
                 dataset,
                 batch_size=batch_size,
@@ -135,7 +232,12 @@ class SpeechGenerator:
                         speaker_key = list(self.model.speaker2dvector.keys())[np.random.randint(len(self.model.speaker2dvector))]
                     speaker_keys.append(speaker_key)
                 item["speaker"] = torch.tensor([self.model.speaker2dvector[x] for x in speaker_keys]).to(self.device)
-                audios = self.generate_samples(item, increase_diversity=increase_diversity)
+                audios = self.generate_samples(
+                    item,
+                    increase_diversity=increase_diversity,
+                    fixed_diversity=fixed_diversity,
+                    sampling_diversity=sampling_diversity,
+                )
                 for i, audio in enumerate(audios):
                     save_dir = Path(target_dir, Path(speaker_keys[i]).name)
                     save_dir.mkdir(parents=True, exist_ok=True)
