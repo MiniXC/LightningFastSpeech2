@@ -255,7 +255,9 @@ class VarianceAdaptor(nn.Module):
                     x.detach(), src_mask, targets["duration"]
                 )
             else:
-                duration_pred = self.duration_predictor(x.detach(), src_mask, inference=True)
+                duration_pred = self.duration_predictor(
+                    x.detach(), src_mask, inference=True
+                )
 
         result = {}
 

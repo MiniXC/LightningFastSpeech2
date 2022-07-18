@@ -139,7 +139,9 @@ class FastSpeech2Loss(nn.Module):
         losses["duration"] *= self.loss_alphas["duration"]
 
         # TOTAL LOSS
-        total_loss = sum([v for k,v in losses.items() if not any(f in k for f in frozen_components)])
+        total_loss = sum(
+            [v for k, v in losses.items() if not any(f in k for f in frozen_components)]
+        )
         losses["total"] = total_loss
 
         return losses

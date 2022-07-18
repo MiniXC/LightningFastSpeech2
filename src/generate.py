@@ -3,6 +3,7 @@ from argparse import ArgumentParser
 from alignments.datasets.libritts import LibrittsDataset
 import torchaudio
 import torch
+from audiomentations import Compose, PitchShift, RoomSimulator, AddGaussianSNR
 
 from synthesis.generator import SpeechGenerator
 from synthesis.g2p import EnglishG2P
@@ -36,6 +37,12 @@ if __name__ == "__main__":
 
     # sampling path
     parser.add_argument("--sampling_path", type=str, default="sampling_values")
+
+    augmentations = Compose([
+        PitchShift(min_semitones=-4, max_semitones=4, p=0.25),
+        AddGaussianSNR(min_snr_in_db=10, max_snr_in_db=30.0, p=0.25),
+        RoomSimulator(use_ray_tracing=False, p=0.25),
+    ])
 
     args = parser.parse_args()
 
@@ -76,7 +83,8 @@ if __name__ == "__main__":
         device=args.tts_device,
         synth_device=args.hifigan_device,
         overwrite=True,
-        sampling_path=args.sampling_path
+        sampling_path=args.sampling_path,
+        augmentations=augmentations,
     )
     generator.generate_from_dataset(
         ds,

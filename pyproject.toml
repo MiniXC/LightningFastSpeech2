@@ -25,7 +25,7 @@ dependencies = [
     "plotly>=5.7.0",
     "kaleido==0.2.1",
     "snreval>=1.2",
-    "audiomentations>=0.24.0",
+    "audiomentations[extras]>=0.25.1",
     "black>=22.3.0",
     "crepe>=0.0.12",
     "textgrid>=1.5",

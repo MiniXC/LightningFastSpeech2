@@ -459,7 +459,9 @@ class FastSpeech2(pl.LightningModule):
 
     def training_step(self, batch):
         result = self(batch)
-        losses = self.loss(result, batch) #frozen_components=self.variance_adaptor.frozen_components)
+        losses = self.loss(
+            result, batch
+        )  # frozen_components=self.variance_adaptor.frozen_components)
         log_dict = {f"train/{k}_loss": v.item() for k, v in losses.items()}
         self.log_dict(
             log_dict,
@@ -693,7 +695,7 @@ class FastSpeech2(pl.LightningModule):
                             key in self.best_variances
                             and self.best_variances[key][1] == -1
                         )
-                        and key != "duration" # TODO: add duration to early stopping
+                        and key != "duration"  # TODO: add duration to early stopping
                     ):
                         if key not in self.best_variances:
                             if self.hparams.variance_early_stopping == "mae":
@@ -741,9 +743,11 @@ class FastSpeech2(pl.LightningModule):
                                 # freeze encoder
                                 print(f"Freezing encoder {key}")
                                 self.variance_adaptor.freeze(key)
-                                self.log({
-                                    f"variance_early_stopping_{key}_epoch": self.current_epoch
-                                })
+                                self.log(
+                                    {
+                                        f"variance_early_stopping_{key}_epoch": self.current_epoch
+                                    }
+                                )
 
                     self.log_dict({f"eval/jensenshannon_{key}": var_js})
                     self.log_dict({f"eval/mae_{key}": var_mae})
@@ -817,13 +821,33 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--min_length", type=float, default=0.5)
         parser.add_argument("--max_length", type=float, default=32)
         parser.add_argument("--augment_duration", type=float, default=0.1)
-        parser.add_argument("--variances", nargs="+", type=str, default=["pitch", "energy", "snr"])
-        parser.add_argument("--variance_levels", nargs="+", type=str, default=["frame", "frame", "frame"])
-        parser.add_argument("--variance_transforms", nargs="+", type=str, default=["cwt", "none", "none"])
-        parser.add_argument("--variance_nlayers", nargs="+", type=int, default=[5, 5, 5])
-        parser.add_argument("--variance_loss_weights", nargs="+", type=float, default=[1, 1e-1, 1e-1])
-        parser.add_argument("--variance_kernel_size", nargs="+", type=int, default=[3, 3, 3])
-        parser.add_argument("--variance_dropout", nargs="+", type=float, default=[0.5, 0.5, 0.5])
+        parser.add_argument(
+            "--variances", nargs="+", type=str, default=["pitch", "energy", "snr"]
+        )
+        parser.add_argument(
+            "--variance_levels",
+            nargs="+",
+            type=str,
+            default=["frame", "frame", "frame"],
+        )
+        parser.add_argument(
+            "--variance_transforms",
+            nargs="+",
+            type=str,
+            default=["cwt", "none", "none"],
+        )
+        parser.add_argument(
+            "--variance_nlayers", nargs="+", type=int, default=[5, 5, 5]
+        )
+        parser.add_argument(
+            "--variance_loss_weights", nargs="+", type=float, default=[1, 1e-1, 1e-1]
+        )
+        parser.add_argument(
+            "--variance_kernel_size", nargs="+", type=int, default=[3, 3, 3]
+        )
+        parser.add_argument(
+            "--variance_dropout", nargs="+", type=float, default=[0.5, 0.5, 0.5]
+        )
         parser.add_argument("--variance_filter_size", type=int, default=256)
         parser.add_argument("--variance_nbins", type=int, default=256)
         parser.add_argument("--variance_depthwise_conv", type=bool, default=True)
@@ -845,7 +869,9 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--encoder_head", type=int, default=2)
         parser.add_argument("--encoder_layers", type=int, default=4)
         parser.add_argument("--encoder_dropout", type=float, default=0.1)
-        parser.add_argument("--encoder_kernel_sizes", nargs="+", type=int, default=[5, 25, 13, 9])
+        parser.add_argument(
+            "--encoder_kernel_sizes", nargs="+", type=int, default=[5, 25, 13, 9]
+        )
         parser.add_argument("--encoder_dim_feedforward", type=int, default=None)
         parser.add_argument("--encoder_conformer", type=bool, default=True)
         parser.add_argument("--encoder_depthwise_conv", type=bool, default=True)
@@ -854,7 +880,9 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--decoder_head", type=int, default=2)
         parser.add_argument("--decoder_layers", type=int, default=4)
         parser.add_argument("--decoder_dropout", type=float, default=0.1)
-        parser.add_argument("--decoder_kernel_sizes", nargs="+", type=int, default=[17, 21, 9, 13])
+        parser.add_argument(
+            "--decoder_kernel_sizes", nargs="+", type=int, default=[17, 21, 9, 13]
+        )
         parser.add_argument("--decoder_dim_feedforward", type=int, default=None)
         parser.add_argument("--decoder_conformer", type=bool, default=True)
         parser.add_argument("--decoder_depthwise_conv", type=bool, default=True)
@@ -863,7 +891,9 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--valid_example_directory", type=str, default=None)
         parser.add_argument("--variance_early_stopping", type=str, default="none")
         parser.add_argument("--variance_early_stopping_patience", type=int, default=4)
-        parser.add_argument("--variance_early_stopping_directory", type=str, default="variance_encoders")
+        parser.add_argument(
+            "--variance_early_stopping_directory", type=str, default="variance_encoders"
+        )
         parser.add_argument("--tf_ratio", type=float, default=1.0)
         parser.add_argument("--tf_linear_schedule", type=bool, default=False)
         parser.add_argument("--tf_linear_schedule_start", type=int, default=0)
