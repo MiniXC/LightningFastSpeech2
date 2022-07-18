@@ -751,12 +751,9 @@ class FastSpeech2(pl.LightningModule):
                                 # freeze encoder
                                 print(f"Freezing encoder {key}")
                                 self.variance_adaptor.freeze(key)
-<<<<<<< HEAD
-=======
                                 self.log({
                                     f"variance_early_stopping_{key}_epoch": self.current_epoch
                                 })
->>>>>>> 4fd1128cd7e0a911e39c26ced82860530d953dc1
 
                     self.log_dict({f"eval/jensenshannon_{key}": var_js})
                     self.log_dict({f"eval/mae_{key}": var_mae})
