@@ -1,7 +1,7 @@
 CUDA_VISIBLE_DEVICES="0" pdm run python src/train.py \
 --accelerator gpu \
---batch_size 8 \
---accumulate_grad_batches 6 \
+--batch_size 6 \
+--accumulate_grad_batches 8 \
 --precision 16 \
 --max_epochs 30 \
 --gradient_clip_val 1.0 \
