@@ -1,7 +1,7 @@
 CUDA_VISIBLE_DEVICES="1" pdm run python src/train.py \
 --accelerator gpu \
---batch_size 8 \
---accumulate_grad_batches 6 \
+--batch_size 6 \
+--accumulate_grad_batches 8 \
 --precision 16 \
 --max_epochs 30 \
 --gradient_clip_val 1.0 \
@@ -12,6 +12,8 @@ CUDA_VISIBLE_DEVICES="1" pdm run python src/train.py \
 --decoder_kernel_sizes 9 9 9 9 9 9 \
 --duration_stochastic True \
 --duration_depthwise_conv False \
+--priors energy duration snr pitch \
 --duration_loss_weight 5e-4 \
 --wandb_name "stochastic" \
---train_target_path "../data/train-clean-360-aligned"
+--train_target_path "../data/train-clean-360-aligned" \
+--num_workers 4

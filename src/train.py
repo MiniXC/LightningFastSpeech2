@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 import os
 import inspect
+from re import T
 
 import torch
 import torch.multiprocessing
@@ -64,6 +65,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_mode", type=str, default="min")
     parser.add_argument("--checkpoint_path", type=str, default="models")
     parser.add_argument("--checkpoint_filename", type=str, default=None)
+    parser.add_argument("--from_checkpoint", type=str, default=None)
 
     parser.add_argument("--visible_gpus", type=int, default=0)
 
@@ -113,21 +115,40 @@ if __name__ == "__main__":
     del var_args["valid_example_directory"]
     del var_args["valid_tmp_path"]
 
-    model = FastSpeech2(
-        train_ds,
-        valid_ds,
-        train_ds_kwargs={
-            k.replace("train_", ""): v
-            for k, v in var_args.items()
-            if k.startswith("train_")
-        },
-        valid_ds_kwargs={
-            k.replace("valid_", ""): v
-            for k, v in var_args.items()
-            if k.startswith("valid_")
-        },
-        **model_args,
-    )
+    if args.from_checkpoint is not None:
+        model = FastSpeech2.load_from_checkpoint(
+            args.from_checkpoint,
+            train_ds=train_ds,
+            valid_ds=valid_ds,
+            train_ds_kwargs={
+                k.replace("train_", ""): v
+                for k, v in var_args.items()
+                if k.startswith("train_")
+            },
+            valid_ds_kwargs={
+                k.replace("valid_", ""): v
+                for k, v in var_args.items()
+                if k.startswith("valid_")
+            },
+            num_workers=4,
+            batch_size=args.batch_size
+        )
+    else:
+        model = FastSpeech2(
+            train_ds,
+            valid_ds,
+            train_ds_kwargs={
+                k.replace("train_", ""): v
+                for k, v in var_args.items()
+                if k.startswith("train_")
+            },
+            valid_ds_kwargs={
+                k.replace("valid_", ""): v
+                for k, v in var_args.items()
+                if k.startswith("valid_")
+            },
+            **model_args,
+        )
 
     if var_args["checkpoint_filename"] is None and var_args["wandb_name"] is not None:
         var_args["checkpoint_filename"] = var_args["wandb_name"]

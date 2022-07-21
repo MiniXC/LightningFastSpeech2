@@ -636,6 +636,7 @@ class TTSDataset(Dataset):
                 result[var + "_prior"]["std"] = torch.std(
                     torch.nanmean(var_val, axis=1)
                 )
+                del var_val
         return result
 
     def _augment_duration(self, duration):

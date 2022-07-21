@@ -5,12 +5,12 @@ CUDA_VISIBLE_DEVICES="0" pdm run python src/train.py \
 --precision 16 \
 --max_epochs 30 \
 --gradient_clip_val 1.0 \
---variances pitch energy \
---variance_levels phone phone \
---variance_transforms none none \
---variance_early_stopping none \
+--variance_levels phone phone phone \
+--variance_transforms none none none \
+--variance_early_stopping js \
 --decoder_layers 6 \
 --decoder_kernel_sizes 9 9 9 9 9 9 \
---wandb_name "no_snr" \
+--priors energy duration snr pitch \
+--wandb_name "priors_fixed_final_final" \
 --train_target_path "../data/train-clean-360-aligned" \
---num_workers 4
+--from_checkpoint "models/priors_fixed_final_final-v2.ckpt"
