@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES="1" pdm run python src/train.py \
+CUDA_VISIBLE_DEVICES="3" pdm run python src/train.py \
 --accelerator gpu \
 --batch_size 6 \
 --accumulate_grad_batches 8 \

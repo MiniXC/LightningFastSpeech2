@@ -372,8 +372,13 @@ class TTSDataset(Dataset):
                 if hasattr(self, "stats"):
                     mean = self.stats[var]["mean"]
                     std = self.stats[var]["std"]
-                if self.variance_levels[self.variances.index(var)] == "phone" and self.phone_level:
-                    priors[var] = np.mean(var_val[~unexpanded_silence_mask] * std + mean)
+                if (
+                    self.variance_levels[self.variances.index(var)] == "phone"
+                    and self.phone_level
+                ):
+                    priors[var] = np.mean(
+                        var_val[~unexpanded_silence_mask] * std + mean
+                    )
                 else:
                     priors[var] = np.mean(var_val[~silence_mask] * std + mean)
 
@@ -484,7 +489,7 @@ class TTSDataset(Dataset):
                     else:
                         variances[var][j] = 1e-7
                     pos += d
-                variances[var] = variances[var][:len(durations)]
+                variances[var] = variances[var][: len(durations)]
             if self.variance_transforms[i] == "cwt":
                 variances[var] = self.cwt.decompose(variances[var])
             elif self.variance_transforms[i] == "log":
@@ -736,7 +741,7 @@ class TTSDataset(Dataset):
             aspect="auto",
             interpolation="gaussian",
             extent=[0, audio_len, 0, 80],
-            alpha=0.5,
+            alpha=0.8,
         )
         ax0.set_xlim(0, audio_len)
         ax0.set_ylim(0, 80)
