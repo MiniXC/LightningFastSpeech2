@@ -740,7 +740,7 @@ class TTSDataset(Dataset):
             aspect="auto",
             interpolation="gaussian",
             extent=[0, audio_len, 0, 80],
-            alpha=0.5,
+            alpha=0.8,
         )
         ax0.set_xlim(0, audio_len)
         ax0.set_ylim(0, 80)

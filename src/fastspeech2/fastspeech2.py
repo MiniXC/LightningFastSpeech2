@@ -3,7 +3,6 @@ import multiprocessing
 from pathlib import Path
 import random
 import string
-import argparse
 
 import pytorch_lightning as pl
 import torch
@@ -27,20 +26,11 @@ from .model import (
 )
 from third_party.hifigan import Synthesiser
 from third_party.softdtw import SoftDTW
+from third_party.argutils import str2bool
 from .loss import FastSpeech2Loss
 from .noam import NoamLR
 
 num_cpus = multiprocessing.cpu_count()
-
-def str2bool(v):
-    if isinstance(v, bool):
-        return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 class FastSpeech2(pl.LightningModule):
     def __init__(

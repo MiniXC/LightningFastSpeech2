@@ -17,3 +17,4 @@ run_longjob.sh
 examples/*.png
 !src/data/*
 sampling_values
+*.pkl
