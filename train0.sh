@@ -11,6 +11,5 @@ CUDA_VISIBLE_DEVICES="0" pdm run python src/train.py \
 --decoder_layers 6 \
 --decoder_kernel_sizes 9 9 9 9 9 9 \
 --priors energy duration snr pitch \
---wandb_name "priors_fixed_final_final" \
---train_target_path "../data/train-clean-360-aligned" \
---from_checkpoint "models/priors_fixed_final_final-v2.ckpt"
+--wandb_name "priors" \
+--train_target_path "../data/train-clean-360-aligned"

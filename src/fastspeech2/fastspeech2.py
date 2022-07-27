@@ -435,11 +435,11 @@ class FastSpeech2(pl.LightningModule):
 
         output = self.positional_encoding(output)
 
-        for prior in self.hparams.priors:
-            output = output + self.prior_embeddings[prior](
-                torch.tensor(targets[f"priors_{prior}"]).to(self.device),
-                output.shape[1],
-            )
+        #for prior in self.hparams.priors:
+        #    output = output + self.prior_embeddings[prior](
+        #        torch.tensor(targets[f"priors_{prior}"]).to(self.device),
+        #        output.shape[1],
+        #    )
 
         output = output + self.speaker_embedding(
             speakers, output.shape[1], output.shape[-1]

@@ -1,11 +1,14 @@
 from argparse import ArgumentParser
 import pickle
 from pathlib import Path
+import multiprocessing
 
 from alignments.datasets.libritts import LibrittsDataset
 import torchaudio
 import torch
+from torch.utils.data import DataLoader
 from audiomentations import Compose, PitchShift, RoomSimulator, AddGaussianSNR
+from tqdm.auto import tqdm
 
 from synthesis.generator import SpeechGenerator
 from synthesis.g2p import EnglishG2P
@@ -59,13 +62,16 @@ if __name__ == "__main__":
     parser.add_argument("--random_speaker", type=str2bool, default=False)
     parser.add_argument("--include_dataset_speakers", type=str2bool, default=False)
 
+    # priors
+    parser.add_argument("--prior_sampling", type=str, default="none")
+
     args = parser.parse_args()
 
     args_dict = vars(args)
 
     if args.augment:
         augmentations = Compose([
-            PitchShift(min_semitones=-4, max_semitones=4, p=0.25),
+            #PitchShift(min_semitones=-4, max_semitones=4, p=0.25),
             AddGaussianSNR(min_snr_in_db=10, max_snr_in_db=30.0, p=0.25),
             RoomSimulator(use_ray_tracing=False, p=0.25),
         ])
@@ -90,7 +96,7 @@ if __name__ == "__main__":
 
     sampling_dict = {}
     for key, val in args_dict.items():
-        if "sampling" in key and "path" not in key and "level" not in key and val > 0:
+        if "sampling" in key and "path" not in key and "level" not in key and "prior" not in key and val > 0:
             if "duration" in key:
                 sampling_dict["duration"] = val
             else:
@@ -104,13 +110,40 @@ if __name__ == "__main__":
             else:
                 oracle_dict["variances_" + key.split("_")[0]] = val
 
+    # speaker_dict = {
+    #     "energy": {},
+    #     "pitch": {}, 
+    #     "duration": {},
+    #     "snr": {},
+    # }
+    # dataset = TTSDataset(
+    #     LibrittsDataset(target_directory="../data/train-clean-360-aligned", chunk_size=10_000),
+    #     variance_transforms=["none", "none", "none"],
+    # )
+    # for batch in tqdm(DataLoader(
+    #     dataset,
+    #     batch_size=args.batch_size*10,
+    #     shuffle=False,
+    #     collate_fn=dataset._collate_fn,
+    #     num_workers=multiprocessing.cpu_count(),
+    # )):
+    #     for i in range(len(batch["speaker_key"])):
+    #         for p in ["energy", "pitch", "duration", "snr"]:
+    #             if batch["speaker_key"][i] not in speaker_dict[p]:
+    #                 speaker_dict[p][batch["speaker_key"][i]] = []
+    #             speaker_dict[p][batch["speaker_key"][i]].append(batch["priors_"+p][i])
+    # with open("speaker_dict.pkl", "wb") as f:
+    #     pickle.dump(speaker_dict, f)
+
+    # raise
+
+
     if Path("ds.pkl").exists() and args.dataset_path == "../data/train-clean-aligned":
         with open("ds.pkl", "rb") as f:
             ds = pickle.load(f)
     else:
         ds = TTSDataset(
             LibrittsDataset(target_directory=args.dataset_path, chunk_size=10_000),
-            priors=[],
             variance_transforms=["none", "none", "none"],
         )
         if args.dataset_path == "../data/train-clean-aligned":
@@ -124,6 +157,7 @@ if __name__ == "__main__":
         overwrite=True,
         sampling_path=args.sampling_path,
         augmentations=augmentations,
+        speaker_dict=pickle.load(open("speaker_dict.pkl", "rb")),
     )
     generator.generate_from_dataset(
         ds,
@@ -137,4 +171,5 @@ if __name__ == "__main__":
         copy=args.copy,
         random_speaker=args.random_speaker,
         include_dataset_speakers=args.include_dataset_speakers,
+        prior_sampling=args.prior_sampling,
     )
