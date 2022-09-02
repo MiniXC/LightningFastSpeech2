@@ -16,6 +16,7 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 import matplotlib.pyplot as plt
 
 from alignments.datasets.libritts import LibrittsDataset
+from third_party.argutils import str2bool
 
 torch.multiprocessing.set_sharing_strategy("file_system")
 
@@ -24,22 +25,23 @@ if __name__ == "__main__":
 
     parser = Trainer.add_argparse_args(parser)
 
-    parser.add_argument("--early_stopping", type=bool, default=True)
+    parser.add_argument("--early_stopping", type=str2bool, default=True)
     parser.add_argument("--early_stopping_patience", type=int, default=4)
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
     callbacks = [lr_monitor]
 
     parser.add_argument(
-        "--train_target_path", type=str, default="../data/train-clean-360-aligned"
+        "--train_target_path", type=str, nargs="+", default=["../data/train-clean-360-aligned"]
     )
     parser.add_argument(
-        "--train_source_path", type=str, default="../data/train-clean-360"
+        "--train_source_path", type=str, nargs="+", default=["../data/train-clean-360"]
     )
     parser.add_argument(
         "--train_source_url",
         type=str,
-        default="https://www.openslr.org/resources/60/train-clean-360.tar.gz",
+        nargs="+",
+        default=["https://www.openslr.org/resources/60/train-clean-360.tar.gz"],
     )
     parser.add_argument("--train_tmp_path", type=str, default="../tmp")
 
@@ -60,7 +62,7 @@ if __name__ == "__main__":
     parser.add_argument("--wandb_project", type=str, default="fastspeech2")
     parser.add_argument("--wandb_mode", type=str, default="online")
     parser.add_argument("--wandb_name", type=str, default=None)
-    parser.add_argument("--checkpoint", type=bool, default=True)
+    parser.add_argument("--checkpoint", type=str2bool, default=True)
     parser.add_argument("--checkpoint_key", type=str, default="eval/mel_loss")
     parser.add_argument("--checkpoint_mode", type=str, default="min")
     parser.add_argument("--checkpoint_path", type=str, default="models")
@@ -80,14 +82,16 @@ if __name__ == "__main__":
             project=var_args["wandb_project"], name=var_args["wandb_name"]
         )
 
-    train_ds = LibrittsDataset(
-        target_directory=var_args["train_target_path"],
-        source_directory=var_args["train_source_path"],
-        source_url=var_args["train_source_url"],
-        verbose=True,
-        tmp_directory=var_args["train_tmp_path"],
-        chunk_size=10_000,
-    )
+    train_ds = []
+    for i in range(len(var_args["train_target_path"])):
+        train_ds += [LibrittsDataset(
+            target_directory=var_args["train_target_path"][i],
+            source_directory=var_args["train_source_path"][i],
+            source_url=var_args["train_source_url"][i],
+            verbose=True,
+            tmp_directory=var_args["train_tmp_path"],
+            chunk_size=10_000,
+        )]
 
     valid_ds = LibrittsDataset(
         target_directory=var_args["valid_target_path"],

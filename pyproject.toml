@@ -30,7 +30,7 @@ dependencies = [
     "crepe>=0.0.12",
     "textgrid>=1.5",
     "rich>=12.4.4",
-    "alignments>=0.0.3",
+    "alignments==0.0.9",
     "g2p-en>=2.1.0",
     "numba>=0.55.2",
 ]
@@ -43,6 +43,10 @@ Homepage = ""
 dev = [
     "line-profiler>=3.5.1",
     "viztracer>=0.15.3",
+]
+extras = [
+    "speechbrain>=0.5.10",
+    "huggingface-hub==0.7.0rc0",
 ]
 [tool.pdm]
 [tool.pdm.dev-dependencies]

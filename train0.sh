@@ -5,11 +5,18 @@ CUDA_VISIBLE_DEVICES="0" pdm run python src/train.py \
 --precision 16 \
 --max_epochs 30 \
 --gradient_clip_val 1.0 \
+--encoder_hidden 768 \
+--decoder_hidden 768 \
+--encoder_head 8 \
+--decoder_head 8 \
 --variance_levels phone phone phone \
 --variance_transforms none none none \
 --variance_early_stopping js \
---decoder_layers 6 \
---decoder_kernel_sizes 9 9 9 9 9 9 \
+--encoder_layers 6 \
+--encoder_kernel_sizes 5 25 13 9 9 9 \
+--decoder_layers 8 \
+--decoder_kernel_sizes 9 9 9 9 17 21 9 13 \
 --priors energy duration snr pitch \
---wandb_name "priors" \
---train_target_path "../data/train-clean-360-aligned"
+--wandb_name "BFF" \
+--train_target_path "../data/train-clean-360-aligned" \
+--train_denoise True

@@ -7,7 +7,7 @@ from glob import glob
 from pathlib import Path
 from random import Random
 import warnings
-from attr import has
+import shutil
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -39,6 +39,8 @@ from tqdm.contrib.concurrent import process_map
 from dataset.audio_utils import dynamic_range_compression
 from dataset.cwt import CWT
 from dataset.snr import SNR
+
+from third_party.argutils import str2bool
 
 pandarallel.initialize(progress_bar=True)
 tqdm.pandas()
@@ -75,6 +77,7 @@ class TTSDataset(Dataset):
         n_fft=1024,
         win_length=1024,
         hop_length=256,
+        denoise=False,
     ):
         super().__init__()
 
@@ -97,6 +100,7 @@ class TTSDataset(Dataset):
         self.dio_speed = int(np.round(1 / pitch_quality))
         self.source_phoneset = source_phoneset
         self.pitch_quality = pitch_quality
+        self.do_denoise = denoise
 
         # PHONES
         self.phone_converter = Converter()
@@ -105,7 +109,10 @@ class TTSDataset(Dataset):
         self.phone_cache = {}
 
         # AUDIO LOADING
-        self.alignment_ds = alignments_dataset
+        if isinstance(alignments_dataset, list):
+            self.alignment_ds = alignments_dataset
+        else:
+            self.alignment_ds = [alignments_dataset]
 
         # DATAFRAME
         self.entry_stats = {
@@ -115,18 +122,20 @@ class TTSDataset(Dataset):
             "too_long": 0,
             "bad_transcriptions": 0,
         }
-        entries = [
-            entry
-            for entry in process_map(
-                self._create_entry,
-                np.arange(len(self.alignment_ds)),
-                chunksize=10_000,
-                max_workers=multiprocessing.cpu_count(),
-                desc="processing alignments",
-                tqdm_class=tqdm,
-            )
-            if entry is not None
-        ]
+        entries = []
+        for i, ds in enumerate(self.alignment_ds):
+            entries += [
+                entry
+                for entry in process_map(
+                    self._create_entry,
+                    zip([i]*len(ds), np.arange(len(ds))),
+                    chunksize=10_000,
+                    max_workers=multiprocessing.cpu_count(),
+                    desc=f"processing alignments for dataset {i}",
+                    tqdm_class=tqdm,
+                )
+                if entry is not None
+            ]
         Random(shuffle_seed).shuffle(entries)
 
         print("data loading stats:")
@@ -159,6 +168,19 @@ class TTSDataset(Dataset):
         elif self.speaker_type == "id":
             speakers = self.data["speaker"].unique()
             self.speaker2id = {speaker: i for i, speaker in enumerate(speakers)}
+
+        # DENOISE
+        if denoise:
+            from speechbrain.pretrained import SpectralMaskEnhancement
+            self.denoise = SpectralMaskEnhancement.from_hparams(
+                source="speechbrain/metricgan-plus-voicebank",
+                savedir="speechbrain/metricgan-plus-voicebank",
+            )
+            self._create_denoised()
+            self.data["audio"] = self.data["audio"].apply(lambda x: Path(x).with_suffix(".clean"))
+            exist_list = [Path(x).exists() for x in self.data["audio"]]
+            print(f"{len(exist_list)-np.sum(exist_list)} missing denoised audio files")
+            self.data = self.data[exist_list]
 
         # MEL SPECTROGRAM
         self.mel_spectrogram = AT.Spectrogram(
@@ -204,7 +226,7 @@ class TTSDataset(Dataset):
             max_entries = len(self)
         if stat_entries > max_entries:
             stat_entries = max_entries
-        stat_path = Path(self.alignment_ds.target_directory) / "stats.json"
+        stat_path = Path(self.alignment_ds[0].target_directory) / "stats.json"
         compute_stats = True
         if _stats is not None:
             self.stats = _stats
@@ -279,6 +301,9 @@ class TTSDataset(Dataset):
             json.dump(stats, open(stat_path, "w"))
             self.stats = stats
 
+        self.speaker2stats = {}
+        self.record_speaker_stats = True
+
         if "phone" in self.variance_levels:
             self.phone_level = True
 
@@ -312,9 +337,11 @@ class TTSDataset(Dataset):
             fmax=self.fmax,
             pitch_quality=self.pitch_quality,
             source_phoneset=self.source_phoneset,
+            denoise=self.do_denoise,
         )
         ds.phone2id = self.phone2id
         ds.id2phone = self.id2phone
+        ds.record_speaker_stats = False
         return ds
 
     def __len__(self):
@@ -402,6 +429,9 @@ class TTSDataset(Dataset):
             result["variances"][var] = variances[var]
         for var in self.priors:
             result["priors"][var] = priors[var]
+            if row["speaker"] not in self.speaker2stats:
+                self.speaker2stats[row["speaker"]] = {var: [] for var in self.priors}
+            self.speaker2stats[row["speaker"]][var].append(priors[var])
         if self.speaker_type == "dvector":
             result["speaker"] = self.speaker2dvector[row["speaker"]]
         elif self.speaker_type == "id":
@@ -501,6 +531,40 @@ class TTSDataset(Dataset):
 
         return variances
 
+    def _create_denoised(self):
+        batch_size = 10
+        paths = []
+        batch = []
+        lengths = []
+        for _, row in tqdm(
+            self.data.iterrows(),
+            desc="creating/loading denoised audio",
+            total=len(self.data),
+        ):
+            denoised_path = row["audio"].with_suffix(".clean.wav")
+            if Path(str(denoised_path).replace(".wav", "")).exists():
+                continue
+            noisy = self.denoise.load_audio(
+                str(row["audio"]),
+                savedir="speechbrain/wavs"
+            )
+            paths.append(denoised_path)
+            batch.append(noisy)
+            lengths.append(len(noisy))
+            if len(batch) >= batch_size:
+                batch = pad_sequence(
+                    batch, batch_first=True, padding_value=0
+                )
+                clean = self.denoise.enhance_batch(batch, lengths=torch.tensor(lengths)/max(lengths))
+                for i, path in enumerate(paths):
+                    torchaudio.save(path, clean[i][:lengths[i]].unsqueeze(0).cpu(), 16_000)
+                    path.rename(str(path).replace(".wav", ""))
+                paths = []
+                batch = []
+                lengths = []
+                shutil.rmtree("speechbrain/wavs")
+            
+
     def _create_dvectors(self):
         wav2mel = Wav2Mel()
         dvector_path = (
@@ -541,8 +605,9 @@ class TTSDataset(Dataset):
                 dvec = np.mean(dvecs, axis=0)
                 np.save(speaker_path, dvec)
 
-    def _create_entry(self, idx):
-        item = self.alignment_ds[idx]
+    def _create_entry(self, dsi_idx):
+        dsi, idx = dsi_idx
+        item = self.alignment_ds[dsi][idx]
         start, end = item["phones"][0][0], item["phones"][-1][1]
 
         if end - start < self.min_length:
@@ -814,8 +879,8 @@ class TTSDataset(Dataset):
                     extent=[0, audio_len, 1, 10],
                     cmap="PRGn",
                     aspect="auto",
-                    vmax=1,
-                    vmin=-1,
+                    # vmax=1,
+                    # vmin=-1,
                     interpolation="gaussian",
                 )
                 cwt_ax[-1].set_ylabel(f"{var.title()} Frequency")
@@ -838,7 +903,7 @@ class TTSDataset(Dataset):
         if show:
             plt.show()
         buf = io.BytesIO()
-        plt.savefig(buf, format="png")
+        plt.savefig(buf, format="png", dpi=300)
         plt.clf()
         buf.seek(0)
         plt.close()
@@ -856,8 +921,9 @@ class TTSDataset(Dataset):
             f"--{split_name}_source_phoneset", type=str, default="arpabet"
         )
         parser.add_argument(f"--{split_name}_shuffle_seed", type=int, default=42)
-        parser.add_argument(f"--{split_name}_overwrite_stats", type=bool, default=False)
+        parser.add_argument(f"--{split_name}_overwrite_stats", type=str2bool, default=False)
         parser.add_argument(
-            f"--{split_name}_overwrite_stats_if_missing", type=bool, default=True
+            f"--{split_name}_overwrite_stats_if_missing", type=str2bool, default=True
         )
+        parser.add_argument(f"--{split_name}_denoise", type=str2bool, default=False)
         return parent_parser

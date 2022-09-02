@@ -310,6 +310,8 @@ class FastSpeech2(pl.LightningModule):
                     len(self.speaker2id),
                 )
 
+        self.speaker2stats = None
+
         # loss
         loss_weights = {
             "mel": self.hparams.mel_loss_weight,
@@ -377,6 +379,8 @@ class FastSpeech2(pl.LightningModule):
                 )
         if "speaker2dvector" in checkpoint:
             self.speaker2dvector = checkpoint["speaker2dvector"]
+        if "speaker2stats" in checkpoint:
+            self.speaker2stats = checkpoint["speaker2stats"]
 
     def on_save_checkpoint(self, checkpoint):
         checkpoint["stats"] = self.stats
@@ -385,6 +389,8 @@ class FastSpeech2(pl.LightningModule):
             checkpoint["speaker2id"] = self.speaker2id
         if hasattr(self, "speaker2dvector"):
             checkpoint["speaker2dvector"] = self.speaker2dvector
+        if hasattr(self, "speaker2stats"):
+            checkpoint["speaker2stats"] = self.speaker2stats
 
     def forward(self, targets, inference=False):
         phones = targets["phones"].to(self.device)
@@ -435,12 +441,6 @@ class FastSpeech2(pl.LightningModule):
 
         output = self.positional_encoding(output)
 
-        #for prior in self.hparams.priors:
-        #    output = output + self.prior_embeddings[prior](
-        #        torch.tensor(targets[f"priors_{prior}"]).to(self.device),
-        #        output.shape[1],
-        #    )
-
         output = output + self.speaker_embedding(
             speakers, output.shape[1], output.shape[-1]
         )
@@ -474,6 +474,15 @@ class FastSpeech2(pl.LightningModule):
             sync_dist=True,
         )
         return losses["total"]
+
+    def training_epoch_end(self, training_step_outputs):
+        if self.speaker2stats is None:
+            self.speaker2stats = self.train_ds.speaker2stats
+        elif self.speaker2stats.keys() != self.train_ds.speaker2stats.keys():
+            # update the dict with the additional keys
+            self.speaker2stats.update(self.train_ds.speaker2stats)
+        else:
+            self.train_ds.record_speaker_stats = False
 
     def validation_step(self, batch, batch_idx):
         result = self(batch)
@@ -907,7 +916,7 @@ class FastSpeech2(pl.LightningModule):
 
     @staticmethod
     def add_dataset_specific_args(parent_parser):
-        parent_parser = TTSDataset.add_model_specific_args(parent_parser, "Train")
+        parent_parser = TTSDataset.add_model_specific_args(parent_parser, "train")
         parser = parent_parser.add_argument_group("Valid Dataset")
         parser.add_argument("--valid_max_entries", type=int, default=None)
         parser.add_argument("--valid_shuffle_seed", type=int, default=42)
@@ -919,7 +928,6 @@ class FastSpeech2(pl.LightningModule):
             batch_size=self.batch_size,
             collate_fn=self.train_ds._collate_fn,
             num_workers=self.num_workers,
-            #prefetch_factor=5,
         )
 
     def val_dataloader(self):
@@ -928,5 +936,4 @@ class FastSpeech2(pl.LightningModule):
             batch_size=self.batch_size,
             collate_fn=self.valid_ds._collate_fn,
             num_workers=self.num_workers,
-            #prefetch_factor=5,
         )
