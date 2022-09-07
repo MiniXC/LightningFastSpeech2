@@ -3,7 +3,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.nn.modules.transformer import TransformerEncoderLayer, TransformerEncoder
+from .torch_transformer import TransformerEncoderLayer, TransformerEncoder
 from torch.nn.utils.rnn import pad_sequence
 from third_party.stochastic_duration_predictor.sdp import StochasticDurationPredictor
 from dataset.cwt import CWT
@@ -72,7 +72,7 @@ class ConformerEncoderLayer(TransformerEncoderLayer):
                     kwargs["conv_in"],
                     kwargs["conv_in"],
                     kernel_size=kwargs["conv_kernel"][0],
-                    padding=(kwargs["conv_kernel"][0] - 1) // 2,
+                    padding='same',
                     groups=kwargs["conv_in"],
                 ),
                 nn.Conv1d(kwargs["conv_in"], kwargs["conv_filter_size"], 1),
@@ -82,7 +82,7 @@ class ConformerEncoderLayer(TransformerEncoderLayer):
                     kwargs["conv_filter_size"],
                     kwargs["conv_filter_size"],
                     kernel_size=kwargs["conv_kernel"][1],
-                    padding=(kwargs["conv_kernel"][1] - 1) // 2,
+                    padding='same',
                     groups=kwargs["conv_in"],
                 ),
                 nn.Conv1d(kwargs["conv_filter_size"], kwargs["conv_in"], 1),
@@ -92,13 +92,13 @@ class ConformerEncoderLayer(TransformerEncoderLayer):
                 kwargs["conv_in"],
                 kwargs["conv_filter_size"],
                 kernel_size=kwargs["conv_kernel"][0],
-                padding=(kwargs["conv_kernel"][0] - 1) // 2,
+                padding='same',
             )
             self.conv2 = nn.Conv1d(
                 kwargs["conv_filter_size"],
                 kwargs["conv_in"],
                 kernel_size=kwargs["conv_kernel"][1],
-                padding=(kwargs["conv_kernel"][1] - 1) // 2,
+                padding='same',
             )
 
     def forward(self, src, src_mask=None, src_key_padding_mask=None):
@@ -289,6 +289,9 @@ class VarianceAdaptor(nn.Module):
                     (torch.exp(duration_pred + 1e-9))
                 ).masked_fill(duration_pred == 0, 0)
             duration_rounded = torch.clamp(duration_rounded, min=0).int()
+            if duration_rounded.sum() == 0:
+                duration_rounded.fill_(1)
+                print("Zero duration, filling with 1, this should only happen before training")
 
         x, tgt_mask = self.length_regulator(x, duration_rounded, self.max_length)
 

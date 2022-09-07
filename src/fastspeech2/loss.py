@@ -38,6 +38,7 @@ class FastSpeech2Loss(nn.Module):
         return loss(pred, truth)
 
     def forward(self, result, target, frozen_components=[]):
+
         variances_pred = {var: result[f"variances_{var}"] for var in self.variances}
         variances_target = {
             var: target[f"variances_{var}"]
@@ -77,8 +78,8 @@ class FastSpeech2Loss(nn.Module):
                 if transform == "cwt":
                     losses[variance + "_cwt"] = (
                         FastSpeech2Loss.get_loss(
-                            variances_pred[variance].float(),
-                            variances_target[variance].float(),
+                            variances_pred[variance],
+                            variances_target[variance].to(dtype=result["mel"].dtype),
                             self.l1_loss,
                             variance_mask,
                             unsqueeze=True,
@@ -87,27 +88,25 @@ class FastSpeech2Loss(nn.Module):
                     )
                     losses[variance + "_mean"] = (
                         self.mse_loss(
-                            result[f"variances_{variance}"]["mean"].float(),
+                            result[f"variances_{variance}"]["mean"],
                             torch.tensor(target[f"variances_{variance}_mean"])
-                            .to(result[f"variances_{variance}"]["mean"].device)
-                            .float(),
+                            .to(result[f"variances_{variance}"]["mean"].device, dtype=result["mel"].dtype),
                         )
                         * self.loss_alphas[variance]
                     )
                     losses[variance + "_std"] = (
                         self.mse_loss(
-                            result[f"variances_{variance}"]["std"].float(),
+                            result[f"variances_{variance}"]["std"],
                             torch.tensor(target[f"variances_{variance}_std"])
-                            .to(result[f"variances_{variance}"]["std"].device)
-                            .float(),
+                            .to(result[f"variances_{variance}"]["std"].device, dtype=result["mel"].dtype),
                         )
                         * self.loss_alphas[variance]
                     )
                 else:
                     losses[variance] = (
                         FastSpeech2Loss.get_loss(
-                            variances_pred[variance].float(),
-                            variances_target[variance].float(),
+                            variances_pred[variance],
+                            variances_target[variance].to(dtype=result["mel"].dtype),
                             self.mse_loss,
                             variance_mask,
                         )
@@ -118,7 +117,7 @@ class FastSpeech2Loss(nn.Module):
         losses["mel"] = (
             FastSpeech2Loss.get_loss(
                 result["mel"],
-                target["mel"],
+                target["mel"].to(dtype=result["mel"].dtype),
                 self.l1_loss,
                 tgt_mask,
                 unsqueeze=True,

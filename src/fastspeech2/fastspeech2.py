@@ -3,12 +3,17 @@ import multiprocessing
 from pathlib import Path
 import random
 import string
+import hashlib
+import json
+import pickle
+from copy import copy
 
 import pytorch_lightning as pl
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-from torch.nn.modules.transformer import TransformerEncoder, TransformerEncoderLayer
+from .torch_transformer import TransformerEncoder
+from torch.nn.modules.transformer import TransformerEncoderLayer
 import wandb
 import pandas as pd
 import numpy as np
@@ -44,6 +49,7 @@ class FastSpeech2(pl.LightningModule):
         min_length=0.5,
         max_length=32,
         augment_duration=0.1,  # 0.1,
+        layer_dropout=0.1,
         variances=["pitch", "energy", "snr"],
         variance_levels=["frame", "frame", "frame"],
         variance_transforms=["cwt", "none", "none"],  # "cwt", "log", "none"
@@ -99,6 +105,7 @@ class FastSpeech2(pl.LightningModule):
         tf_linear_schedule_end=20,
         tf_linear_schedule_end_ratio=0.0,
         num_workers=num_cpus,
+        cache_path=None,
     ):
         super().__init__()
 
@@ -133,6 +140,8 @@ class FastSpeech2(pl.LightningModule):
             ]
         )
 
+        self.eval_log_data = None
+
         # data
         if train_ds is not None:
             if train_ds_kwargs is None:
@@ -150,13 +159,47 @@ class FastSpeech2(pl.LightningModule):
             train_ds_kwargs["n_fft"] = n_fft
             train_ds_kwargs["win_length"] = win_length
             train_ds_kwargs["hop_length"] = hop_length
-            self.train_ds = TTSDataset(train_ds, **train_ds_kwargs)
+            if cache_path is not None:
+                if isinstance(train_ds, list):
+                    hashes = [x.hash for x in train_ds]
+                else:
+                    hashes = [train_ds.hash]
+                kwargs = copy(train_ds_kwargs)
+                kwargs.update({"hashes": hashes})
+                ds_hash = hashlib.md5(json.dumps(kwargs, sort_keys=True).encode('utf-8')).hexdigest()
+                cache_path_full = Path(cache_path) / f"train-full-{ds_hash}.pt"
+                if cache_path_full.exists():
+                    with cache_path_full.open("rb") as f:
+                        self.train_ds = pickle.load(f)
+                else:
+                    self.train_ds = TTSDataset(train_ds, **train_ds_kwargs)
+                    self.train_ds.hash = ds_hash
+                    with open(cache_path_full, "wb") as f:
+                        pickle.dump(self.train_ds, f)
+            else:
+                self.train_ds = TTSDataset(train_ds, **train_ds_kwargs)
         if valid_ds is not None:
             if valid_ds_kwargs is None:
                 valid_ds_kwargs = {}
-            self.valid_ds = self.train_ds.create_validation_dataset(
-                valid_ds, **valid_ds_kwargs
-            )
+            if cache_path is not None:
+                kwargs = copy(valid_ds_kwargs)
+                kwargs.update({"hashes": [self.train_ds.hash, valid_ds.hash]})
+                ds_hash = hashlib.md5(json.dumps(kwargs, sort_keys=True).encode('utf-8')).hexdigest()
+                cache_path_full = Path(cache_path) / f"valid-full-{ds_hash}.pt"
+                if cache_path_full.exists():
+                    with cache_path_full.open("rb") as f:
+                        self.valid_ds = pickle.load(f)
+                else:
+                    self.valid_ds = self.train_ds.create_validation_dataset(
+                        valid_ds, **valid_ds_kwargs
+                    )
+                    self.valid_ds.hash = ds_hash
+                    with open(cache_path_full, "wb") as f:
+                        pickle.dump(self.valid_ds, f)
+            else:
+                self.valid_ds = self.train_ds.create_validation_dataset(
+                    valid_ds, **valid_ds_kwargs
+                )
 
         self.synth = Synthesiser(device=self.device)
 
@@ -188,6 +231,7 @@ class FastSpeech2(pl.LightningModule):
                 conv_depthwise=self.hparams.encoder_depthwise_conv,
             ),
             num_layers=self.hparams.encoder_layers,
+            layer_drop_prob=self.hparams.layer_dropout,
         )
 
         if self.hparams.encoder_conformer:
@@ -255,6 +299,7 @@ class FastSpeech2(pl.LightningModule):
                 conv_depthwise=self.hparams.encoder_depthwise_conv,
             ),
             num_layers=self.hparams.decoder_layers,
+            layer_drop_prob=self.hparams.layer_dropout,
         )
         if self.hparams.decoder_conformer:
             if self.hparams.decoder_dim_feedforward is not None:
@@ -833,6 +878,7 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--min_length", type=float, default=0.5)
         parser.add_argument("--max_length", type=float, default=32)
         parser.add_argument("--augment_duration", type=float, default=0.1)
+        parser.add_argument("--layer_dropout", type=float, default=0.1)
         parser.add_argument(
             "--variances", nargs="+", type=str, default=["pitch", "energy", "snr"]
         )
