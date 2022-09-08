@@ -1,6 +1,7 @@
 pdm run python src/train.py \
 --accelerator gpu \
---devices 1 \
+--devices 4 \
+--strategy deepspeed_stage_2 \
 --precision 16 \
 --batch_size 2 \
 --val_check_interval 0.05 \

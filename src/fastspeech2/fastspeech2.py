@@ -627,33 +627,36 @@ class FastSpeech2(pl.LightningModule):
             if pred_dict["duration"].sum() == 0:
                 print("WARNING: duration is zero (common at beginning of training)")
             else:
-                pred_fig = self.valid_ds.plot(pred_dict, show=False)
-                true_fig = self.valid_ds.plot(true_dict, show=False)
-                if self.valid_example_directory is not None:
-                    Path(self.valid_example_directory).mkdir(
-                        parents=True, exist_ok=True
-                    )
-                    pred_fig.save(
-                        os.path.join(
-                            self.valid_example_directory, f"pred_{batch['id'][i]}.png"
+                try:
+                    pred_fig = self.valid_ds.plot(pred_dict, show=False)
+                    true_fig = self.valid_ds.plot(true_dict, show=False)
+                    if self.valid_example_directory is not None:
+                        Path(self.valid_example_directory).mkdir(
+                            parents=True, exist_ok=True
                         )
-                    )
-                    true_fig.save(
-                        os.path.join(
-                            self.valid_example_directory, f"true_{batch['id'][i]}.png"
+                        pred_fig.save(
+                            os.path.join(
+                                self.valid_example_directory, f"pred_{batch['id'][i]}.png"
+                            )
                         )
+                        true_fig.save(
+                            os.path.join(
+                                self.valid_example_directory, f"true_{batch['id'][i]}.png"
+                            )
+                        )
+                    pred_audio = self.synth(pred_mel.to(self.device).float())[0]
+                    true_audio = self.synth(true_mel.to(self.device).float())[0]
+                    self.eval_log_data.append(
+                        [
+                            batch["text"][i],
+                            wandb.Image(pred_fig),
+                            wandb.Image(true_fig),
+                            wandb.Audio(pred_audio, sample_rate=22050),
+                            wandb.Audio(true_audio, sample_rate=22050),
+                        ]
                     )
-                pred_audio = self.synth(pred_mel.to(self.device).float())[0]
-                true_audio = self.synth(true_mel.to(self.device).float())[0]
-                self.eval_log_data.append(
-                    [
-                        batch["text"][i],
-                        wandb.Image(pred_fig),
-                        wandb.Image(true_fig),
-                        wandb.Audio(pred_audio, sample_rate=22050),
-                        wandb.Audio(true_audio, sample_rate=22050),
-                    ]
-                )
+                except:
+                    print("WARNING: failed to log example (common before training starts)")
 
     def _add_to_results_dict(self, inference_result, batch, result, add_n):
         # duration
