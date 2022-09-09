@@ -1,5 +1,7 @@
 # LightningFastSpeech
 
+**WARNING: This is a work in progress and until version 0.1 (which will be out very soon), it might be hard to get running on your own machine. Thanks for your patience.**
+
 ## Large Pretrained TTS
 
 In the NLP community, and more recently in speech recognition, large pre-trained models and how they can be used for down-stream tasks have become an exciting area of research.
