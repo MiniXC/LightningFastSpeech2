@@ -27,6 +27,11 @@ class FastSpeech2Loss(nn.Module):
         self.duration_stochastic = duration_stochastic
         self.max_length = max_length
         self.loss_alphas = loss_alphas
+        for i, var in enumerate(self.variances):
+            if self.variance_transforms[i] == "cwt":
+                self.loss_alphas[var + "_cwt"] = self.loss_alphas[var]
+                self.loss_alphas[var + "_mean"] = self.loss_alphas[var]
+                self.loss_alphas[var + "_std"] = self.loss_alphas[var]
 
     @staticmethod
     def get_loss(pred, truth, loss, mask, unsqueeze=False):
@@ -84,7 +89,6 @@ class FastSpeech2Loss(nn.Module):
                             variance_mask,
                             unsqueeze=True,
                         )
-                        * self.loss_alphas[variance]
                     )
                     losses[variance + "_mean"] = (
                         self.mse_loss(
@@ -92,7 +96,6 @@ class FastSpeech2Loss(nn.Module):
                             torch.tensor(target[f"variances_{variance}_mean"])
                             .to(result[f"variances_{variance}"]["mean"].device, dtype=result["mel"].dtype),
                         )
-                        * self.loss_alphas[variance]
                     )
                     losses[variance + "_std"] = (
                         self.mse_loss(
@@ -100,7 +103,6 @@ class FastSpeech2Loss(nn.Module):
                             torch.tensor(target[f"variances_{variance}_std"])
                             .to(result[f"variances_{variance}"]["std"].device, dtype=result["mel"].dtype),
                         )
-                        * self.loss_alphas[variance]
                     )
                 else:
                     losses[variance] = (
@@ -110,7 +112,6 @@ class FastSpeech2Loss(nn.Module):
                             self.mse_loss,
                             variance_mask,
                         )
-                        * self.loss_alphas[variance]
                     )
 
         # MEL SPECTROGRAM LOSS
@@ -122,7 +123,6 @@ class FastSpeech2Loss(nn.Module):
                 tgt_mask,
                 unsqueeze=True,
             )
-            * self.loss_alphas["mel"]
         )
 
         # DURATION LOSS
@@ -135,11 +135,10 @@ class FastSpeech2Loss(nn.Module):
             )
         else:
             losses["duration"] = torch.sum(result["duration_prediction"])
-        losses["duration"] *= self.loss_alphas["duration"]
 
         # TOTAL LOSS
         total_loss = sum(
-            [v for k, v in losses.items() if not any(f in k for f in frozen_components)]
+            [v * self.loss_alphas[k] for k, v in losses.items() if not any(f in k for f in frozen_components)]
         )
         losses["total"] = total_loss
 

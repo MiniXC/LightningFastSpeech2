@@ -1,12 +1,13 @@
-pdm run python src/train.py \
+CUDA_VISIBLE_DEVICES="2,3" pdm run python src/train.py \
+--from_checkpoint models/BFF-v2.ckpt \
 --accelerator gpu \
---devices 4 \
---strategy deepspeed_stage_2 \
+--devices 2 \
+--strategy ddp \
 --precision 16 \
---batch_size 2 \
---val_check_interval 0.05 \
---accumulate_grad_batches 16 \
---layer_dropout 0.1 \
+--batch_size 1 \
+--val_check_interval 0.1 \
+--accumulate_grad_batches 32 \
+--layer_dropout 0.05 \
 --max_epochs 30 \
 --gradient_clip_val 1.0 \
 --encoder_hidden 768 \
@@ -33,3 +34,5 @@ pdm run python src/train.py \
 
 # --strategy deepspeed_stage_2 \
 # --devices 4 \
+
+# ddp_find_unused_parameters_false

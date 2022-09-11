@@ -5,7 +5,7 @@
 In the NLP community, and more recently in speech recognition, large pre-trained models and how they can be used for down-stream tasks have become an exciting area of research.
 
 In TTS however, little similar work exists. With this project, I hope to make a first step into bringing pretrained models to TTS.
-The original FastSpeech 2 model is 27M parameters large and models a single speaker, while our version would have almost 2B parameters without the improvements from LightSpeech, which bring its size down to a manageable 135M, and models more than 2,000 speakers.
+The original FastSpeech 2 model is 27M parameters large and models a single speaker, while our version would have almost 1B parameters without the improvements from LightSpeech, which bring its size down to a manageable 76M, and models more than 2,000 speakers.
 
 A big upside of this implementation is that it is based on [Pytorch Lightning](https://www.pytorchlightning.ai/), which makes it easy to do multi-gpu training, load pre-trained models and a lot more.
 
@@ -27,7 +27,7 @@ This library is a work in progress, and until v1.0, updates might break things o
 - [x] Synthesis of both individual utterances and whole datasets
 - [x] Configurable training script.
 - [ ] Configurable synthesis script.
-- [ ] First large pre-trained model (LibriTTS, 2k speakers, 135M).
+- [ ] First large pre-trained model (LibriTTS, 2k speakers, 76M parameters).
 - [ ] Documentation & tutorials.
 - [ ] Configurable metrics.
 - [ ] LJSpeech support.
@@ -53,3 +53,10 @@ This would not be possible without a lot of amazing open source project in the T
 - [Aidan Pine's fork of FastSpeech 2](https://github.com/roedoejet/FastSpeech2), which served as the basis for the implementation of the depth-wise convolutions used in LightSpeech.
 - [Coqui AI's excellent TTS toolkit](https://github.com/coqui-ai/TTS), which was used for the Stochastic Duration Predictor and inspired the loss weighing we do.
 - [Jungil Kong's HiFi-GAN implementation](https://github.com/jik876/hifi-gan), which is used vocoding mel spectrograms produced by our TTS system.
+
+## Acknowledgements
+
+This has been a side project for me for a while, so naturally a few people I told about this have inspired me along the way. I want to thank:
+
+- [Benjamin Minixhofer](https://twitter.com/bminixhofer) for suggesting caching datasets and for helping with deepspeed.
+- [Gustav Eje Henter](https://people.kth.se/~ghe/) for inspiring me to use LayerDrop for inference by telling me about the strange properties of dropout in the Tacotron 2 prenet.

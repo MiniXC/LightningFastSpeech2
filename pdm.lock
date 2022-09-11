@@ -224,6 +224,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fairscale"
+version = "0.4.9"
+requires_python = ">=3.8"
+summary = "FairScale: A PyTorch library for large-scale and high-performance training."
+dependencies = [
+    "numpy>=1.22.0",
+    "torch>=1.8.0",
+]
+
+[[package]]
 name = "filelock"
 version = "3.7.1"
 requires_python = ">=3.7"
@@ -739,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "pytorch-lightning"
-version = "1.6.4"
+version = "1.7.5"
 requires_python = ">=3.7"
 summary = "PyTorch Lightning is the lightweight PyTorch wrapper for ML researchers. Scale your models. Write less boilerplate."
 dependencies = [
@@ -747,11 +757,10 @@ dependencies = [
     "fsspec[http]!=2021.06.0,>=2021.05.0",
     "numpy>=1.17.2",
     "packaging>=17.0",
-    "protobuf<=3.20.1",
     "pyDeprecate>=0.3.1",
-    "tensorboard>=2.2.0",
-    "torch>=1.8.*",
-    "torchmetrics>=0.4.1",
+    "tensorboard>=2.9.1",
+    "torch>=1.9.*",
+    "torchmetrics>=0.7.0",
     "tqdm>=4.57.0",
     "typing-extensions>=4.0.0",
 ]
@@ -1143,7 +1152,7 @@ summary = "Backport of pathlib-compatible object wrapper for zip files"
 
 [metadata]
 lock_version = "3.1"
-content_hash = "sha256:9b2931a5284559357194a02cb49019f428a6b23b2b1a36377a0607f7da344cac"
+content_hash = "sha256:4eacee5a4802417ed7d6ed5a64104eecbfccd7d9748d841a99de038b6dc83764"
 
 [metadata.files]
 "absl-py 1.1.0" = [
@@ -1436,6 +1445,9 @@ content_hash = "sha256:9b2931a5284559357194a02cb49019f428a6b23b2b1a36377a0607f7d
 "docker-pycreds 0.4.0" = [
     {file = "docker_pycreds-0.4.0-py2.py3-none-any.whl", hash = "sha256:7266112468627868005106ec19cd0d722702d2b7d5912a28e19b826c3d37af49"},
     {file = "docker-pycreds-0.4.0.tar.gz", hash = "sha256:6ce3270bcaf404cc4c3e27e4b6c70d3521deae82fb508767870fdbf772d584d4"},
+]
+"fairscale 0.4.9" = [
+    {file = "fairscale-0.4.9.tar.gz", hash = "sha256:802145e14e38d4b32280eab2e56d14ef153f84296f7fe2ef0e91fd4eb3d65a28"},
 ]
 "filelock 3.7.1" = [
     {file = "filelock-3.7.1-py3-none-any.whl", hash = "sha256:37def7b658813cda163b56fc564cdc75e86d338246458c4c28ae84cabefa2404"},
@@ -2292,9 +2304,9 @@ content_hash = "sha256:9b2931a5284559357194a02cb49019f428a6b23b2b1a36377a0607f7d
     {file = "python_dateutil-2.8.2-py2.py3-none-any.whl", hash = "sha256:961d03dc3453ebbc59dbdea9e4e11c5651520a876d0f4db161e8674aae935da9"},
     {file = "python-dateutil-2.8.2.tar.gz", hash = "sha256:0123cacc1627ae19ddf3c27a5de5bd67ee4586fbdd6440d9748f8abb483d3e86"},
 ]
-"pytorch-lightning 1.6.4" = [
-    {file = "pytorch_lightning-1.6.4-py3-none-any.whl", hash = "sha256:0f42f93116a3fcb6fd8c9ea45cf7c918e4aa3f848ae21d0e9ac2bf39f2865dd7"},
-    {file = "pytorch-lightning-1.6.4.tar.gz", hash = "sha256:5459f2c3e67676ec59e94576d1499e9559d214e7df41eadd135db64b4ccf54b9"},
+"pytorch-lightning 1.7.5" = [
+    {file = "pytorch_lightning-1.7.5-py3-none-any.whl", hash = "sha256:198d7b6595d2e08da51c5483bfa8aef5025d7a162bd745b274af935886ba5d83"},
+    {file = "pytorch-lightning-1.7.5.tar.gz", hash = "sha256:a5838ae990f0eef9a894fa863be3bc1f5594d2abba7848fb21317ba3e885d7cd"},
 ]
 "pytz 2022.1" = [
     {file = "pytz-2022.1-py2.py3-none-any.whl", hash = "sha256:e68985985296d9a66a881eb3193b0906246245294a881e7c8afe623866ac6a5c"},

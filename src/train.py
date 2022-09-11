@@ -178,12 +178,23 @@ if __name__ == "__main__":
             args.from_checkpoint,
             train_ds=train_ds,
             valid_ds=valid_ds,
-            train_ds_kwargs=train_ds_kwargs,
-            valid_ds_kwargs=valid_ds_kwargs,
+            train_ds_kwargs={
+                k.replace("train_", ""): v
+                for k, v in var_args.items()
+                if k.startswith("train_")
+            },
+            valid_ds_kwargs={
+                k.replace("valid_", ""): v
+                for k, v in var_args.items()
+                if k.startswith("valid_")
+            },
             num_workers=4,
             batch_size=args.batch_size,
             cache_path=cache_path,
         )
+        model.loss.loss_alphas = {"pitch": 1e-3, "energy": 1e-3, "snr": 1e-3, "duration": 5e-2, "mel": 1.0}
+        model.encoder.layer_drop_prob = 0.00
+        model.decoder.layer_drop_prob = 0.00
     else:
         model_args["cache_path"] = cache_path
         model = FastSpeech2(
