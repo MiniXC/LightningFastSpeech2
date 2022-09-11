@@ -29,6 +29,7 @@ This library is a work in progress, and until v1.0, updates might break things o
 - [ ] Configurable synthesis script.
 - [ ] First large pre-trained model (LibriTTS, 2k speakers, 76M parameters).
 - [ ] Documentation & tutorials.
+- [ ] Allow reporting other than wandb.
 - [ ] Configurable metrics.
 - [ ] LJSpeech support.
 - [ ] PyPi package.
@@ -53,10 +54,3 @@ This would not be possible without a lot of amazing open source project in the T
 - [Aidan Pine's fork of FastSpeech 2](https://github.com/roedoejet/FastSpeech2), which served as the basis for the implementation of the depth-wise convolutions used in LightSpeech.
 - [Coqui AI's excellent TTS toolkit](https://github.com/coqui-ai/TTS), which was used for the Stochastic Duration Predictor and inspired the loss weighing we do.
 - [Jungil Kong's HiFi-GAN implementation](https://github.com/jik876/hifi-gan), which is used vocoding mel spectrograms produced by our TTS system.
-
-## Acknowledgements
-
-This has been a side project for me for a while, so naturally a few people I told about this have inspired me along the way. I want to thank:
-
-- [Benjamin Minixhofer](https://twitter.com/bminixhofer) for suggesting caching datasets and for helping with deepspeed.
-- [Gustav Eje Henter](https://people.kth.se/~ghe/) for inspiring me to use LayerDrop for inference by telling me about the strange properties of dropout in the Tacotron 2 prenet.
