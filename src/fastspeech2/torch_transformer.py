@@ -198,7 +198,7 @@ class TransformerEncoder(Module):
         self.mask_check = mask_check
         self.layer_drop_prob = layer_drop_prob
 
-    def forward(self, src: Tensor, mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None) -> Tensor:
+    def forward(self, src: Tensor, mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None, additional_src=None) -> Tensor:
         r"""Pass the input through the encoder layers in turn.
 
         Args:
@@ -209,7 +209,10 @@ class TransformerEncoder(Module):
         Shape:
             see the docs in Transformer class.
         """
-        output = src
+        if additional_src is not None:
+            output = src + additional_src
+        else:
+            output = src
         src_key_padding_mask_for_layers = src_key_padding_mask
 
         ps = np.random.rand(len(self.layers))
@@ -222,6 +225,8 @@ class TransformerEncoder(Module):
             if ps[i]:
                 continue
             output = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask_for_layers)
+            if additional_src is not None:
+                output = output + additional_src
 
         if self.norm is not None:
             output = self.norm(output)

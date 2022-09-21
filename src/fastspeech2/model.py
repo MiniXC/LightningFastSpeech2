@@ -3,7 +3,8 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-from .torch_transformer import TransformerEncoderLayer, TransformerEncoder
+#from .torch_transformer import TransformerEncoderLayer, TransformerEncoder
+from torch.nn import TransformerEncoderLayer
 from torch.nn.utils.rnn import pad_sequence
 from third_party.stochastic_duration_predictor.sdp import StochasticDurationPredictor
 from dataset.cwt import CWT
@@ -72,7 +73,7 @@ class ConformerEncoderLayer(TransformerEncoderLayer):
                     kwargs["conv_in"],
                     kwargs["conv_in"],
                     kernel_size=kwargs["conv_kernel"][0],
-                    padding='same',
+                    padding=(kwargs["conv_kernel"][0] - 1) // 2,
                     groups=kwargs["conv_in"],
                 ),
                 nn.Conv1d(kwargs["conv_in"], kwargs["conv_filter_size"], 1),
@@ -82,7 +83,7 @@ class ConformerEncoderLayer(TransformerEncoderLayer):
                     kwargs["conv_filter_size"],
                     kwargs["conv_filter_size"],
                     kernel_size=kwargs["conv_kernel"][1],
-                    padding='same',
+                    padding=(kwargs["conv_kernel"][1] - 1) // 2,
                     groups=kwargs["conv_in"],
                 ),
                 nn.Conv1d(kwargs["conv_filter_size"], kwargs["conv_in"], 1),
@@ -92,13 +93,13 @@ class ConformerEncoderLayer(TransformerEncoderLayer):
                 kwargs["conv_in"],
                 kwargs["conv_filter_size"],
                 kernel_size=kwargs["conv_kernel"][0],
-                padding='same',
+                padding=(kwargs["conv_kernel"][0] - 1) // 2,
             )
             self.conv2 = nn.Conv1d(
                 kwargs["conv_filter_size"],
                 kwargs["conv_in"],
                 kernel_size=kwargs["conv_kernel"][1],
-                padding='same',
+                padding=(kwargs["conv_kernel"][1] - 1) // 2,
             )
 
     def forward(self, src, src_mask=None, src_key_padding_mask=None):
@@ -261,6 +262,8 @@ class VarianceAdaptor(nn.Module):
 
         result = {}
 
+        var_embedding = None
+
         tf_val = np.random.uniform(0, 1) <= tf_ratio
 
         for i, var in enumerate(self.variances):
@@ -277,7 +280,10 @@ class VarianceAdaptor(nn.Module):
                 else:
                     pred, out = self.encoders[var](x, None, src_mask)
                 result[f"variances_{var}"] = pred
-                x = x + out
+                if var_embedding is None:
+                    var_embedding = out
+                else:
+                    var_embedding = var_embedding + out
 
         if not inference:
             duration_rounded = targets["duration"]
@@ -294,6 +300,7 @@ class VarianceAdaptor(nn.Module):
                 print("Zero duration, filling with 1, this should only happen before training")
 
         x, tgt_mask = self.length_regulator(x, duration_rounded, self.max_length)
+        var_embedding, _ = self.length_regulator(var_embedding, duration_rounded, self.max_length)
 
         for i, var in enumerate(self.variances):
             if self.variance_levels[i] == "frame":
@@ -309,9 +316,13 @@ class VarianceAdaptor(nn.Module):
                 else:
                     pred, out = self.encoders[var](x, None, tgt_mask)
                 result[f"variances_{var}"] = pred
-                x = x + out
+                if var_embedding is None:
+                    var_embedding = out
+                else:
+                    var_embedding = var_embedding + out
 
         result["x"] = x
+        result["embedding"] = var_embedding
         result["duration_prediction"] = duration_pred
         result["duration_rounded"] = duration_rounded
         result["tgt_mask"] = tgt_mask

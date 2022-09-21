@@ -7,13 +7,14 @@ import hashlib
 import json
 import pickle
 from copy import copy
+import math
 
 import pytorch_lightning as pl
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-from .torch_transformer import TransformerEncoder
-from torch.nn.modules.transformer import TransformerEncoderLayer
+#from .torch_transformer import TransformerEncoder, TransformerEncoderLayer
+from torch.nn import TransformerEncoder, TransformerEncoderLayer
 import wandb
 import pandas as pd
 import numpy as np
@@ -67,6 +68,9 @@ class FastSpeech2(pl.LightningModule):
         duration_dropout=0.5,
         duration_filter_size=256,
         duration_depthwise_conv=True,
+        speaker_embedding_every_layer=False,
+        variance_embedding_every_layer=False,
+        prior_embedding_every_layer=False,
         priors=[],  # ["pitch", "energy", "snr", "duration"],
         mel_loss_weight=1,
         n_mels=80,
@@ -231,7 +235,7 @@ class FastSpeech2(pl.LightningModule):
                 conv_depthwise=self.hparams.encoder_depthwise_conv,
             ),
             num_layers=self.hparams.encoder_layers,
-            layer_drop_prob=self.hparams.layer_dropout,
+            # layer_drop_prob=self.hparams.layer_dropout,
         )
 
         if self.hparams.encoder_conformer:
@@ -299,7 +303,7 @@ class FastSpeech2(pl.LightningModule):
                 conv_depthwise=self.hparams.encoder_depthwise_conv,
             ),
             num_layers=self.hparams.decoder_layers,
-            layer_drop_prob=self.hparams.layer_dropout,
+            # layer_drop_prob=self.hparams.layer_dropout,
         )
         if self.hparams.decoder_conformer:
             if self.hparams.decoder_dim_feedforward is not None:
@@ -375,6 +379,22 @@ class FastSpeech2(pl.LightningModule):
             loss_weights,
         )
 
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, (nn.LayerNorm, nn.GroupNorm)):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+        elif isinstance(module, nn.Conv1d):
+            nn.init.kaiming_normal_(module.weight)
+            if module.bias is not None:
+                k = math.sqrt(module.groups / (module.in_channels * module.kernel_size[0]))
+                nn.init.uniform_(module.bias, a=-k, b=k)
+
     def on_load_checkpoint(self, checkpoint):
         self.stats = checkpoint["stats"]
         if not hasattr(self, "variance_adaptor"):
@@ -427,6 +447,26 @@ class FastSpeech2(pl.LightningModule):
         if "speaker2stats" in checkpoint:
             self.speaker2stats = checkpoint["speaker2stats"]
 
+
+        # drop shape mismatched layers
+        state_dict = checkpoint["state_dict"]
+        model_state_dict = self.state_dict()
+        is_changed = False
+        for k in state_dict:
+            if k in model_state_dict:
+                if state_dict[k].shape != model_state_dict[k].shape:
+                    print(f"Skip loading parameter: {k}, "
+                                f"required shape: {model_state_dict[k].shape}, "
+                                f"loaded shape: {state_dict[k].shape}")
+                    state_dict[k] = model_state_dict[k]
+                    is_changed = True
+            else:
+                print(f"Dropping parameter {k}")
+                is_changed = True
+
+        if is_changed:
+            checkpoint.pop("optimizer_states", None)
+
     def on_save_checkpoint(self, checkpoint):
         checkpoint["stats"] = self.stats
         checkpoint["phone2id"] = self.phone2id
@@ -447,17 +487,33 @@ class FastSpeech2(pl.LightningModule):
 
         output = self.positional_encoding(output)
 
-        output = output + self.speaker_embedding(
-            speakers, output.shape[1], output.shape[-1]
-        )
-
-        output = self.encoder(output, src_key_padding_mask=src_mask)
-
-        for prior in self.hparams.priors:
-            output = output + self.prior_embeddings[prior](
-                torch.tensor(targets[f"priors_{prior}"]).to(self.device),
-                output.shape[1],
+        if not self.hparams.speaker_embedding_every_layer:
+            output = output + self.speaker_embedding(
+                speakers, output.shape[1], output.shape[-1]
             )
+        else:
+            every_encoder_layer =  self.speaker_embedding(
+                speakers, output.shape[1], output.shape[-1]
+            )
+
+        if self.hparams.prior_embedding_every_layer:
+            for prior in self.hparams.priors:
+                every_encoder_layer = every_encoder_layer + self.prior_embeddings[prior](
+                    torch.tensor(targets[f"priors_{prior}"]).to(self.device),
+                    output.shape[1],
+                )
+
+        if self.hparams.prior_embedding_every_layer or self.hparams.speaker_embedding_every_layer:
+            output = self.encoder(output, src_key_padding_mask=src_mask, additional_src=every_encoder_layer)
+        else:
+            output = self.encoder(output, src_key_padding_mask=src_mask)
+
+        if not self.hparams.prior_embedding_every_layer:
+            for prior in self.hparams.priors:
+                output = output + self.prior_embeddings[prior](
+                    torch.tensor(targets[f"priors_{prior}"]).to(self.device),
+                    output.shape[1],
+                )
 
         tf_ratio = self.hparams.tf_ratio
 
@@ -486,11 +542,24 @@ class FastSpeech2(pl.LightningModule):
 
         output = self.positional_encoding(output)
 
-        output = output + self.speaker_embedding(
-            speakers, output.shape[1], output.shape[-1]
-        )
+        if not self.hparams.speaker_embedding_every_layer:
+            output = output + self.speaker_embedding(
+                speakers, output.shape[1], output.shape[-1]
+            )
+        else:
+            every_decoder_layer =  self.speaker_embedding(
+                speakers, output.shape[1], output.shape[-1]
+            )
 
-        output = self.decoder(output, src_key_padding_mask=variance_output["tgt_mask"])
+        if not self.hparams.variance_embedding_every_layer:
+            output = output + variance_output["embedding"]
+        else:
+            every_decoder_layer = every_decoder_layer + variance_output["embedding"]
+
+        if self.hparams.speaker_embedding_every_layer or self.hparams.variance_embedding_every_layer:
+            output = self.decoder(output, src_key_padding_mask=variance_output["tgt_mask"], additional_src=every_decoder_layer)
+        else:
+            output = self.decoder(output, src_key_padding_mask=variance_output["tgt_mask"])
 
         output = self.linear(output)
 
@@ -961,6 +1030,9 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--tf_linear_schedule_end", type=int, default=20)
         parser.add_argument("--tf_linear_schedule_end_ratio", type=float, default=0.0)
         parser.add_argument("--num_workers", type=int, default=num_cpus)
+        parser.add_argument("--speaker_embedding_every_layer", type=str2bool, default=False)
+        parser.add_argument("--variance_embedding_every_layer", type=str2bool, default=False)
+        parser.add_argument("--prior_embedding_every_layer", type=str2bool, default=False)
         return parent_parser
 
     @staticmethod

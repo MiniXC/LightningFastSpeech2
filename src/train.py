@@ -115,7 +115,7 @@ if __name__ == "__main__":
             kwargs.update({"target_directory": var_args["train_target_path"][i]})
             ds_hash = hashlib.md5(json.dumps(kwargs, sort_keys=True).encode('utf-8')).hexdigest()
             cache_path_alignments = Path(var_args["dataset_cache_path"]) / f"train-alignments-{ds_hash}.pt"
-        if len(list(Path(var_args["train_target_path"][i]).rglob("**/*.TextGrid"))) == 0 or not cache_path_alignments.exists() or var_args["no_cache"]:
+        if var_args["no_cache"] or len(list(Path(var_args["train_target_path"][i]).rglob("**/*.TextGrid"))) == 0 or not cache_path_alignments.exists():
             train_ds += [LibrittsDataset(
                 target_directory=var_args["train_target_path"][i],
                 source_directory=var_args["train_source_path"][i],
@@ -138,7 +138,7 @@ if __name__ == "__main__":
         kwargs.update({"target_directory": var_args["valid_target_path"]})
         ds_hash = hashlib.md5(json.dumps(kwargs, sort_keys=True).encode('utf-8')).hexdigest()
         cache_path_alignments = Path(var_args["dataset_cache_path"]) / f"valid-alignments-{ds_hash}.pt"
-    if len(list(Path(var_args["valid_target_path"]).rglob("**/*.TextGrid"))) == 0 or not cache_path_alignments.exists():
+    if var_args["no_cache"] or len(list(Path(var_args["valid_target_path"]).rglob("**/*.TextGrid"))) == 0 or not cache_path_alignments.exists():
         valid_ds = LibrittsDataset(
             target_directory=var_args["valid_target_path"],
             source_directory=var_args["valid_source_path"],
@@ -188,13 +188,9 @@ if __name__ == "__main__":
                 for k, v in var_args.items()
                 if k.startswith("valid_")
             },
-            num_workers=4,
-            batch_size=args.batch_size,
-            cache_path=cache_path,
+            strict=False,
+            **model_args,
         )
-        model.loss.loss_alphas = {"pitch": 1e-3, "energy": 1e-3, "snr": 1e-3, "duration": 5e-2, "mel": 1.0}
-        model.encoder.layer_drop_prob = 0.00
-        model.decoder.layer_drop_prob = 0.00
     else:
         model_args["cache_path"] = cache_path
         model = FastSpeech2(

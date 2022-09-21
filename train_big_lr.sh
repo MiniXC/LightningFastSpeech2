@@ -1,7 +1,7 @@
-CUDA_VISIBLE_DEVICES="0" pdm run python src/train.py \
+CUDA_VISIBLE_DEVICES="2,3" pdm run python src/train.py \
 --accelerator gpu \
---devices 1 \
---lr 1e-4 \
+--devices 2 \
+--lr 4e-4 \
 --strategy ddp \
 --precision 16 \
 --batch_size 2 \
@@ -36,8 +36,7 @@ CUDA_VISIBLE_DEVICES="0" pdm run python src/train.py \
 --prior_embedding_every_layer False \
 --log_every_n_steps 6 \
 --sync_batchnorm False \
---wandb_name "BFF-init" \
---from_checkpoint models/priors-v1.ckpt \
+--wandb_name "BFF-biglr" \
 --train_target_path "../data/train-clean-360-aligned" \
 --train_source_path "../Data/LibriTTS/train-clean-360" \
 --train_source_url "https://www.openslr.org/resources/60/train-clean-360.tar.gz"
