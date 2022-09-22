@@ -17,9 +17,9 @@ CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python src/train.py \
 --duration_filter_size 256 \
 --decoder_hidden 256 \
 --decoder_conv_filter_size 1024 \
---encoder_head 8 \
---decoder_head 8 \
---variance_loss_weights 0.1 0.1 0.1 \
+--encoder_head 2 \
+--decoder_head 2 \
+--variance_loss_weights 1 0.1 0.1 \
 --duration_loss_weight 0.1 \
 --variance_levels phone phone phone \
 --variance_transforms none none none \
