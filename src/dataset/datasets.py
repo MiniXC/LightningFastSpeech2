@@ -259,6 +259,10 @@ class TTSDataset(Dataset):
                 raise ValueError(
                     "stats file exists but number of samples does not match"
                 )
+
+        self.speaker2stats = {}
+        self.record_speaker_stats = True
+
         if compute_stats:
             for entry in tqdm(
                 DataLoader(
@@ -300,9 +304,6 @@ class TTSDataset(Dataset):
             stats["samples"] = stat_entries
             json.dump(stats, open(stat_path, "w"))
             self.stats = stats
-
-        self.speaker2stats = {}
-        self.record_speaker_stats = True
 
         if "phone" in self.variance_levels:
             self.phone_level = True

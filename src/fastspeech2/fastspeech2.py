@@ -69,7 +69,6 @@ class FastSpeech2(pl.LightningModule):
         duration_filter_size=256,
         duration_depthwise_conv=True,
         speaker_embedding_every_layer=False,
-        variance_embedding_every_layer=False,
         prior_embedding_every_layer=False,
         priors=[],  # ["pitch", "energy", "snr", "duration"],
         mel_loss_weight=1,
@@ -551,12 +550,7 @@ class FastSpeech2(pl.LightningModule):
                 speakers, output.shape[1], output.shape[-1]
             )
 
-        if not self.hparams.variance_embedding_every_layer:
-            output = output + variance_output["embedding"]
-        else:
-            every_decoder_layer = every_decoder_layer + variance_output["embedding"]
-
-        if self.hparams.speaker_embedding_every_layer or self.hparams.variance_embedding_every_layer:
+        if self.hparams.speaker_embedding_every_layer:
             output = self.decoder(output, src_key_padding_mask=variance_output["tgt_mask"], additional_src=every_decoder_layer)
         else:
             output = self.decoder(output, src_key_padding_mask=variance_output["tgt_mask"])
@@ -1031,7 +1025,6 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--tf_linear_schedule_end_ratio", type=float, default=0.0)
         parser.add_argument("--num_workers", type=int, default=num_cpus)
         parser.add_argument("--speaker_embedding_every_layer", type=str2bool, default=False)
-        parser.add_argument("--variance_embedding_every_layer", type=str2bool, default=False)
         parser.add_argument("--prior_embedding_every_layer", type=str2bool, default=False)
         return parent_parser
 

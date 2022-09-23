@@ -16,6 +16,7 @@ from pytorch_lightning.tuner.tuning import Tuner
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor
 from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import StochasticWeightAveraging
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 import matplotlib.pyplot as plt
 
@@ -31,6 +32,8 @@ if __name__ == "__main__":
 
     parser.add_argument("--early_stopping", type=str2bool, default=True)
     parser.add_argument("--early_stopping_patience", type=int, default=4)
+    
+    parser.add_argument("--swa_lr", type=float, default=None)
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
     callbacks = [lr_monitor]
@@ -227,6 +230,11 @@ if __name__ == "__main__":
             EarlyStopping(
                 monitor="eval/mel_loss", patience=var_args["early_stopping_patience"]
             )
+        )
+
+    if var_args["swa_lr"] is not None:
+        callbacks.append(
+            StochasticWeightAveraging(swa_lrs=var_args["swa_lr"])
         )
 
     trainer = Trainer.from_argparse_args(

@@ -1,11 +1,10 @@
-CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python src/train.py \
+CUDA_VISIBLE_DEVICES="0" pdm run python src/train.py \
 --accelerator gpu \
---devices 4 \
---strategy ddp \
+--devices 1 \
 --precision 16 \
---batch_size 1 \
+--batch_size 6 \
 --val_check_interval 1.0 \
---accumulate_grad_batches 48 \
+--accumulate_grad_batches 8 \
 --layer_dropout 0.00 \
 --duration_dropout 0.5 \
 --variance_dropout 0.5 0.5 0.5 \
@@ -20,25 +19,18 @@ CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python src/train.py \
 --encoder_head 2 \
 --decoder_head 2 \
 --variance_loss_weights 1 0.1 0.1 \
---duration_loss_weight 0.1 \
+--duration_loss_weight 0.5 \
 --variance_levels phone phone phone \
 --variance_transforms none none none \
 --variance_early_stopping js \
---early_stopping_patience 10 \
---encoder_layers 8 \
---encoder_kernel_sizes 9 9 9 9 9 9 9 9 \
---decoder_layers 8 \
---decoder_kernel_sizes 9 9 9 9 9 9 9 9 \
+--decoder_layers 6 \
+--decoder_kernel_sizes 9 9 9 9 9 9 \
 --priors energy duration snr pitch \
 --speaker_embedding_every_layer False \
---variance_embedding_every_layer False \
 --prior_embedding_every_layer False \
 --log_every_n_steps 6 \
---sync_batchnorm False \
---wandb_name "BFF-interval" \
---train_target_path "../data/train-clean-360-aligned" \
---train_source_path "../Data/LibriTTS/train-clean-360" \
---train_source_url "https://www.openslr.org/resources/60/train-clean-360.tar.gz"
+--wandb_name "a_split" \
+--train_target_path "../data/train-clean-a" \
 
 
 # --from_checkpoint models/BFF-v6.ckpt \
