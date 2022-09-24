@@ -1,7 +1,8 @@
-CUDA_VISIBLE_DEVICES="0" pdm run python src/train.py \
+CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python src/train.py \
 --accelerator gpu \
---devices 1 \
+--devices 4 \
 --precision 16 \
+--strategy ddp \
 --batch_size 6 \
 --val_check_interval 1.0 \
 --accumulate_grad_batches 8 \
@@ -18,8 +19,8 @@ CUDA_VISIBLE_DEVICES="0" pdm run python src/train.py \
 --decoder_conv_filter_size 1024 \
 --encoder_head 2 \
 --decoder_head 2 \
---variance_loss_weights 1 0.1 0.1 \
---duration_loss_weight 0.5 \
+--variance_loss_weights 0.01 0.01 0.01 \
+--duration_loss_weight 0.1 \
 --variance_levels phone phone phone \
 --variance_transforms none none none \
 --variance_early_stopping js \
@@ -28,9 +29,8 @@ CUDA_VISIBLE_DEVICES="0" pdm run python src/train.py \
 --priors energy duration snr pitch \
 --speaker_embedding_every_layer False \
 --prior_embedding_every_layer False \
---log_every_n_steps 6 \
---wandb_name "a_split" \
---train_target_path "../data/train-clean-a" \
+--wandb_name "split_a_small_var_snr" \
+--train_target_path "../data/train-clean-a"
 
 
 # --from_checkpoint models/BFF-v6.ckpt \

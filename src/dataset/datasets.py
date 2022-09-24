@@ -463,7 +463,7 @@ class TTSDataset(Dataset):
             )
             variances["pitch"] = pw.stonemask(
                 audio.cpu().numpy().astype(np.float64), pitch, t, self.sampling_rate
-            )
+            ).astype(np.float32)
             variances["pitch"][variances["pitch"] == 0] = np.nan
             if len(silence_mask) < len(variances["pitch"]):
                 variances["pitch"] = variances["pitch"][: sum(durations)]
@@ -474,7 +474,7 @@ class TTSDataset(Dataset):
 
         # SNR
         if "snr" in self.variances:
-            snr = SNR(audio.cpu().numpy().astype(np.float64), self.sampling_rate)
+            snr = SNR(audio.cpu().numpy().astype(np.float32), self.sampling_rate)
             variances["snr"] = snr.windowed_wada(
                 window=self.win_length,
                 stride=self.hop_length / self.win_length,

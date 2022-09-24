@@ -378,22 +378,6 @@ class FastSpeech2(pl.LightningModule):
             loss_weights,
         )
 
-        self.apply(self._init_weights)
-
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            module.weight.data.normal_(mean=0.0, std=0.02)
-            if module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, (nn.LayerNorm, nn.GroupNorm)):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
-        elif isinstance(module, nn.Conv1d):
-            nn.init.kaiming_normal_(module.weight)
-            if module.bias is not None:
-                k = math.sqrt(module.groups / (module.in_channels * module.kernel_size[0]))
-                nn.init.uniform_(module.bias, a=-k, b=k)
-
     def on_load_checkpoint(self, checkpoint):
         self.stats = checkpoint["stats"]
         if not hasattr(self, "variance_adaptor"):
@@ -477,6 +461,16 @@ class FastSpeech2(pl.LightningModule):
             checkpoint["speaker2stats"] = self.speaker2stats
 
     def forward(self, targets, inference=False):
+        # for key in targets.keys():
+        #     # print types
+        #     if isinstance(targets[key], list):
+        #         if isinstance(targets[key][0], torch.Tensor):
+        #             print(key, type(targets[key][0]), targets[key][0].dtype)
+        #     else:
+        #         if isinstance(targets[key], torch.Tensor):
+        #             print(key, type(targets[key]), targets[key].dtype)
+
+
         phones = targets["phones"].to(self.device)
         speakers = targets["speaker"]
 

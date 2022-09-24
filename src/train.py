@@ -125,7 +125,7 @@ if __name__ == "__main__":
                 source_url=var_args["train_source_url"][i],
                 verbose=True,
                 tmp_directory=var_args["train_tmp_path"],
-                chunk_size=10_000,
+                #chunk_size=10_000,
             )]
             if not var_args["no_cache"]:
                 train_ds[-1].hash = ds_hash
@@ -148,7 +148,7 @@ if __name__ == "__main__":
             source_url=var_args["valid_source_url"],
             verbose=True,
             tmp_directory=var_args["valid_tmp_path"],
-            chunk_size=10_000,
+            #chunk_size=10_000,
         )
         if not var_args["no_cache"]:
             valid_ds.hash = ds_hash

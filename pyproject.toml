@@ -30,7 +30,7 @@ dependencies = [
     "crepe>=0.0.12",
     "textgrid>=1.5",
     "rich>=12.4.4",
-    "alignments==0.0.9",
+    "alignments==0.0.5",
     "g2p-en>=2.1.0",
     "numba>=0.55.2",
     "torch>=1.12.0",

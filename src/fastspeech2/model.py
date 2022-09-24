@@ -291,8 +291,8 @@ class VarianceAdaptor(nn.Module):
                 ).masked_fill(duration_pred == 0, 0)
             duration_rounded = torch.clamp(duration_rounded, min=0).int()
             if duration_rounded.sum() == 0:
-                duration_rounded.fill_(1)
-                print("Zero duration, filling with 1, this should only happen before training")
+                duration_rounded[0] = 1
+                print("Zero duration, setting to 1")
 
         x, tgt_mask = self.length_regulator(x, duration_rounded, self.max_length)
 

@@ -30,7 +30,7 @@ if __name__ == "__main__":
     #    denoise=False,
     #)
     ds = TTSDataset(
-        LibrittsDataset(target_directory="../Data/LibriTTS/dev-clean-aligned", chunk_size=10_000),
+        LibrittsDataset(target_directory="../data/train-clean-a", chunk_size=10_000),
         priors=["pitch", "energy", "snr", "duration"],
         variances=["pitch", "energy", "snr"],
         variance_transforms=["none", "none", "none"],
@@ -38,17 +38,13 @@ if __name__ == "__main__":
         denoise=False,
         overwrite_stats=True,
     )
-    min_idx = -1
     min_len = float("inf")
     for i, item in tqdm(enumerate(ds), total=10):
-        if item["duration"].sum() < min_len:
-            min_len = item["duration"].sum()
-            min_idx = i
+        fig = ds.plot(i, show=False)
+        fig.save(f"test{i}.png")
         if i > 10:
             break
-    print(min_idx)
-    fig = ds.plot(min_idx, show=False)
-    fig.save("test.png")
+    
     # print(train_ud[3398])
     # train_ud.plot(3398)
     # train_ud.plot(3692)
