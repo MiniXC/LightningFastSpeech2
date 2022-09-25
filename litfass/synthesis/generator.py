@@ -1,20 +1,20 @@
-from audioop import mul
 from pathlib import Path
 import random
 import shutil
 import multiprocessing
 import pickle
+from copy import deepcopy
 
 import torch
 import torchaudio
 from torch.utils.data import DataLoader
 import numpy as np
 from tqdm.auto import tqdm
+from voicefixer import VoiceFixer
 
-from third_party.hifigan import Synthesiser
-from fastspeech2.fastspeech2 import FastSpeech2
-from .g2p import G2P
-from copy import deepcopy
+from litfass.third_party.hifigan import Synthesiser
+from litfass.fastspeech2.fastspeech2 import FastSpeech2
+from litfass.synthesis.g2p import G2P
 
 
 def int16_samples_to_float32(y):
@@ -22,7 +22,7 @@ def int16_samples_to_float32(y):
     if y.dtype != np.int16:
         if y.dtype == np.float32:
             return y
-        elif y.dtype == torch.float32:
+        elif isinstance(y, torch.Tensor):
             return y.numpy()
         else:
             raise ValueError(f"input samples not int16 or float32, but {y.dtype}")
@@ -32,21 +32,21 @@ def int16_samples_to_float32(y):
 class SpeechGenerator:
     def __init__(
         self,
-        model_path: str,
+        model: FastSpeech2,
         g2p_model: G2P,
         device: str = "cuda:0",
         synth_device: str = None,
         overwrite: bool = False,
+        voicefixer: bool = True,
         sampling_path: str = None,
-        augmentations = None,
-        speaker_dict = None,
+        augmentations=None,
+        speaker_dict=None,
     ):
-        self.model_path = model_path
         if synth_device is None:
             self.synth = Synthesiser(device=device)
         else:
             self.synth = Synthesiser(device=synth_device)
-        self.model = FastSpeech2.load_from_checkpoint(self.model_path)
+        self.model = model
         self.model.eval()
         self.g2p = g2p_model
         self.device = device
@@ -55,6 +55,10 @@ class SpeechGenerator:
         self.sampling_path = sampling_path
         self.augmentations = augmentations
         self.speaker_dict = speaker_dict
+        if voicefixer:
+            self.voicefixer = VoiceFixer()
+        else:
+            self.voicefixer = None
 
     @property
     def speakers(self):
@@ -65,16 +69,21 @@ class SpeechGenerator:
         else:
             return None
 
-    def generate_sample_from_text(self, text, speaker=None):
+    def save_audio(self, audio, path):
+        torchaudio.save(path, torch.tensor(audio), 22050)
+
+    def generate_from_text(self, text, speaker=None):
         ids = [
             self.model.phone2id[x] for x in self.g2p(text) if x in self.model.phone2id
         ]
         batch = {}
         if self.model.hparams.speaker_type == "dvector":
             if speaker is None:
+                # pylint: disable=invalid-sequence-index
                 speaker = list(self.model.speaker2dvector.keys())[
                     np.random.randint(len(self.model.speaker2dvector))
                 ]
+                # pylint: enable=invalid-sequence-index
                 print("Using speaker", speaker)
             batch["speaker"] = torch.tensor([self.model.speaker2dvector[speaker]]).to(
                 self.device
@@ -83,149 +92,47 @@ class SpeechGenerator:
             batch["speaker"] = torch.tensor([self.model.speaker2id[speaker]]).to(
                 self.device
             )
+        if len(self.model.hparams.priors) > 0:
+            priors = self.model.speaker2priors[speaker]
+            prior_len = len(priors[self.model.hparams.priors[0]])
+            random_index = np.random.randint(prior_len)
+            for prior in self.model.hparams.priors:
+                batch[f"priors_{prior}"] = torch.tensor([priors[prior][random_index]]).to(self.device)
         batch["phones"] = torch.tensor([ids]).to(self.device)
         return self.generate_samples(batch)[0]
 
     def generate_samples(
         self,
         batch,
-        increase_diversity={},
-        fixed_diversity={},
-        sampling_diversity={},
-        oracle_diversity={},
-        prior_sampling="none", # "none", "normal"
     ):
-        if len(self.model.hparams.priors) > 0:
-            if prior_sampling == "none":
-                raise ValueError("Prior sampling has to be enabled")
-            for p in self.model.hparams.priors:
-                if prior_sampling == "normal":
-                    p_mean = self.model.stats[f"{p}_prior"]["mean"]
-                    p_std = self.model.stats[f"{p}_prior"]["std"]
-                    p_rand = np.random.normal(p_mean, p_std, size=len(batch[f'priors_{p}']))
-                    batch[f'priors_{p}'] = p_rand
-                if prior_sampling == "uniform":
-                    p_min = self.model.stats[f"{p}_prior"]["min"]
-                    p_max = self.model.stats[f"{p}_prior"]["max"]
-                    p_rand = np.random.uniform(p_min, p_max, size=len(batch[f'priors_{p}']))
-                    batch[f'priors_{p}'] = p_rand
-                if prior_sampling == "oracle":
-                    pass
-                if prior_sampling == "speaker":
-                    if self.speaker_dict is None:
-                        raise ValueError("Speaker dict not provided")
-                    for i, sk in enumerate(batch["speaker_key"]):
-                        batch[f'priors_{p}'][i] = random.choice()
-                if prior_sampling == "speaker_uniform":
-                    if self.speaker_dict is None:
-                        raise ValueError("Speaker dict not provided")
-                    for i, sk in enumerate(batch["speaker_key"]):
-                        s_min = np.min(self.speaker_dict[p][sk])
-                        s_max = np.max(self.speaker_dict[p][sk])
-                        batch[f'priors_{p}'][i] = random.uniform(s_min, s_max)
-                if prior_sampling == "speaker_normal":
-                    if self.speaker_dict is None:
-                        raise ValueError("Speaker dict not provided")
-                    for i, sk in enumerate(batch["speaker_key"]):
-                        s_mean = np.mean(self.speaker_dict[p][sk])
-                        s_std = np.std(self.speaker_dict[p][sk])
-                        s_min = np.min(self.speaker_dict[p][sk])
-                        s_max = np.max(self.speaker_dict[p][sk])
-                        batch[f'priors_{p}'][i] = np.clip(np.random.normal(s_mean, s_std), s_min, s_max)
-
         result = self.model(batch, inference=True)
 
-        changed_diversity = (
-            len(increase_diversity) > 0
-            or len(fixed_diversity) > 0
-            or len(sampling_diversity) > 0
-        )
-
-        if changed_diversity and any(oracle_diversity.values()):
-            raise ValueError(
-                "Cannot use oracle diversity when changing diversity"
-            )
-
-        if changed_diversity and not any(oracle_diversity.values()):
-            for var in self.model.hparams.variances:
-                batch["variances_" + var] = result["variances_" + var]
-            batch["duration"] = result["duration_rounded"]
-
-        # random factor
-        if len(increase_diversity) > 0:
-            for key, value in increase_diversity.items():
-                if key == "duration":
-                    batch[key] = result[key + "_rounded"].float() * np.random.uniform(
-                        1.0 - value / 2, 1.0 + value / 2
-                    )
-                    batch[key] = torch.round(batch[key]).int()
-                else:
-                    batch[key] = result[key].float() * np.random.uniform(
-                        1.0 - value / 2, 1.0 + value / 2
-                    )
-
-        # fixed value
-        if len(fixed_diversity) > 0:
-            for key, value in fixed_diversity.items():
-                if key == "duration":
-                    batch[key][:] = (
-                        value - self.model.stats[key]["mean"]
-                    ) / self.model.stats[key]["std"]
-                else:
-                    stat_key = key.replace("variances_", "")
-                    batch[key][:] = (
-                        value - self.model.stats[stat_key]["mean"]
-                    ) / self.model.stats[stat_key]["std"]
-
-        # sampling
-        if len(sampling_diversity) > 0:
-            for key, value in sampling_diversity.items():
-                rand_vals = np.random.uniform(0, 1, batch[key].shape)
-                sampling_mask = (rand_vals < value) & ~batch["phones"].eq(0).numpy()
-                sampling_len = np.sum(sampling_mask)
-                sampling_mask = torch.tensor(sampling_mask)
-                samples = np.random.choice(
-                    self.sampling_dict[key], sampling_len, replace=False
-                )
-                batch[key][sampling_mask] = (
-                    torch.tensor(samples).to(batch[key].dtype).to(batch[key].device)
-                )
-
-        if any(oracle_diversity.values()):
-            for key, value in oracle_diversity.items():
-                if value:
-                    pass
-                else:
-                    batch[key] = result[key].to(self.device)
-            for key in batch.keys():
-                try:
-                    batch[key] = batch[key].to(self.device)
-                except:
-                    pass
-            result = self.model(batch, inference=False)
-
-        if changed_diversity:
-            for key in batch.keys():
-                try:
-                    batch[key] = batch[key].to(self.device)
-                except:
-                    pass
-            result = self.model(batch, inference=False)
-        
-        mels = []
+        audios = []
         for i in range(len(result["mel"])):
-            if changed_diversity or ("duration" in oracle_diversity and oracle_diversity["duration"]):
-                pred_mel = result["mel"][i][: torch.sum(batch["duration"][i])].cpu()
-            else:
-                pred_mel = result["mel"][i][
-                    : torch.sum(result["duration_rounded"][i])
-                ].cpu()
-            mels.append(int16_samples_to_float32(self.synth(pred_mel)[0]))
-        if self.augmentations is not None:
-            mels = [self.augmentations(m, sample_rate=self.model.hparams.sampling_rate) for m in mels]
-        return mels
+            mel = result["mel"][i][
+                : torch.sum(result["duration_rounded"][i])
+            ].cpu()
+            audios.append(int16_samples_to_float32(self.synth(mel)[0]))
 
-    def _create_phone_sampling_dict(self, dataset, variances, batch_size): # refactor for DRYness
+        if self.voicefixer is not None:
+            for i, audio in enumerate(audios):
+                tmp_dir = Path("/tmp/voicefixer")
+                tmp_dir.mkdir(exist_ok=True)
+                torchaudio.save(tmp_dir / "tmp.wav", torch.tensor([audio]), 22050)
+                self.voicefixer.restore(input=tmp_dir / "tmp.wav", output=tmp_dir / "tmp_fixed.wav")
+                audios[0] = torchaudio.load(tmp_dir / "tmp_fixed.wav")[0].numpy()
+
+        if self.augmentations is not None:
+            audios = [
+                self.augmentations(audio, sample_rate=self.model.hparams.sampling_rate)
+                for audio in audios
+            ]
+
+        return audios
+
+    def _create_phone_sampling_dict(
+        self, dataset, variances, batch_size
+    ):  # refactor for DRYness
         self.sampling_dict = {}
         done_vars = []
         if self.sampling_path is not None:
@@ -281,7 +188,9 @@ class SpeechGenerator:
                         print("Frame variance not supported yet")
         for key in self.sampling_dict.keys():
             # to numpy arrays
-            self.sampling_dict[key] = { k: np.array(v) for k, v in self.sampling_dict[key].items() }
+            self.sampling_dict[key] = {
+                k: np.array(v) for k, v in self.sampling_dict[key].items()
+            }
             if self.sampling_path is not None:
                 Path(self.sampling_path).mkdir(parents=True, exist_ok=True)
                 dict_path = Path(self.sampling_path, key + "_phone" + ".pkl")
@@ -390,11 +299,11 @@ class SpeechGenerator:
         sampling_diversity={},
         oracle_diversity={},
         sampling_level="all",
-        filter_speakers=None, # reduces the number of speakers to the top x with the most samples available
-        copy=False, # simply copies the files to the target directory
-        random_speaker=False, # randomly selects a speaker from the tts model
-        include_dataset_speakers=False, # includes the speakers from the dataset in the random speaker selection
-        prior_sampling="none", # prior sampling
+        filter_speakers=None,  # reduces the number of speakers to the top x with the most samples available
+        copy=False,  # simply copies the files to the target directory
+        random_speaker=False,  # randomly selects a speaker from the tts model
+        include_dataset_speakers=False,  # includes the speakers from the dataset in the random speaker selection
+        prior_sampling="none",  # prior sampling
     ):
         dataset.stats = self.model.stats
         if Path(target_dir).exists() and not self.overwrite:
@@ -413,9 +322,13 @@ class SpeechGenerator:
                 print("Random speaker and copy, this is not supported")
                 return
             if not random_speaker:
-                dataset2model = self._create_dataset2model(dataset, dataset_dvectors, model_dvectors)
+                dataset2model = self._create_dataset2model(
+                    dataset, dataset_dvectors, model_dvectors
+                )
             if include_dataset_speakers and not random_speaker:
-                print("Including dataset speakers in random speaker selection, this is not supported")
+                print(
+                    "Including dataset speakers in random speaker selection, this is not supported"
+                )
                 return
             else:
                 if include_dataset_speakers:
@@ -423,7 +336,9 @@ class SpeechGenerator:
                 else:
                     random_vecs = model_dvectors
                 if filter_speakers is not None:
-                    random_vecs = {k: v for k, v in list(random_vecs.items())[:filter_speakers]}
+                    random_vecs = {
+                        k: v for k, v in list(random_vecs.items())[:filter_speakers]
+                    }
                     random_keys = sorted(random_vecs.keys())
                     random_weights = {k: 0.01 for k in random_keys}
                     print(f"Filtered dataset down to {filter_speakers} speakers")
@@ -444,10 +359,19 @@ class SpeechGenerator:
             if filter_speakers is not None:
                 if not random_speaker:
                     orig_len = len(dataset.data)
-                    filtered_speakers = dataset.data["speaker"].value_counts().sort_values(ascending=False)[:filter_speakers].index.tolist()
-                    dataset.data = dataset.data[dataset.data["speaker"].isin(filtered_speakers)]
+                    filtered_speakers = (
+                        dataset.data["speaker"]
+                        .value_counts()
+                        .sort_values(ascending=False)[:filter_speakers]
+                        .index.tolist()
+                    )
+                    dataset.data = dataset.data[
+                        dataset.data["speaker"].isin(filtered_speakers)
+                    ]
                     final_len = len(dataset.data)
-                    print(f"Filtered dataset down to {filter_speakers} speakers, conserving {final_len/orig_len*100:.2f}% of the data")
+                    print(
+                        f"Filtered dataset down to {filter_speakers} speakers, conserving {final_len/orig_len*100:.2f}% of the data"
+                    )
             for item in DataLoader(
                 dataset,
                 batch_size=batch_size,
@@ -478,8 +402,8 @@ class SpeechGenerator:
                     else:
                         speaker_keys = random.choices(
                             random_keys,
-                            weights=[1/random_weights[k] for k in random_keys],
-                            k=len(item["speaker_key"])
+                            weights=[1 / random_weights[k] for k in random_keys],
+                            k=len(item["speaker_key"]),
                         )
                         for speaker_key in speaker_keys:
                             random_weights[speaker_key] += 1
@@ -511,7 +435,7 @@ class SpeechGenerator:
                         ].cpu()
                         audios.append(int16_samples_to_float32(self.synth(real_mel)[0]))
                         speaker_keys.append(item["speaker_key"][i])
-                        #if self.augmentations is not None:
+                        # if self.augmentations is not None:
                         #    audios = [self.augmentations(m, sample_rate=self.model.hparams.sampling_rate) for m in audios]
                 for i, audio in enumerate(audios):
                     save_dir = Path(target_dir, Path(speaker_keys[i]).name)

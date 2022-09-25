@@ -1,46 +1,37 @@
-import configparser
+from copy import copy
 import io
 import json
 import multiprocessing
-import os
-from glob import glob
 from pathlib import Path
 from random import Random
 import warnings
-import shutil
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pyworld as pw
-import scipy
 import scipy.stats as stats
 import seaborn as sns
-import tgt
 import torch
 import torchaudio
-import torchaudio.functional as F
 import torchaudio.transforms as AT
-import torchvision.transforms as VT
 from librosa.filters import mel as librosa_mel
 from matplotlib.gridspec import GridSpec
 from pandarallel import pandarallel
 from phones.convert import Converter
 from PIL import Image
-from rich import print
-from scipy import signal
-from third_party.dvectors.wav2mel import Wav2Mel
+from rich import print # pylint: disable=redefined-builtin
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 from tqdm.rich import tqdm
 from tqdm.contrib.concurrent import process_map
 
-from dataset.audio_utils import dynamic_range_compression
-from dataset.cwt import CWT
-from dataset.snr import SNR
-
-from third_party.argutils import str2bool
+from litfass.dataset.audio_utils import dynamic_range_compression
+from litfass.dataset.cwt import CWT
+from litfass.dataset.snr import SNR
+from litfass.third_party.dvectors.wav2mel import Wav2Mel
+from litfass.third_party.argutils import str2bool
 
 pandarallel.initialize(progress_bar=True)
 tqdm.pandas()
@@ -77,7 +68,7 @@ class TTSDataset(Dataset):
         n_fft=1024,
         win_length=1024,
         hop_length=256,
-        denoise=False,
+        min_samples_per_speaker=0,
     ):
         super().__init__()
 
@@ -100,7 +91,6 @@ class TTSDataset(Dataset):
         self.dio_speed = int(np.round(1 / pitch_quality))
         self.source_phoneset = source_phoneset
         self.pitch_quality = pitch_quality
-        self.do_denoise = denoise
 
         # PHONES
         self.phone_converter = Converter()
@@ -128,7 +118,7 @@ class TTSDataset(Dataset):
                 entry
                 for entry in process_map(
                     self._create_entry,
-                    zip([i]*len(ds), np.arange(len(ds))),
+                    zip([i] * len(ds), np.arange(len(ds))),
                     chunksize=10_000,
                     max_workers=multiprocessing.cpu_count(),
                     desc=f"processing alignments for dataset {i}",
@@ -156,6 +146,12 @@ class TTSDataset(Dataset):
         )
         del entries
 
+        # FILTER by number of samples per speaker
+        if min_samples_per_speaker > 0:
+            for speaker in list(self.data["speaker"].unique()):
+                if len(self.data[self.data["speaker"] == speaker]) < min_samples_per_speaker:
+                    self.data = self.data[self.data["speaker"] != speaker]
+
         # DVECTORS
         if self.speaker_type == "dvector":
             self._create_dvectors()
@@ -168,19 +164,6 @@ class TTSDataset(Dataset):
         elif self.speaker_type == "id":
             speakers = self.data["speaker"].unique()
             self.speaker2id = {speaker: i for i, speaker in enumerate(speakers)}
-
-        # DENOISE
-        if denoise:
-            from speechbrain.pretrained import SpectralMaskEnhancement
-            self.denoise = SpectralMaskEnhancement.from_hparams(
-                source="speechbrain/metricgan-plus-voicebank",
-                savedir="speechbrain/metricgan-plus-voicebank",
-            )
-            self._create_denoised()
-            self.data["audio"] = self.data["audio"].apply(lambda x: Path(x).with_suffix(".clean"))
-            exist_list = [Path(x).exists() for x in self.data["audio"]]
-            print(f"{len(exist_list)-np.sum(exist_list)} missing denoised audio files")
-            self.data = self.data[exist_list]
 
         # MEL SPECTROGRAM
         self.mel_spectrogram = AT.Spectrogram(
@@ -260,10 +243,8 @@ class TTSDataset(Dataset):
                     "stats file exists but number of samples does not match"
                 )
 
-        self.speaker2stats = {}
-        self.record_speaker_stats = True
-
         if compute_stats:
+            self._load_stats_only = True
             for entry in tqdm(
                 DataLoader(
                     self,
@@ -308,6 +289,11 @@ class TTSDataset(Dataset):
         if "phone" in self.variance_levels:
             self.phone_level = True
 
+        if len(self.priors) > 0:
+            self.speaker_priors = self._create_priors()
+
+        self._load_stats_only = False
+
     def create_validation_dataset(
         self,
         valid_ds,
@@ -338,11 +324,9 @@ class TTSDataset(Dataset):
             fmax=self.fmax,
             pitch_quality=self.pitch_quality,
             source_phoneset=self.source_phoneset,
-            denoise=self.do_denoise,
         )
         ds.phone2id = self.phone2id
         ds.id2phone = self.id2phone
-        ds.record_speaker_stats = False
         return ds
 
     def __len__(self):
@@ -366,10 +350,11 @@ class TTSDataset(Dataset):
         # audio = torch.clip(audio, -1, 1)
 
         # MEL SPECTROGRAM
-        mel = self.mel_spectrogram(audio.unsqueeze(0))
-        mel = torch.sqrt(mel[0])
-        mel = torch.matmul(self.mel_basis, mel)
-        mel = dynamic_range_compression(mel).cpu()
+        if not self._load_stats_only:
+            mel = self.mel_spectrogram(audio.unsqueeze(0))
+            mel = torch.sqrt(mel[0])
+            mel = torch.matmul(self.mel_basis, mel)
+            mel = dynamic_range_compression(mel).cpu()
 
         # DURATIONS & SILENCE MASK
         duration = np.array(row["duration"])
@@ -417,7 +402,6 @@ class TTSDataset(Dataset):
         # RESULT
         result = {
             "id": item_id,
-            "mel": np.array(mel.T)[:dur_sum],
             "variances": {},
             "priors": {},
             "text": text,
@@ -426,20 +410,91 @@ class TTSDataset(Dataset):
             "silence_mask": silence_mask,
             "unexpanded_silence_mask": unexpanded_silence_mask,
         }
+
+        if not self._load_stats_only:
+            result["mel"] = np.array(mel.T)[:dur_sum]
+
         for var in self.variances:
             result["variances"][var] = variances[var]
         for var in self.priors:
             result["priors"][var] = priors[var]
-            if row["speaker"] not in self.speaker2stats:
-                self.speaker2stats[row["speaker"]] = {var: [] for var in self.priors}
-            self.speaker2stats[row["speaker"]][var].append(priors[var])
         if self.speaker_type == "dvector":
             result["speaker"] = self.speaker2dvector[row["speaker"]]
         elif self.speaker_type == "id":
             result["speaker"] = self.speaker2id[row["speaker"]]
-        result["speaker_key"] = row["speaker"]
+        result["speaker_key"] = row["speaker"].name
+        result["speaker_path"] = row["speaker"]
 
         return result
+
+    def _create_priors(self):
+        self._load_stats_only = True
+        temp_df = copy(self.data.sort_values("speaker"))
+        # check if prior values are already computed
+        compute_speakers = []
+        for speaker_path in temp_df["speaker"].unique():
+            for prior in self.priors:
+                if not (speaker_path / f"{prior}_prior.npy").exists():
+                    compute_speakers.append(speaker_path)
+        temp_df = temp_df[temp_df["speaker"].isin(compute_speakers)]
+        orig_data = copy(self.data)
+        self.data = temp_df
+        dl = DataLoader(
+            self,
+            batch_size=10,
+            collate_fn=self._collate_fn,
+            num_workers=multiprocessing.cpu_count(),
+        )
+        speaker_priors = {
+            s.name: {k: [] for k in self.priors}
+            for s in temp_df["speaker"].unique()
+        }
+        pbar = tqdm(dl, total=len(speaker_priors.keys()), maxinterval=1, desc="creating prior files (this only runs once)")
+        prev_speaker = None
+        for item in dl:
+            # check if all speakers are the same
+            if prev_speaker is None:
+                prev_speaker = item["speaker_key"][0]
+                prev_path = item["speaker_path"][0]
+            speaker = item["speaker_key"][0]
+            if len(set(item["speaker_key"])) == 1:
+                for prior in self.priors:
+                    speaker_priors[speaker][prior] += list(item[f"priors_{prior}"])
+            else:
+                for i, i_speaker in enumerate(item["speaker_key"]):
+                    for prior in self.priors:
+                        speaker_priors[i_speaker][prior].append(item[
+                            f"priors_{prior}"
+                        ][i])
+            if prev_speaker != speaker:
+                for prior in self.priors:
+                    # save prior to file 
+                    np.save(
+                        prev_path / f"{prior}_prior.npy", speaker_priors[prev_speaker][prior]
+                    )
+                del speaker_priors[prev_speaker]
+                pbar.update(1)
+                prev_speaker = speaker
+                prev_path = item["speaker_path"][0]
+        for speaker in list(speaker_priors.keys()):
+            for prior in self.priors:
+                np.save(
+                    prev_path.parent / speaker / f"{prior}_prior.npy", speaker_priors[speaker][prior]
+                )
+            del speaker_priors[speaker]
+            pbar.update(1)
+        pbar.close()
+        self.data = orig_data
+        speaker_priors = {
+            s.name: {k: [] for k in self.priors}
+            for s in self.data["speaker"].unique()
+        }
+        for speaker in tqdm(self.data["speaker"].unique(), desc="loading priors"):
+            for prior in self.priors:
+                speaker_priors[speaker.name][prior] = np.load(
+                    speaker / f"{prior}_prior.npy"
+                )
+        return speaker_priors
 
     def _create_phone2id(self):
         unique_phones = set()
@@ -531,40 +586,6 @@ class TTSDataset(Dataset):
                 ) / self.stats[var]["std"]
 
         return variances
-
-    def _create_denoised(self):
-        batch_size = 10
-        paths = []
-        batch = []
-        lengths = []
-        for _, row in tqdm(
-            self.data.iterrows(),
-            desc="creating/loading denoised audio",
-            total=len(self.data),
-        ):
-            denoised_path = row["audio"].with_suffix(".clean.wav")
-            if Path(str(denoised_path).replace(".wav", "")).exists():
-                continue
-            noisy = self.denoise.load_audio(
-                str(row["audio"]),
-                savedir="speechbrain/wavs"
-            )
-            paths.append(denoised_path)
-            batch.append(noisy)
-            lengths.append(len(noisy))
-            if len(batch) >= batch_size:
-                batch = pad_sequence(
-                    batch, batch_first=True, padding_value=0
-                )
-                clean = self.denoise.enhance_batch(batch, lengths=torch.tensor(lengths)/max(lengths))
-                for i, path in enumerate(paths):
-                    torchaudio.save(path, clean[i][:lengths[i]].unsqueeze(0).cpu(), 16_000)
-                    path.rename(str(path).replace(".wav", ""))
-                paths = []
-                batch = []
-                lengths = []
-                shutil.rmtree("speechbrain/wavs")
-            
 
     def _create_dvectors(self):
         wav2mel = Wav2Mel()
@@ -738,7 +759,7 @@ class TTSDataset(Dataset):
         for value, d in zip(values, durations):
             out += [value] * max(0, int(d))
         if isinstance(values, list):
-            return out
+            return np.array(out)
         elif isinstance(values, torch.Tensor):
             return torch.stack(out)
         elif isinstance(values, np.ndarray):
@@ -922,9 +943,13 @@ class TTSDataset(Dataset):
             f"--{split_name}_source_phoneset", type=str, default="arpabet"
         )
         parser.add_argument(f"--{split_name}_shuffle_seed", type=int, default=42)
-        parser.add_argument(f"--{split_name}_overwrite_stats", type=str2bool, default=False)
+        parser.add_argument(
+            f"--{split_name}_overwrite_stats", type=str2bool, default=False
+        )
         parser.add_argument(
             f"--{split_name}_overwrite_stats_if_missing", type=str2bool, default=True
         )
-        parser.add_argument(f"--{split_name}_denoise", type=str2bool, default=False)
+        parser.add_argument(
+            f"--{split_name}_min_samples_per_speaker", type=int, default=0
+        )
         return parent_parser

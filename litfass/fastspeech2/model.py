@@ -3,7 +3,8 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-#from .torch_transformer import TransformerEncoderLayer, TransformerEncoder
+
+# from .torch_transformer import TransformerEncoderLayer, TransformerEncoder
 from torch.nn import TransformerEncoderLayer
 from torch.nn.utils.rnn import pad_sequence
 from third_party.stochastic_duration_predictor.sdp import StochasticDurationPredictor

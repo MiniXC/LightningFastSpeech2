@@ -1,7 +1,10 @@
+"""
+Script used for training the model.
+"""
+
 from argparse import ArgumentParser
 import os
 import inspect
-from glob import glob
 from pathlib import Path
 import json
 import hashlib
@@ -9,19 +12,16 @@ import pickle
 
 import torch
 import torch.multiprocessing
-
-from fastspeech2.fastspeech2 import FastSpeech2
 from pytorch_lightning import Trainer
-from pytorch_lightning.tuner.tuning import Tuner
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks import StochasticWeightAveraging
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
-import matplotlib.pyplot as plt
-
 from alignments.datasets.libritts import LibrittsDataset
-from third_party.argutils import str2bool
+
+from litfass.third_party.argutils import str2bool
+from litfass.fastspeech2.fastspeech2 import FastSpeech2
 
 torch.multiprocessing.set_sharing_strategy("file_system")
 
@@ -32,7 +32,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--early_stopping", type=str2bool, default=True)
     parser.add_argument("--early_stopping_patience", type=int, default=4)
-    
+
     parser.add_argument("--swa_lr", type=float, default=None)
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
@@ -42,7 +42,10 @@ if __name__ == "__main__":
     parser.add_argument("--no_cache", type=str2bool, default=False)
 
     parser.add_argument(
-        "--train_target_path", type=str, nargs="+", default=["../data/train-clean-360-aligned"]
+        "--train_target_path",
+        type=str,
+        nargs="+",
+        default=["../data/train-clean-360-aligned"],
     )
     parser.add_argument(
         "--train_source_path", type=str, nargs="+", default=["../data/train-clean-360"]
@@ -116,17 +119,28 @@ if __name__ == "__main__":
         if not var_args["no_cache"]:
             kwargs = train_ds_kwargs
             kwargs.update({"target_directory": var_args["train_target_path"][i]})
-            ds_hash = hashlib.md5(json.dumps(kwargs, sort_keys=True).encode('utf-8')).hexdigest()
-            cache_path_alignments = Path(var_args["dataset_cache_path"]) / f"train-alignments-{ds_hash}.pt"
-        if var_args["no_cache"] or len(list(Path(var_args["train_target_path"][i]).rglob("**/*.TextGrid"))) == 0 or not cache_path_alignments.exists():
-            train_ds += [LibrittsDataset(
-                target_directory=var_args["train_target_path"][i],
-                source_directory=var_args["train_source_path"][i],
-                source_url=var_args["train_source_url"][i],
-                verbose=True,
-                tmp_directory=var_args["train_tmp_path"],
-                #chunk_size=10_000,
-            )]
+            ds_hash = hashlib.md5(
+                json.dumps(kwargs, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            cache_path_alignments = (
+                Path(var_args["dataset_cache_path"]) / f"train-alignments-{ds_hash}.pt"
+            )
+        if (
+            var_args["no_cache"]
+            or len(list(Path(var_args["train_target_path"][i]).rglob("**/*.TextGrid")))
+            == 0
+            or not cache_path_alignments.exists()
+        ):
+            train_ds += [
+                LibrittsDataset(
+                    target_directory=var_args["train_target_path"][i],
+                    source_directory=var_args["train_source_path"][i],
+                    source_url=var_args["train_source_url"][i],
+                    verbose=True,
+                    tmp_directory=var_args["train_tmp_path"],
+                    chunk_size=10_000,
+                )
+            ]
             if not var_args["no_cache"]:
                 train_ds[-1].hash = ds_hash
                 with open(cache_path_alignments, "wb") as f:
@@ -135,20 +149,28 @@ if __name__ == "__main__":
             if cache_path_alignments.exists():
                 with open(cache_path_alignments, "rb") as f:
                     train_ds += [pickle.load(f)]
-                
+
     if not var_args["no_cache"]:
         kwargs = valid_ds_kwargs
         kwargs.update({"target_directory": var_args["valid_target_path"]})
-        ds_hash = hashlib.md5(json.dumps(kwargs, sort_keys=True).encode('utf-8')).hexdigest()
-        cache_path_alignments = Path(var_args["dataset_cache_path"]) / f"valid-alignments-{ds_hash}.pt"
-    if var_args["no_cache"] or len(list(Path(var_args["valid_target_path"]).rglob("**/*.TextGrid"))) == 0 or not cache_path_alignments.exists():
+        ds_hash = hashlib.md5(
+            json.dumps(kwargs, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        cache_path_alignments = (
+            Path(var_args["dataset_cache_path"]) / f"valid-alignments-{ds_hash}.pt"
+        )
+    if (
+        var_args["no_cache"]
+        or len(list(Path(var_args["valid_target_path"]).rglob("**/*.TextGrid"))) == 0
+        or not cache_path_alignments.exists()
+    ):
         valid_ds = LibrittsDataset(
             target_directory=var_args["valid_target_path"],
             source_directory=var_args["valid_source_path"],
             source_url=var_args["valid_source_url"],
             verbose=True,
             tmp_directory=var_args["valid_tmp_path"],
-            #chunk_size=10_000,
+            chunk_size=10_000,
         )
         if not var_args["no_cache"]:
             valid_ds.hash = ds_hash
@@ -233,9 +255,7 @@ if __name__ == "__main__":
         )
 
     if var_args["swa_lr"] is not None:
-        callbacks.append(
-            StochasticWeightAveraging(swa_lrs=var_args["swa_lr"])
-        )
+        callbacks.append(StochasticWeightAveraging(swa_lrs=var_args["swa_lr"]))
 
     trainer = Trainer.from_argparse_args(
         args,

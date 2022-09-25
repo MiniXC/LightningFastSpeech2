@@ -40,7 +40,7 @@ This library is a work in progress, and until v1.0, updates might break things o
 
 It will take a while to get to 1.0 -- the goal for this to allow everyone to easily fine-tune our models and to easily do controllable synthesis of utterances.
 
-- [ ] Allow models to be loaded from the [Huggingface hub](huggingface.co/models).
+- [x] Allow models to be loaded from the [Huggingface hub](huggingface.co/models).
 - [ ] [Streamlit](https://streamlit.io/) interface for synthesising utterances and generating datasets.
 - [ ] [Tract](https://github.com/sonos/tract) and [tractjs](https://bminixhofer.github.io/tractjs/) integration to export models for on-device and web use.
 - [ ] Make it easy to add new datasets and to fine-tune models with them.

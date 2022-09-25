@@ -7,36 +7,39 @@ import hashlib
 import json
 import pickle
 from copy import copy
-import math
+from time import time
 
 import pytorch_lightning as pl
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-#from .torch_transformer import TransformerEncoder, TransformerEncoderLayer
+
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
-import wandb
-import pandas as pd
+from tqdm.auto import tqdm
 import numpy as np
-import matplotlib.pyplot as plt
 from scipy.spatial.distance import jensenshannon
 from sklearn.neighbors import KernelDensity
+from sklearn.mixture import GaussianMixture
+import wandb
 
-from dataset.datasets import TTSDataset
-from .model import (
+
+from litfass.dataset.datasets import TTSDataset
+from litfass.fastspeech2.model import (
     ConformerEncoderLayer,
     PositionalEncoding,
     VarianceAdaptor,
     PriorEmbedding,
     SpeakerEmbedding,
 )
-from third_party.hifigan import Synthesiser
-from third_party.softdtw import SoftDTW
-from third_party.argutils import str2bool
-from .loss import FastSpeech2Loss
-from .noam import NoamLR
+from litfass.third_party.hifigan import Synthesiser
+from litfass.third_party.softdtw import SoftDTW
+from litfass.third_party.argutils import str2bool
+#from litfass.third_party.gmm import GaussianMixture
+from litfass.fastspeech2.loss import FastSpeech2Loss
+from litfass.fastspeech2.noam import NoamLR
 
 num_cpus = multiprocessing.cpu_count()
+
 
 class FastSpeech2(pl.LightningModule):
     def __init__(
@@ -109,6 +112,8 @@ class FastSpeech2(pl.LightningModule):
         tf_linear_schedule_end_ratio=0.0,
         num_workers=num_cpus,
         cache_path=None,
+        priors_gmm=False,
+        priors_gmm_max_components=5,
     ):
         super().__init__()
 
@@ -139,7 +144,7 @@ class FastSpeech2(pl.LightningModule):
                 "valid_example_directory",
                 "batch_size",
                 "variance_early_stopping_directory",
-                "num_workers"
+                "num_workers",
             ]
         )
 
@@ -169,7 +174,9 @@ class FastSpeech2(pl.LightningModule):
                     hashes = [train_ds.hash]
                 kwargs = copy(train_ds_kwargs)
                 kwargs.update({"hashes": hashes})
-                ds_hash = hashlib.md5(json.dumps(kwargs, sort_keys=True).encode('utf-8')).hexdigest()
+                ds_hash = hashlib.md5(
+                    json.dumps(kwargs, sort_keys=True).encode("utf-8")
+                ).hexdigest()
                 cache_path_full = Path(cache_path) / f"train-full-{ds_hash}.pt"
                 if cache_path_full.exists():
                     with cache_path_full.open("rb") as f:
@@ -187,7 +194,9 @@ class FastSpeech2(pl.LightningModule):
             if cache_path is not None:
                 kwargs = copy(valid_ds_kwargs)
                 kwargs.update({"hashes": [self.train_ds.hash, valid_ds.hash]})
-                ds_hash = hashlib.md5(json.dumps(kwargs, sort_keys=True).encode('utf-8')).hexdigest()
+                ds_hash = hashlib.md5(
+                    json.dumps(kwargs, sort_keys=True).encode("utf-8")
+                ).hexdigest()
                 cache_path_full = Path(cache_path) / f"valid-full-{ds_hash}.pt"
                 if cache_path_full.exists():
                     with cache_path_full.open("rb") as f:
@@ -358,7 +367,8 @@ class FastSpeech2(pl.LightningModule):
                     len(self.speaker2id),
                 )
 
-        self.speaker2stats = None
+        if hasattr(self, "train_ds") and self.train_ds is not None:
+            self.speaker2priors = self.train_ds.speaker_priors
 
         # loss
         loss_weights = {
@@ -377,6 +387,34 @@ class FastSpeech2(pl.LightningModule):
             / self.hparams.hop_length,
             loss_weights,
         )
+
+        if len(self.hparams.priors) > 0 and self.hparams.priors_gmm:
+            self._fit_speaker_prior_gmms()
+
+
+    def _fit_speaker_prior_gmms(self):
+        for speaker in tqdm(self.speaker2priors.keys(), desc="fitting speaker prior gmms"):
+            priors = self.speaker2priors[speaker]
+            X = np.stack([priors[prior] for prior in self.hparams.priors], axis=1)
+            best_bic = float("inf")
+            n_components = 2
+            self.speaker_gmms = {}
+            while True:
+                gmm = GaussianMixture(
+                    n_components=n_components,
+                    random_state=42,
+                )
+                gmm.fit(X)
+                bic = gmm.bic(X)
+                if bic < best_bic:
+                    best_bic = bic
+                    best_gmm = gmm
+                else:
+                    break
+                if n_components == len(X) or n_components >= self.hparams.priors_gmm_max_components:
+                    break
+                n_components += 1
+            self.speaker_gmms[speaker] = best_gmm
 
     def on_load_checkpoint(self, checkpoint):
         self.stats = checkpoint["stats"]
@@ -427,9 +465,10 @@ class FastSpeech2(pl.LightningModule):
                 )
         if "speaker2dvector" in checkpoint:
             self.speaker2dvector = checkpoint["speaker2dvector"]
-        if "speaker2stats" in checkpoint:
-            self.speaker2stats = checkpoint["speaker2stats"]
-
+        if "speaker2priors" in checkpoint:
+            self.speaker2priors = checkpoint["speaker2priors"]
+        if "speaker_gmms" in checkpoint:
+            self.speaker_gmms = checkpoint["speaker_gmms"]
 
         # drop shape mismatched layers
         state_dict = checkpoint["state_dict"]
@@ -438,9 +477,11 @@ class FastSpeech2(pl.LightningModule):
         for k in state_dict:
             if k in model_state_dict:
                 if state_dict[k].shape != model_state_dict[k].shape:
-                    print(f"Skip loading parameter: {k}, "
-                                f"required shape: {model_state_dict[k].shape}, "
-                                f"loaded shape: {state_dict[k].shape}")
+                    print(
+                        f"Skip loading parameter: {k}, "
+                        f"required shape: {model_state_dict[k].shape}, "
+                        f"loaded shape: {state_dict[k].shape}"
+                    )
                     state_dict[k] = model_state_dict[k]
                     is_changed = True
             else:
@@ -457,19 +498,12 @@ class FastSpeech2(pl.LightningModule):
             checkpoint["speaker2id"] = self.speaker2id
         if hasattr(self, "speaker2dvector"):
             checkpoint["speaker2dvector"] = self.speaker2dvector
-        if hasattr(self, "speaker2stats"):
-            checkpoint["speaker2stats"] = self.speaker2stats
+        if hasattr(self, "speaker2priors"):
+            checkpoint["speaker2priors"] = self.speaker2priors
+        if hasattr(self, "speaker_gmms"):
+            checkpoint["speaker_gmms"] = self.speaker_gmms
 
     def forward(self, targets, inference=False):
-        # for key in targets.keys():
-        #     # print types
-        #     if isinstance(targets[key], list):
-        #         if isinstance(targets[key][0], torch.Tensor):
-        #             print(key, type(targets[key][0]), targets[key][0].dtype)
-        #     else:
-        #         if isinstance(targets[key], torch.Tensor):
-        #             print(key, type(targets[key]), targets[key].dtype)
-
 
         phones = targets["phones"].to(self.device)
         speakers = targets["speaker"]
@@ -485,19 +519,28 @@ class FastSpeech2(pl.LightningModule):
                 speakers, output.shape[1], output.shape[-1]
             )
         else:
-            every_encoder_layer =  self.speaker_embedding(
+            every_encoder_layer = self.speaker_embedding(
                 speakers, output.shape[1], output.shape[-1]
             )
 
         if self.hparams.prior_embedding_every_layer:
             for prior in self.hparams.priors:
-                every_encoder_layer = every_encoder_layer + self.prior_embeddings[prior](
+                every_encoder_layer = every_encoder_layer + self.prior_embeddings[
+                    prior
+                ](
                     torch.tensor(targets[f"priors_{prior}"]).to(self.device),
                     output.shape[1],
                 )
 
-        if self.hparams.prior_embedding_every_layer or self.hparams.speaker_embedding_every_layer:
-            output = self.encoder(output, src_key_padding_mask=src_mask, additional_src=every_encoder_layer)
+        if (
+            self.hparams.prior_embedding_every_layer
+            or self.hparams.speaker_embedding_every_layer
+        ):
+            output = self.encoder(
+                output,
+                src_key_padding_mask=src_mask,
+                additional_src=every_encoder_layer,
+            )
         else:
             output = self.encoder(output, src_key_padding_mask=src_mask)
 
@@ -540,14 +583,20 @@ class FastSpeech2(pl.LightningModule):
                 speakers, output.shape[1], output.shape[-1]
             )
         else:
-            every_decoder_layer =  self.speaker_embedding(
+            every_decoder_layer = self.speaker_embedding(
                 speakers, output.shape[1], output.shape[-1]
             )
 
         if self.hparams.speaker_embedding_every_layer:
-            output = self.decoder(output, src_key_padding_mask=variance_output["tgt_mask"], additional_src=every_decoder_layer)
+            output = self.decoder(
+                output,
+                src_key_padding_mask=variance_output["tgt_mask"],
+                additional_src=every_decoder_layer,
+            )
         else:
-            output = self.decoder(output, src_key_padding_mask=variance_output["tgt_mask"])
+            output = self.decoder(
+                output, src_key_padding_mask=variance_output["tgt_mask"]
+            )
 
         output = self.linear(output)
 
@@ -693,12 +742,14 @@ class FastSpeech2(pl.LightningModule):
                         )
                         pred_fig.save(
                             os.path.join(
-                                self.valid_example_directory, f"pred_{batch['id'][i]}.png"
+                                self.valid_example_directory,
+                                f"pred_{batch['id'][i]}.png",
                             )
                         )
                         true_fig.save(
                             os.path.join(
-                                self.valid_example_directory, f"true_{batch['id'][i]}.png"
+                                self.valid_example_directory,
+                                f"true_{batch['id'][i]}.png",
                             )
                         )
                     pred_audio = self.synth(pred_mel.to(self.device).float())[0]
@@ -713,7 +764,9 @@ class FastSpeech2(pl.LightningModule):
                         ]
                     )
                 except:
-                    print("WARNING: failed to log example (common before training starts)")
+                    print(
+                        "WARNING: failed to log example (common before training starts)"
+                    )
 
     def _add_to_results_dict(self, inference_result, batch, result, add_n):
         # duration
@@ -862,9 +915,11 @@ class FastSpeech2(pl.LightningModule):
                                 # freeze encoder
                                 print(f"Freezing encoder {key}")
                                 self.variance_adaptor.freeze(key)
-                                self.log_dict({
-                                    f"variance_early_stopping_{key}_epoch": self.current_epoch
-                                })
+                                self.log_dict(
+                                    {
+                                        f"variance_early_stopping_{key}_epoch": self.current_epoch
+                                    }
+                                )
 
                     self.log_dict({f"eval/jensenshannon_{key}": var_js})
                     self.log_dict({f"eval/mae_{key}": var_mae})
@@ -1018,8 +1073,15 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--tf_linear_schedule_end", type=int, default=20)
         parser.add_argument("--tf_linear_schedule_end_ratio", type=float, default=0.0)
         parser.add_argument("--num_workers", type=int, default=num_cpus)
-        parser.add_argument("--speaker_embedding_every_layer", type=str2bool, default=False)
-        parser.add_argument("--prior_embedding_every_layer", type=str2bool, default=False)
+        parser.add_argument(
+            "--speaker_embedding_every_layer", type=str2bool, default=False
+        )
+        parser.add_argument(
+            "--prior_embedding_every_layer", type=str2bool, default=False
+        )
+        # priors gmm 
+        parser.add_argument("--priors_gmm", type=str2bool, default=False)
+        parser.add_argument("--priors_gmm_max_components", type=int, default=5)
         return parent_parser
 
     @staticmethod

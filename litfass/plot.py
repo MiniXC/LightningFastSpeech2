@@ -15,26 +15,26 @@ if __name__ == "__main__":
     #     pitch_quality=0.25,
     # )
     # train_ud.plot(1_000)
-    #ds = TTSDataset(
+    # ds = TTSDataset(
     #    LibrittsDataset(target_directory="../Data/LibriTTS/train-clean-100-aligned", chunk_size=10_000),
     #    priors=[],
     #    variances=[],
     #    variance_transforms=["none", "none", "none"],
     #    denoise=False,
-    #)
-    #ds = TTSDataset(
+    # )
+    # ds = TTSDataset(
     #    LibrittsDataset(target_directory="../Data/LibriTTS/train-clean-360-aligned", chunk_size=10_000),
     #    priors=[],
     #    variances=[],
     #    variance_transforms=["none", "none", "none"],
     #    denoise=False,
-    #)
+    # )
     ds = TTSDataset(
         LibrittsDataset(target_directory="../data/train-clean-a", chunk_size=10_000),
         priors=["pitch", "energy", "snr", "duration"],
         variances=["pitch", "energy", "snr"],
         variance_transforms=["none", "none", "none"],
-        variance_levels=["phone","phone", "phone"],
+        variance_levels=["phone", "phone", "phone"],
         denoise=False,
         overwrite_stats=True,
     )
@@ -44,7 +44,7 @@ if __name__ == "__main__":
         fig.save(f"test{i}.png")
         if i > 10:
             break
-    
+
     # print(train_ud[3398])
     # train_ud.plot(3398)
     # train_ud.plot(3692)

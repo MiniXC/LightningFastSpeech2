@@ -81,48 +81,42 @@ class FastSpeech2Loss(nn.Module):
                 else:
                     raise ValueError("Unknown variance level: {}".format(level))
                 if transform == "cwt":
-                    losses[variance + "_cwt"] = (
-                        FastSpeech2Loss.get_loss(
-                            variances_pred[variance],
-                            variances_target[variance].to(dtype=result["mel"].dtype),
-                            self.l1_loss,
-                            variance_mask,
-                            unsqueeze=True,
-                        )
+                    losses[variance + "_cwt"] = FastSpeech2Loss.get_loss(
+                        variances_pred[variance],
+                        variances_target[variance].to(dtype=result["mel"].dtype),
+                        self.l1_loss,
+                        variance_mask,
+                        unsqueeze=True,
                     )
-                    losses[variance + "_mean"] = (
-                        self.mse_loss(
-                            result[f"variances_{variance}"]["mean"],
-                            torch.tensor(target[f"variances_{variance}_mean"])
-                            .to(result[f"variances_{variance}"]["mean"].device, dtype=result["mel"].dtype),
-                        )
+                    losses[variance + "_mean"] = self.mse_loss(
+                        result[f"variances_{variance}"]["mean"],
+                        torch.tensor(target[f"variances_{variance}_mean"]).to(
+                            result[f"variances_{variance}"]["mean"].device,
+                            dtype=result["mel"].dtype,
+                        ),
                     )
-                    losses[variance + "_std"] = (
-                        self.mse_loss(
-                            result[f"variances_{variance}"]["std"],
-                            torch.tensor(target[f"variances_{variance}_std"])
-                            .to(result[f"variances_{variance}"]["std"].device, dtype=result["mel"].dtype),
-                        )
+                    losses[variance + "_std"] = self.mse_loss(
+                        result[f"variances_{variance}"]["std"],
+                        torch.tensor(target[f"variances_{variance}_std"]).to(
+                            result[f"variances_{variance}"]["std"].device,
+                            dtype=result["mel"].dtype,
+                        ),
                     )
                 else:
-                    losses[variance] = (
-                        FastSpeech2Loss.get_loss(
-                            variances_pred[variance],
-                            variances_target[variance].to(dtype=result["mel"].dtype),
-                            self.mse_loss,
-                            variance_mask,
-                        )
+                    losses[variance] = FastSpeech2Loss.get_loss(
+                        variances_pred[variance],
+                        variances_target[variance].to(dtype=result["mel"].dtype),
+                        self.mse_loss,
+                        variance_mask,
                     )
 
         # MEL SPECTROGRAM LOSS
-        losses["mel"] = (
-            FastSpeech2Loss.get_loss(
-                result["mel"],
-                target["mel"].to(dtype=result["mel"].dtype),
-                self.l1_loss,
-                tgt_mask,
-                unsqueeze=True,
-            )
+        losses["mel"] = FastSpeech2Loss.get_loss(
+            result["mel"],
+            target["mel"].to(dtype=result["mel"].dtype),
+            self.l1_loss,
+            tgt_mask,
+            unsqueeze=True,
         )
 
         # DURATION LOSS
@@ -138,7 +132,11 @@ class FastSpeech2Loss(nn.Module):
 
         # TOTAL LOSS
         total_loss = sum(
-            [v * self.loss_alphas[k] for k, v in losses.items() if not any(f in k for f in frozen_components)]
+            [
+                v * self.loss_alphas[k]
+                for k, v in losses.items()
+                if not any(f in k for f in frozen_components)
+            ]
         )
         losses["total"] = total_loss
 

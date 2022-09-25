@@ -1,8 +1,7 @@
-CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python src/train.py \
+CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python litfass/train.py \
 --accelerator gpu \
 --devices 4 \
 --precision 16 \
---strategy ddp \
 --batch_size 6 \
 --val_check_interval 1.0 \
 --accumulate_grad_batches 8 \
@@ -20,7 +19,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python src/train.py \
 --encoder_head 2 \
 --decoder_head 2 \
 --variance_loss_weights 0.01 0.01 0.01 \
---duration_loss_weight 0.1 \
+--duration_loss_weight 0.01 \
 --variance_levels phone phone phone \
 --variance_transforms none none none \
 --variance_early_stopping mae \
@@ -30,14 +29,8 @@ CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python src/train.py \
 --priors energy duration snr pitch \
 --speaker_embedding_every_layer False \
 --prior_embedding_every_layer False \
---wandb_name "split_a_mae" \
---train_target_path "../data/train-clean-a"
-
-
-# --from_checkpoint models/BFF-v6.ckpt \
-# --strategy ddp \
-# --lr 6e-4 \
-# --strategy deepspeed_stage_2 \
-# --devices 4 \
-
-# ddp_find_unused_parameters_false
+--wandb_name "gmms" \
+--wandb_mode "offline" \
+--train_target_path "../data/train-clean-360-aligned" \
+--train_min_samples_per_speaker 10 \
+--priors_gmm True \
