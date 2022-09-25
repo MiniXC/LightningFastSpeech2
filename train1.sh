@@ -23,13 +23,14 @@ CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python src/train.py \
 --duration_loss_weight 0.1 \
 --variance_levels phone phone phone \
 --variance_transforms none none none \
---variance_early_stopping js \
+--variance_early_stopping mae \
+--early_stopping_patience 5 \
 --decoder_layers 6 \
 --decoder_kernel_sizes 9 9 9 9 9 9 \
 --priors energy duration snr pitch \
 --speaker_embedding_every_layer False \
 --prior_embedding_every_layer False \
---wandb_name "split_a_small_var_snr" \
+--wandb_name "split_a_mae" \
 --train_target_path "../data/train-clean-a"
 
 
