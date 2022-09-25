@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python litfass/train.py \
+CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python ../litfass/train.py \
 --accelerator gpu \
 --devices 4 \
 --precision 16 \
