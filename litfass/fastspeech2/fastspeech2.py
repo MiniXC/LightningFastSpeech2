@@ -626,15 +626,6 @@ class FastSpeech2(pl.LightningModule):
         )
         return losses["total"]
 
-    def training_epoch_end(self, training_step_outputs):
-        if self.speaker2stats is None:
-            self.speaker2stats = self.train_ds.speaker2stats
-        elif self.speaker2stats.keys() != self.train_ds.speaker2stats.keys():
-            # update the dict with the additional keys
-            self.speaker2stats.update(self.train_ds.speaker2stats)
-        else:
-            self.train_ds.record_speaker_stats = False
-
     def validation_step(self, batch, batch_idx):
         result = self(batch)
         losses = self.loss(result, batch)
