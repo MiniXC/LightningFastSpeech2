@@ -112,6 +112,9 @@ class FastSpeech2(pl.LightningModule):
         cache_path=None,
         priors_gmm=False,
         priors_gmm_max_components=5,
+        priors_gmm_min_samples_per_component=20,
+        priors_gmm_reg_covar=1e-3,
+        priors_gmm_logs=[0,1,2,3],
     ):
         super().__init__()
 
@@ -392,37 +395,19 @@ class FastSpeech2(pl.LightningModule):
 
     def _fit_speaker_prior_gmms(self):
         self.speaker_gmms = {}
+        reg_covar = self.hparams.priors_gmm_reg_covar
         for speaker in tqdm(self.speaker2priors.keys(), desc="fitting speaker prior gmms"):
             priors = self.speaker2priors[speaker]
             X = np.stack([priors[prior] for prior in self.hparams.priors], axis=1)
-            gmm = LogGMM(
-                n_components=2,
-                random_state=42,
-                reg_covar=5e-3,
-            )
-            gmm.fit(X)
-            bic = gmm.bic(X)
-            logs = []
-            for i in range(len(self.hparams.priors)):
-                gmm = LogGMM(
-                    n_components=2,
-                    random_state=42,
-                    logs=logs + [i],
-                    reg_covar=5e-3,
-                )
-                gmm.fit(X)
-                log_bic = gmm.bic(X)
-                if log_bic < bic*0.9:
-                    logs.append(i)
-                    bic = log_bic
-            best_bic = float("inf")
-            n_components = 2
+            gmm_kwargs = {
+                "n_components": 1,
+                "random_state": 0,
+                "reg_covar": reg_covar,
+                "logs": self.hparams.priors_gmm_logs,
+            }
+            best_bic = np.infty
             while True:
-                gmm = LogGMM(
-                    n_components=n_components,
-                    random_state=42,
-                    logs=logs,
-                )
+                gmm = LogGMM(**gmm_kwargs)
                 gmm.fit(X)
                 bic = gmm.bic(X)
                 if bic < best_bic:
@@ -430,10 +415,11 @@ class FastSpeech2(pl.LightningModule):
                     best_gmm = gmm
                 else:
                     break
-                if n_components == len(X) or n_components >= self.hparams.priors_gmm_max_components:
+                n_components = gmm_kwargs["n_components"]
+                if n_components == len(X) or n_components >= self.hparams.priors_gmm_max_components or self.hparams.priors_gmm_min_samples_per_component * n_components > len(X):
                     break
-                n_components += 1
-            self.speaker_gmms[speaker] = (best_gmm, logs)
+                gmm_kwargs["n_components"] += 1
+            self.speaker_gmms[speaker] = best_gmm
 
     def on_load_checkpoint(self, checkpoint):
         self.stats = checkpoint["stats"]
@@ -1100,6 +1086,9 @@ class FastSpeech2(pl.LightningModule):
         # priors gmm 
         parser.add_argument("--priors_gmm", type=str2bool, default=False)
         parser.add_argument("--priors_gmm_max_components", type=int, default=5)
+        parser.add_argument("--priors_gmm_min_samples_per_component", type=int, default=20)
+        parser.add_argument("--priors_gmm_reg_covar", type=float, default=1e-3)
+        parser.add_argument("--priors_gmm_logs", nargs="+", type=int, default=[0,1,2,3])
         return parent_parser
 
     @staticmethod

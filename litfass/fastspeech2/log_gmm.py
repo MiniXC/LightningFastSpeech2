@@ -17,19 +17,17 @@ class LogGMM():
             del kwargs["eps"]
         else:
             self.eps = 1e-10
-        self.scaler = StandardScaler()
-        self.scaler_fit = False
+        self.max_vals = None
         self.gmm = GaussianMixture(*args, **kwargs)
 
     def _create_log_x(self, X):
         X = np.array(copy(X))
+        if self.max_vals is None:
+            self.max_vals = np.max(X, axis=0)
+        X = X / self.max_vals + self.eps
         for i in range(X.shape[1]):
             if i in self.logs:
-                X[:, i] = np.log(X[:, i]+self.eps)
-        if not self.scaler_fit:
-            self.scaler.fit(X)
-            self.scaler_fit = True
-        X = self.scaler.transform(X)
+                X[:, i] = np.log(X[:, i])
         return X
 
     def fit(self, X, y=None):
@@ -67,8 +65,9 @@ class LogGMM():
     def sample(self, n_samples=1, random_state=None):
         np.random.seed(random_state)
         X, comp = self.gmm.sample(n_samples)
-        X = self.scaler.inverse_transform(X)
         for i in range(X.shape[1]):
             if i in self.logs:
-                X[:, i] = np.exp(X[:, i])
+                X[:, i] = (np.exp(X[:, i])-self.eps)*self.max_vals[i]
+            else:
+                X[:, i] = (X[:, i]-self.eps)*self.max_vals[i]
         return X, comp
