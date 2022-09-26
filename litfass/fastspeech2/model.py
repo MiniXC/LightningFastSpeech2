@@ -7,8 +7,9 @@ import torch.nn as nn
 # from .torch_transformer import TransformerEncoderLayer, TransformerEncoder
 from torch.nn import TransformerEncoderLayer
 from torch.nn.utils.rnn import pad_sequence
-from third_party.stochastic_duration_predictor.sdp import StochasticDurationPredictor
-from dataset.cwt import CWT
+
+from litfass.third_party.stochastic_duration_predictor.sdp import StochasticDurationPredictor
+from litfass.dataset.cwt import CWT
 
 
 def generate_square_subsequent_mask(sz):

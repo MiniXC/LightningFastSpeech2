@@ -27,6 +27,12 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--tts_device", type=str, default=None)
     parser.add_argument("--hifigan_device", type=str, default=None)
+    parser.add_argument("--use_voicefixer", type=str2bool, default=True)
+
+    # override priors
+    parser.add_argument(
+            "--prior_values", nargs="+", type=float, default=[-1, -1, -1, -1]
+        )
 
     parser.add_argument("--augment_pitch", type=str2bool, default=False)
     for pitch_arg in inspect.signature(PitchShift).parameters:
@@ -105,10 +111,13 @@ if __name__ == "__main__":
         device=args.tts_device,
         synth_device=args.hifigan_device,
         augmentations=augmentations,
+        voicefixer=args.use_voicefixer,
     )
 
     if args.sentence is not None:
-        audio = generator.generate_from_text(args.sentence, args.speaker)
+        if args.speaker is not None:
+            args.speaker = Path(args.speaker)
+        audio = generator.generate_from_text(args.sentence, args.speaker, random_seed=0, prior_strategy="gmm", prior_values=args.prior_values)
         if args.output_path is None:
             raise ValueError("No output path specified!")
         Path(args.output_path).parent.mkdir(parents=True, exist_ok=True)

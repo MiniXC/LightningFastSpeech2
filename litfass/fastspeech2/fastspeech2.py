@@ -388,17 +388,38 @@ class FastSpeech2(pl.LightningModule):
             loss_weights,
         )
 
-        if len(self.hparams.priors) > 0 and self.hparams.priors_gmm:
+        if len(self.hparams.priors) > 0 and self.hparams.priors_gmm and hasattr(self, "speaker2priors"):
             self._fit_speaker_prior_gmms()
 
 
     def _fit_speaker_prior_gmms(self):
+        self.speaker_gmms = {}
         for speaker in tqdm(self.speaker2priors.keys(), desc="fitting speaker prior gmms"):
             priors = self.speaker2priors[speaker]
             X = np.stack([priors[prior] for prior in self.hparams.priors], axis=1)
+            gmm = GaussianMixture(
+                n_components=2,
+                random_state=42,
+            )
+            gmm.fit(X)
+            bic = gmm.bic(X)
+            logs = []
+            for i, prior in enumerate(self.hparams.priors):
+                gmm = GaussianMixture(
+                    n_components=2,
+                    random_state=42,
+                )
+                # check if log is needed
+                log_X = X
+                log_X[:, i] = np.log(X[:, i]+1e-10)
+                gmm.fit(X)
+                log_bic = gmm.bic(X)
+                if log_bic < bic:
+                    X = log_X
+                    logs.append(prior)
+                    bic = log_bic
             best_bic = float("inf")
             n_components = 2
-            self.speaker_gmms = {}
             while True:
                 gmm = GaussianMixture(
                     n_components=n_components,
@@ -414,7 +435,7 @@ class FastSpeech2(pl.LightningModule):
                 if n_components == len(X) or n_components >= self.hparams.priors_gmm_max_components:
                     break
                 n_components += 1
-            self.speaker_gmms[speaker] = best_gmm
+            self.speaker_gmms[speaker] = (best_gmm, logs)
 
     def on_load_checkpoint(self, checkpoint):
         self.stats = checkpoint["stats"]
@@ -470,11 +491,15 @@ class FastSpeech2(pl.LightningModule):
         if "speaker_gmms" in checkpoint:
             self.speaker_gmms = checkpoint["speaker_gmms"]
 
+        # TODO: remove once all checkpoints are updated
+        self._fit_speaker_prior_gmms()
+
         # drop shape mismatched layers
         state_dict = checkpoint["state_dict"]
         model_state_dict = self.state_dict()
         is_changed = False
         for k in state_dict:
+            # pylint: disable=unsupported-membership-test,unsubscriptable-object
             if k in model_state_dict:
                 if state_dict[k].shape != model_state_dict[k].shape:
                     print(
@@ -484,6 +509,7 @@ class FastSpeech2(pl.LightningModule):
                     )
                     state_dict[k] = model_state_dict[k]
                     is_changed = True
+            # pylint: enable=unsupported-membership-test,unsubscriptable-object
             else:
                 print(f"Dropping parameter {k}")
                 is_changed = True
@@ -564,8 +590,10 @@ class FastSpeech2(pl.LightningModule):
                     )
                 )
 
+        
         self.log("tf_ratio", tf_ratio)
 
+        # pylint: disable=not-callable
         variance_output = self.variance_adaptor(
             output,
             src_mask,
@@ -573,6 +601,7 @@ class FastSpeech2(pl.LightningModule):
             inference=inference,
             tf_ratio=tf_ratio,
         )
+        # pylint: enable=not-callable
 
         output = variance_output["x"]
 

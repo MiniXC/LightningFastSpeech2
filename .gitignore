@@ -19,3 +19,4 @@ examples/*.png
 sampling_values
 *.pkl
 speechbrain
+.ipynb_checkpoints

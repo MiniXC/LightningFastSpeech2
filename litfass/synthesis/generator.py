@@ -70,48 +70,89 @@ class SpeechGenerator:
             return None
 
     def save_audio(self, audio, path):
-        torchaudio.save(path, torch.tensor(audio), 22050)
+        if self.voicefixer:
+            sampling_rate = 44100
+        else:
+            sampling_rate = self.model.hparams.sampling_rate
+        # make 2D if mono
+        if len(audio.shape) == 1:
+            audio = torch.tensor(audio).unsqueeze(0)
+        else:
+            audio = torch.tensor(audio)
+        torchaudio.save(path, audio, sampling_rate)
 
-    def generate_from_text(self, text, speaker=None):
+    def generate_from_text(self, text, speaker=None, random_seed=None, prior_strategy="sample", prior_values=[-1, -1, -1, -1]):
         ids = [
             self.model.phone2id[x] for x in self.g2p(text) if x in self.model.phone2id
         ]
         batch = {}
+        speaker_name = None
         if self.model.hparams.speaker_type == "dvector":
             if speaker is None:
-                # pylint: disable=invalid-sequence-index
-                speaker = list(self.model.speaker2dvector.keys())[
-                    np.random.randint(len(self.model.speaker2dvector))
-                ]
-                # pylint: enable=invalid-sequence-index
-                print("Using speaker", speaker)
+                while True:
+                    # pylint: disable=invalid-sequence-index
+                    speaker = list(self.model.speaker2dvector.keys())[
+                        np.random.randint(len(self.model.speaker2dvector))
+                    ]
+                    # pylint: enable=invalid-sequence-index
+                    # TODO: remove this when all models are fixed
+                    if len(self.model.hparams.priors) > 0:
+                        if isinstance(speaker, Path):
+                            speaker_name = speaker.name
+                    if speaker_name in self.model.speaker2priors:
+                        break
+            else:
+                speaker_name = speaker.name
             batch["speaker"] = torch.tensor([self.model.speaker2dvector[speaker]]).to(
                 self.device
             )
+            print("Using speaker", speaker)
         if self.model.hparams.speaker_type == "id":
             batch["speaker"] = torch.tensor([self.model.speaker2id[speaker]]).to(
                 self.device
             )
+            print("Using speaker", speaker)
         if len(self.model.hparams.priors) > 0:
-            priors = self.model.speaker2priors[speaker]
-            prior_len = len(priors[self.model.hparams.priors[0]])
-            random_index = np.random.randint(prior_len)
-            for prior in self.model.hparams.priors:
-                batch[f"priors_{prior}"] = torch.tensor([priors[prior][random_index]]).to(self.device)
+            if speaker_name is None:
+                speaker_name = speaker
+            if random_seed is not None:
+                np.random.seed(random_seed)
+            if prior_strategy == "sample":
+                priors = self.model.speaker2priors[speaker_name]
+                prior_len = len(priors[self.model.hparams.priors[0]])
+                random_index = np.random.randint(prior_len)
+                for prior in self.model.hparams.priors:
+                    batch[f"priors_{prior}"] = torch.tensor([priors[prior][random_index]]).to(self.device)
+                    print(f"Using prior {prior} with value {priors[prior][random_index]:.2f}")
+            elif prior_strategy == "gmm":
+                gmm = self.model.speaker_gmms[speaker_name]
+                values = gmm.sample()[0][0]
+                for i, prior in enumerate(self.model.hparams.priors):
+                    batch[f"priors_{prior}"] = torch.tensor([values[i]]).to(self.device)
+                    print(f"Using prior {prior} with value {values[i]:.2f}")
         batch["phones"] = torch.tensor([ids]).to(self.device)
+        for i, prior in enumerate(self.model.hparams.priors):
+            if prior_values[i] != -1:
+                batch[f"priors_{prior}"] = torch.tensor([prior_values[i]]).to(self.device)
+                print(f"Overriding prior {prior} with value {prior_values[i]:.2f}")
         return self.generate_samples(batch)[0]
 
     def generate_samples(
         self,
         batch,
+        remove_silence=True
     ):
         result = self.model(batch, inference=True)
 
         audios = []
         for i in range(len(result["mel"])):
-            mel = result["mel"][i][
-                : torch.sum(result["duration_rounded"][i])
-            ].cpu()
+            if not remove_silence:
+                prediction_length = torch.sum(result["duration_rounded"][i])
+                mel = result["mel"][i][:prediction_length].cpu()
+            else:
+                start = result["duration_rounded"][i][0] - 2
+                end = torch.sum(result["duration_rounded"][i]) - result["duration_rounded"][i][-1] - 2
+                mel = result["mel"][i][start:end].cpu()
             audios.append(int16_samples_to_float32(self.synth(mel)[0]))
 
         if self.voicefixer is not None:
@@ -119,7 +160,12 @@ class SpeechGenerator:
                 tmp_dir = Path("/tmp/voicefixer")
                 tmp_dir.mkdir(exist_ok=True)
                 torchaudio.save(tmp_dir / "tmp.wav", torch.tensor([audio]), 22050)
-                self.voicefixer.restore(input=tmp_dir / "tmp.wav", output=tmp_dir / "tmp_fixed.wav")
+                self.voicefixer.restore(
+                    input=tmp_dir / "tmp.wav",
+                    output=tmp_dir / "tmp_fixed.wav",
+                    cuda=True,
+                    mode=1,
+                )
                 audios[0] = torchaudio.load(tmp_dir / "tmp_fixed.wav")[0].numpy()
 
         if self.augmentations is not None:
