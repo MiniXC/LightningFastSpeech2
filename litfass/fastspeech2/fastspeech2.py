@@ -7,7 +7,6 @@ import hashlib
 import json
 import pickle
 from copy import copy
-from time import time
 
 import pytorch_lightning as pl
 import torch
@@ -19,7 +18,6 @@ from tqdm.auto import tqdm
 import numpy as np
 from scipy.spatial.distance import jensenshannon
 from sklearn.neighbors import KernelDensity
-from sklearn.mixture import GaussianMixture
 import wandb
 
 
@@ -34,7 +32,7 @@ from litfass.fastspeech2.model import (
 from litfass.third_party.hifigan import Synthesiser
 from litfass.third_party.softdtw import SoftDTW
 from litfass.third_party.argutils import str2bool
-#from litfass.third_party.gmm import GaussianMixture
+from litfass.fastspeech2.log_gmm import LogGMM
 from litfass.fastspeech2.loss import FastSpeech2Loss
 from litfass.fastspeech2.noam import NoamLR
 
@@ -397,33 +395,33 @@ class FastSpeech2(pl.LightningModule):
         for speaker in tqdm(self.speaker2priors.keys(), desc="fitting speaker prior gmms"):
             priors = self.speaker2priors[speaker]
             X = np.stack([priors[prior] for prior in self.hparams.priors], axis=1)
-            gmm = GaussianMixture(
+            gmm = LogGMM(
                 n_components=2,
                 random_state=42,
+                reg_covar=5e-3,
             )
             gmm.fit(X)
             bic = gmm.bic(X)
             logs = []
-            for i, prior in enumerate(self.hparams.priors):
-                gmm = GaussianMixture(
+            for i in range(len(self.hparams.priors)):
+                gmm = LogGMM(
                     n_components=2,
                     random_state=42,
+                    logs=logs + [i],
+                    reg_covar=5e-3,
                 )
-                # check if log is needed
-                log_X = X
-                log_X[:, i] = np.log(X[:, i]+1e-10)
                 gmm.fit(X)
                 log_bic = gmm.bic(X)
-                if log_bic < bic:
-                    X = log_X
-                    logs.append(prior)
+                if log_bic < bic*0.9:
+                    logs.append(i)
                     bic = log_bic
             best_bic = float("inf")
             n_components = 2
             while True:
-                gmm = GaussianMixture(
+                gmm = LogGMM(
                     n_components=n_components,
                     random_state=42,
+                    logs=logs,
                 )
                 gmm.fit(X)
                 bic = gmm.bic(X)
