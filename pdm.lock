@@ -254,6 +254,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "einops"
+version = "0.5.0"
+requires_python = ">=3.7"
+summary = "A new flavour of deep learning operations"
+
+[[package]]
 name = "fairscale"
 version = "0.4.10"
 requires_python = ">=3.8"
@@ -314,6 +320,19 @@ dependencies = [
     "inflect>=0.3.1",
     "nltk>=3.2.4",
     "numpy>=1.13.1",
+]
+
+[[package]]
+name = "gammatone"
+version = "1.0"
+url = "https://github.com/detly/gammatone/archive/master.zip"
+summary = ""
+dependencies = [
+    "matplotlib",
+    "mock",
+    "nose",
+    "numpy",
+    "scipy",
 ]
 
 [[package]]
@@ -550,6 +569,12 @@ requires_python = ">=3.6"
 summary = "McCabe checker, plugin for flake8"
 
 [[package]]
+name = "mock"
+version = "4.0.3"
+requires_python = ">=3.6"
+summary = "Rolling backport of unittest.mock for all Pythons"
+
+[[package]]
 name = "multidict"
 version = "6.0.2"
 requires_python = ">=3.7"
@@ -576,6 +601,20 @@ dependencies = [
     "regex>=2021.8.3",
     "tqdm",
 ]
+
+[[package]]
+name = "nnaudio"
+version = "0.3.2"
+requires_python = ">=3.6"
+summary = "A fast GPU audio processing toolbox with 1D convolutional neural network"
+dependencies = [
+    "scipy",
+]
+
+[[package]]
+name = "nose"
+version = "1.3.7"
+summary = "nose extends unittest to make testing easier"
 
 [[package]]
 name = "numba"
@@ -818,6 +857,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pysdtw"
+version = "0.0.5"
+requires_python = ">=3.7"
+summary = "Torch implementation of Soft-DTW, supports CUDA devices."
+dependencies = [
+    "numba",
+    "torch",
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.8.2"
 requires_python = "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7"
@@ -1048,6 +1097,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "srmrpy"
+version = "1.0.10"
+git = "https://github.com/MiniXC/SRMRpy.git"
+revision = "f984dfcec163d3ffddea75ed9968bc3e26320884"
+summary = ""
+dependencies = [
+    "Gammatone @ https://github.com/detly/gammatone/archive/master.zip",
+    "numpy",
+    "scipy",
+]
+
+[[package]]
 name = "tenacity"
 version = "8.1.0"
 requires_python = ">=3.6"
@@ -1265,7 +1326,7 @@ summary = "Backport of pathlib-compatible object wrapper for zip files"
 
 [metadata]
 lock_version = "4.0"
-content_hash = "sha256:2dea95b2835c7634e5df036bd68442d5d8be5fe5bb4f3c003bc633a7dae4f937"
+content_hash = "sha256:2e8c3a2129e4624491c431b897f3333f7554ff89de45b63cac91c1dd055ad63d"
 
 [metadata.files]
 "absl-py 1.2.0" = [
@@ -1653,6 +1714,10 @@ content_hash = "sha256:2dea95b2835c7634e5df036bd68442d5d8be5fe5bb4f3c003bc633a7d
     {url = "https://files.pythonhosted.org/packages/c5/e6/d1f6c00b7221e2d7c4b470132c931325c8b22c51ca62417e300f5ce16009/docker-pycreds-0.4.0.tar.gz", hash = "sha256:6ce3270bcaf404cc4c3e27e4b6c70d3521deae82fb508767870fdbf772d584d4"},
     {url = "https://files.pythonhosted.org/packages/f5/e8/f6bd1eee09314e7e6dee49cbe2c5e22314ccdb38db16c9fc72d2fa80d054/docker_pycreds-0.4.0-py2.py3-none-any.whl", hash = "sha256:7266112468627868005106ec19cd0d722702d2b7d5912a28e19b826c3d37af49"},
 ]
+"einops 0.5.0" = [
+    {url = "https://files.pythonhosted.org/packages/0b/4f/ffbe0aef2378ab8e0aa06c909d667358d84b442f54dec81b6efac4efcf6a/einops-0.5.0.tar.gz", hash = "sha256:8b7a83cffc1ea88e306df099b7cbb9c3ba5003bd84d05ae44be5655864abb8d3"},
+    {url = "https://files.pythonhosted.org/packages/18/d7/ed1ce1d5e00b0cd0e1ca46a710eb00822add013048c733d5b82db490e643/einops-0.5.0-py3-none-any.whl", hash = "sha256:055de7eeb3cb9e9710ef3085a811090c6b52e809b7044e8785824ed185f486d1"},
+]
 "fairscale 0.4.10" = [
     {url = "https://files.pythonhosted.org/packages/c0/01/eb8e3ebbd53ee47f7b29306421e7c7d3b1dbc0088d346d018878ee19d563/fairscale-0.4.10.tar.gz", hash = "sha256:e49a2c281b295c266914da1544372a3c81b3b0eaa290e96f03c3cac3614f92ef"},
 ]
@@ -1735,6 +1800,9 @@ content_hash = "sha256:2dea95b2835c7634e5df036bd68442d5d8be5fe5bb4f3c003bc633a7d
 "g2p-en 2.1.0" = [
     {url = "https://files.pythonhosted.org/packages/5f/22/2c7acbe6164ed6cfd4301e9ad2dbde69c68d22268a0f9b5b0ee6052ed3ab/g2p_en-2.1.0.tar.gz", hash = "sha256:32ecb119827a3b10ea8c1197276f4ea4f44070ae56cbbd01f0f261875f556a58"},
     {url = "https://files.pythonhosted.org/packages/d7/d9/b77dc634a7a0c0c97716ba97dd0a28cbfa6267c96f359c4f27ed71cbd284/g2p_en-2.1.0-py3-none-any.whl", hash = "sha256:2a7aabf1fc7f270fcc3349881407988c9245173c2413debbe5432f4a4f31319f"},
+]
+"gammatone 1.0" = [
+    {url = "https://github.com/detly/gammatone/archive/master.zip", hash = "sha256:a33b739c787152035646cf5c1910ae3ff5da556b6d1f8c9d27191a2495ad6612"},
 ]
 "gitdb 4.0.9" = [
     {url = "https://files.pythonhosted.org/packages/a3/7c/5d747655049bfbf75b5fcec57c8115896cb78d6fafa84f6d3ef4c0f13a98/gitdb-4.0.9-py3-none-any.whl", hash = "sha256:8033ad4e853066ba6ca92050b9df2f89301b8fc8bf7e9324d412a63f8bf1a8fd"},
@@ -2214,6 +2282,10 @@ content_hash = "sha256:2dea95b2835c7634e5df036bd68442d5d8be5fe5bb4f3c003bc633a7d
     {url = "https://files.pythonhosted.org/packages/27/1a/1f68f9ba0c207934b35b86a8ca3aad8395a3d6dd7921c0686e23853ff5a9/mccabe-0.7.0-py2.py3-none-any.whl", hash = "sha256:6c2d30ab6be0e4a46919781807b4f0d834ebdd6c6e3dca0bda5a15f863427b6e"},
     {url = "https://files.pythonhosted.org/packages/e7/ff/0ffefdcac38932a54d2b5eed4e0ba8a408f215002cd178ad1df0f2806ff8/mccabe-0.7.0.tar.gz", hash = "sha256:348e0240c33b60bbdf4e523192ef919f28cb2c3d7d5c7794f74009290f236325"},
 ]
+"mock 4.0.3" = [
+    {url = "https://files.pythonhosted.org/packages/5c/03/b7e605db4a57c0f6fba744b11ef3ddf4ddebcada35022927a2b5fc623fdf/mock-4.0.3-py3-none-any.whl", hash = "sha256:122fcb64ee37cfad5b3f48d7a7d51875d7031aaf3d8be7c42e2bee25044eee62"},
+    {url = "https://files.pythonhosted.org/packages/e2/be/3ea39a8fd4ed3f9a25aae18a1bff2df7a610bca93c8ede7475e32d8b73a0/mock-4.0.3.tar.gz", hash = "sha256:7d3fbbde18228f4ff2f1f119a45cdffa458b4c0dee32eb4d2bb2f82554bac7bc"},
+]
 "multidict 6.0.2" = [
     {url = "https://files.pythonhosted.org/packages/00/6f/05e5612827715de18f36a8e36fb373f58621927691213cc3f88dc24524b3/multidict-6.0.2-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:07a017cfa00c9890011628eab2503bee5872f27144936a52eaab449be5eaf032"},
     {url = "https://files.pythonhosted.org/packages/01/4d/ca2d62993ce36d059ca571f2f5124217dab5eb8da8b8797820745a3bf402/multidict-6.0.2-cp39-cp39-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:19d9bad105dfb34eb539c97b132057a4e709919ec4dd883ece5838bcbf262b80"},
@@ -2298,6 +2370,15 @@ content_hash = "sha256:2dea95b2835c7634e5df036bd68442d5d8be5fe5bb4f3c003bc633a7d
 "nltk 3.7" = [
     {url = "https://files.pythonhosted.org/packages/43/0b/8298798bc5a9a007b7cae3f846a3d9a325953e0f9c238affa478b4d59324/nltk-3.7-py3-none-any.whl", hash = "sha256:ba3de02490308b248f9b94c8bc1ac0683e9aa2ec49ee78536d8667afb5e3eec8"},
     {url = "https://files.pythonhosted.org/packages/b4/e0/840a250e5f85c480389c44d4058c7888b0c9f5f5333b353c77782a8a8e23/nltk-3.7.zip", hash = "sha256:d6507d6460cec76d70afea4242a226a7542f85c669177b9c7f562b7cf1b05502"},
+]
+"nnaudio 0.3.2" = [
+    {url = "https://files.pythonhosted.org/packages/0d/9d/e8b0211729a99b09e72c56e90731936d93d31f3ad8ae3ff573ac532460c5/nnAudio-0.3.2.tar.gz", hash = "sha256:1c3b6aa5f79b5afa054f98ce4add579d2ec4ffd7ffa4b8e190c96fd502e91653"},
+    {url = "https://files.pythonhosted.org/packages/be/4a/5dea25924538d607ca1bbc0bdcb104a8c8c510a90713b0255efe17bb09a5/nnAudio-0.3.2-py3-none-any.whl", hash = "sha256:a2ea9a71196fceb19d8299461bf3740a626daa0af6dc45cf5496c235829199d9"},
+]
+"nose 1.3.7" = [
+    {url = "https://files.pythonhosted.org/packages/15/d8/dd071918c040f50fa1cf80da16423af51ff8ce4a0f2399b7bf8de45ac3d9/nose-1.3.7-py3-none-any.whl", hash = "sha256:9ff7c6cc443f8c51994b34a667bbcf45afd6d945be7477b52e97516fd17c53ac"},
+    {url = "https://files.pythonhosted.org/packages/58/a5/0dc93c3ec33f4e281849523a5a913fa1eea9a3068acfa754d44d88107a44/nose-1.3.7.tar.gz", hash = "sha256:f1bffef9cbc82628f6e7d7b40d7e255aefaa1adb6a1b1d26c69a8b79e6208a98"},
+    {url = "https://files.pythonhosted.org/packages/99/4f/13fb671119e65c4dce97c60e67d3fd9e6f7f809f2b307e2611f4701205cb/nose-1.3.7-py2-none-any.whl", hash = "sha256:dadcddc0aefbf99eea214e0f1232b94f2fa9bd98fa8353711dacb112bfcbbb2a"},
 ]
 "numba 0.56.2" = [
     {url = "https://files.pythonhosted.org/packages/00/35/4e509b336749ff6704c5a019bbc2580c072e32919d7dc6877960334f2e20/numba-0.56.2-cp38-cp38-win32.whl", hash = "sha256:45cefeefa78762753c2be9f64e7579a7523afff479642c3c661fb78bd740a352"},
@@ -2517,7 +2598,6 @@ content_hash = "sha256:2dea95b2835c7634e5df036bd68442d5d8be5fe5bb4f3c003bc633a7d
     {url = "https://files.pythonhosted.org/packages/b5/75/82c7018b7c2a20d6e78d683b79005ea418899be7dba5518bc0ca1b4e30a3/protobuf-3.19.5-cp310-cp310-win32.whl", hash = "sha256:4ee2af7051d3b10c8a4fe6fd1a2c69f201fea36aeee7086cf202a692e1b99ee1"},
     {url = "https://files.pythonhosted.org/packages/c8/2a/6248d2bdda6a2d3e929ea738fd9d3715b720f600a8a255c8ed65adc27267/protobuf-3.19.5-cp38-cp38-win32.whl", hash = "sha256:5470f892961af464ae6eaf0f3099e2c1190ae8c7f36f174b89491281341f79ca"},
     {url = "https://files.pythonhosted.org/packages/c8/b9/472ff5c475e3f1254aeb863750d64d8fb5dd7755adecf65f22b6a230108d/protobuf-3.19.5-cp310-cp310-manylinux2014_aarch64.whl", hash = "sha256:f2b599a21c9a32e171ec29a2ac54e03297736c578698e11b099d031f79da114b"},
-    {url = "https://files.pythonhosted.org/packages/d0/98/3aaf1f0d762f66b1ac1a891180060768229c7b8877ec80f3d943d97311b9/protobuf-3.19.5-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:6eca9ae238ba615d702387a2ddea635d535d769994a9968c09a4ca920c487ab9"},
     {url = "https://files.pythonhosted.org/packages/e8/59/ca4c301a7b4ab60d8053695dc1b66317d5804a6bdbc766e1eef553cdf24b/protobuf-3.19.5-cp36-cp36m-win32.whl", hash = "sha256:f2bde37667b18c2b5280df83bc799204394a5d2d774e4deaf9de0eb741df6833"},
 ]
 "psutil 5.9.2" = [
@@ -2644,6 +2724,10 @@ content_hash = "sha256:2dea95b2835c7634e5df036bd68442d5d8be5fe5bb4f3c003bc633a7d
     {url = "https://files.pythonhosted.org/packages/b2/f2/e706a55de659f767be304e9ece1a254f91cbdb3ca5e44ab3c24ba7a25dd5/pyroomacoustics-0.6.0-cp37-cp37m-macosx_10_14_x86_64.whl", hash = "sha256:78d621fd9ba517578ad0f6ae90b10dd850837d9bfd611867e5e1f049200ba3e7"},
     {url = "https://files.pythonhosted.org/packages/b9/40/7ccc9eb78522576912414f23db11ffbf2324cb86b69e07fd52c5db77ddc7/pyroomacoustics-0.6.0-cp38-cp38-win_amd64.whl", hash = "sha256:d92b3c81d28c7b823781487a84eeba18fde2c03965c8145acc4ecf9c5cc3f3f8"},
     {url = "https://files.pythonhosted.org/packages/f5/29/b09b3be11e29ec8462cf83468b7282446b0c61684d3fd90ca289b776727e/pyroomacoustics-0.6.0-cp38-cp38-macosx_10_14_x86_64.whl", hash = "sha256:5a78ba2b28b43f17bcec9dfcbbc5bce2b5452777d0ece0799d6efde5784c0f20"},
+]
+"pysdtw 0.0.5" = [
+    {url = "https://files.pythonhosted.org/packages/51/7c/e201ffa0144916bd2c26a7e5a2d2aeb6f1ecadd89502bdded9d6deb830c1/pysdtw-0.0.5.tar.gz", hash = "sha256:a1e9a25c250f0da3a886dc7d779e9f3ab8b8cbbdba607427a9fef146b25ae4e8"},
+    {url = "https://files.pythonhosted.org/packages/ac/00/62c234127146cc4695fe2e28fb827c59b4f2d417deb09b9a0c21eb99781f/pysdtw-0.0.5-py3-none-any.whl", hash = "sha256:1a46d46fb00408a300a2dbe006ea957d3efef20502cc98d24c5b22e3ee867653"},
 ]
 "python-dateutil 2.8.2" = [
     {url = "https://files.pythonhosted.org/packages/36/7a/87837f39d0296e723bb9b62bbb257d0355c7f6128853c78955f57342a56d/python_dateutil-2.8.2-py2.py3-none-any.whl", hash = "sha256:961d03dc3453ebbc59dbdea9e4e11c5651520a876d0f4db161e8674aae935da9"},

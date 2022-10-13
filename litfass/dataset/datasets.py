@@ -26,6 +26,8 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 from tqdm.rich import tqdm
 from tqdm.contrib.concurrent import process_map
+from srmrpy import SRMR
+from scipy import interpolate
 
 from litfass.dataset.audio_utils import dynamic_range_compression
 from litfass.dataset.cwt import CWT
@@ -103,6 +105,10 @@ class TTSDataset(Dataset):
             self.alignment_ds = alignments_dataset
         else:
             self.alignment_ds = [alignments_dataset]
+
+        # SRMR
+        if "srmr" in self.variances:
+            self.srmr = SRMR(fs=self.sampling_rate, faster=True, norm=True)
 
         # DATAFRAME
         self.entry_stats = {
@@ -244,7 +250,7 @@ class TTSDataset(Dataset):
                 )
 
         if compute_stats:
-            self._load_stats_only = True
+            self._load_stats_only = False
             for entry in tqdm(
                 DataLoader(
                     self,
@@ -564,6 +570,14 @@ class TTSDataset(Dataset):
             )
             if len(silence_mask) < len(variances["energy"]):
                 variances["energy"] = variances["energy"][: sum(durations)]
+
+        if "srmr" in self.variances:
+            _, frame_srmr = self.srmr.srmr(audio.cpu())
+            if len(frame_srmr) == 1:
+                variances["srmr"] = np.repeat(frame_srmr, sum(durations))
+            else:
+                f = interpolate.interp1d(np.linspace(0,1,len(frame_srmr)), frame_srmr)
+                variances["srmr"] = f(np.linspace(0,1,sum(durations)))
 
         # TRANSFORMS & Normalize
         for i, var in enumerate(self.variances):

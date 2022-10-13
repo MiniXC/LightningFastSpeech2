@@ -127,8 +127,8 @@ if __name__ == "__main__":
             )
         if (
             var_args["no_cache"]
-            or len(list(Path(var_args["train_target_path"][i]).rglob("**/*.TextGrid")))
-            == 0
+            or next(Path(var_args["train_target_path"][i]).rglob("**/*.TextGrid"), -1)
+            == -1
             or not cache_path_alignments.exists()
         ):
             train_ds += [
@@ -161,7 +161,7 @@ if __name__ == "__main__":
         )
     if (
         var_args["no_cache"]
-        or len(list(Path(var_args["valid_target_path"]).rglob("**/*.TextGrid"))) == 0
+        or next(Path(var_args["valid_target_path"]).rglob("**/*.TextGrid"),-1) == -1
         or not cache_path_alignments.exists()
     ):
         valid_ds = LibrittsDataset(

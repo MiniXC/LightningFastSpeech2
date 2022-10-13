@@ -20,3 +20,4 @@ sampling_values
 *.pkl
 speechbrain
 .ipynb_checkpoints
+examples

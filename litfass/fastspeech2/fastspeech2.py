@@ -55,20 +55,25 @@ class FastSpeech2(pl.LightningModule):
         variances=["pitch", "energy", "snr"],
         variance_levels=["frame", "frame", "frame"],
         variance_transforms=["cwt", "none", "none"],  # "cwt", "log", "none"
-        variance_nlayers=[5, 5, 5],
-        variance_loss_weights=[5e-2, 5e-2, 5e-2],
-        variance_kernel_size=[3, 3, 3],
-        variance_dropout=[0.5, 0.5, 0.5],
+        variance_losses=["mse", "mse", "mse"],
+        variance_nlayers=[5, 5, 5, 5],
+        variance_loss_weights=[5e-2, 5e-2, 5e-2, 5e-2],
+        variance_kernel_size=[3, 3, 3, 3],
+        variance_dropout=[0.5, 0.5, 0.5, 0.5],
         variance_filter_size=256,
         variance_nbins=256,
         variance_depthwise_conv=True,
         duration_nlayers=2,
+        duration_loss="mse",
         duration_loss_weight=5e-1,
         duration_stochastic=False,
         duration_kernel_size=3,
         duration_dropout=0.5,
         duration_filter_size=256,
         duration_depthwise_conv=True,
+        mel_loss="l1",
+        soft_dtw_gamma=0.1,
+        soft_dtw_chunk_size=256,
         speaker_embedding_every_layer=False,
         prior_embedding_every_layer=False,
         priors=[],  # ["pitch", "energy", "snr", "duration"],
@@ -368,7 +373,7 @@ class FastSpeech2(pl.LightningModule):
                     len(self.speaker2id),
                 )
 
-        if hasattr(self, "train_ds") and self.train_ds is not None:
+        if hasattr(self, "train_ds") and self.train_ds is not None and hasattr(self.train_ds, "speaker2priors"):
             self.speaker2priors = self.train_ds.speaker_priors
 
         # loss
@@ -382,11 +387,16 @@ class FastSpeech2(pl.LightningModule):
             self.hparams.variances,
             self.hparams.variance_levels,
             self.hparams.variance_transforms,
+            self.hparams.variance_losses,
+            self.hparams.mel_loss,
+            self.hparams.duration_loss,
             self.hparams.duration_stochastic,
             self.hparams.max_length
             * self.hparams.sampling_rate
             / self.hparams.hop_length,
             loss_weights,
+            self.hparams.soft_dtw_gamma,
+            self.hparams.soft_dtw_chunk_size,
         )
 
         if len(self.hparams.priors) > 0 and self.hparams.priors_gmm and hasattr(self, "speaker2priors"):
@@ -513,7 +523,7 @@ class FastSpeech2(pl.LightningModule):
         if hasattr(self, "speaker_gmms"):
             checkpoint["speaker_gmms"] = self.speaker_gmms
 
-    def forward(self, targets, inference=False):
+    def forward(self, targets, optimizer_idx=0, inference=False):
 
         phones = targets["phones"].to(self.device)
         speakers = targets["speaker"]
@@ -587,47 +597,62 @@ class FastSpeech2(pl.LightningModule):
         )
         # pylint: enable=not-callable
 
-        output = variance_output["x"]
+        if optimizer_idx == 0:
+            output = variance_output["x"]
 
-        output = self.positional_encoding(output)
+            output = self.positional_encoding(output)
 
-        if not self.hparams.speaker_embedding_every_layer:
-            output = output + self.speaker_embedding(
-                speakers, output.shape[1], output.shape[-1]
-            )
-        else:
-            every_decoder_layer = self.speaker_embedding(
-                speakers, output.shape[1], output.shape[-1]
-            )
+            if not self.hparams.speaker_embedding_every_layer:
+                output = output + self.speaker_embedding(
+                    speakers, output.shape[1], output.shape[-1]
+                )
+            else:
+                every_decoder_layer = self.speaker_embedding(
+                    speakers, output.shape[1], output.shape[-1]
+                )
 
-        if self.hparams.speaker_embedding_every_layer:
-            output = self.decoder(
-                output,
-                src_key_padding_mask=variance_output["tgt_mask"],
-                additional_src=every_decoder_layer,
-            )
-        else:
-            output = self.decoder(
-                output, src_key_padding_mask=variance_output["tgt_mask"]
-            )
+            if self.hparams.speaker_embedding_every_layer:
+                output = self.decoder(
+                    output,
+                    src_key_padding_mask=variance_output["tgt_mask"],
+                    additional_src=every_decoder_layer,
+                )
+            else:
+                output = self.decoder(
+                    output, src_key_padding_mask=variance_output["tgt_mask"]
+                )
 
-        output = self.linear(output)
+            output = self.linear(output)
 
-        result = {
-            "mel": output,
-            "duration_prediction": variance_output["duration_prediction"],
-            "duration_rounded": variance_output["duration_rounded"],
-            "src_mask": src_mask,
-            "tgt_mask": variance_output["tgt_mask"],
-        }
+            result = {
+                "mel": output,
+                "duration_prediction": variance_output["duration_prediction"],
+                "duration_rounded": variance_output["duration_rounded"],
+                "src_mask": src_mask,
+                "tgt_mask": variance_output["tgt_mask"],
+            }
 
-        for var in self.hparams.variances:
-            result[f"variances_{var}"] = variance_output[f"variances_{var}"]
+            for var in self.hparams.variances:
+                result[f"variances_{var}"] = variance_output[f"variances_{var}"]
+                if f"variances_{var}_disc_true" in variance_output:
+                    result[
+                        f"variances_{var}_disc_true"
+                    ] = variance_output[f"variances_{var}_disc_true"]
+                    result[
+                        f"variances_{var}_disc_fake"
+                    ] = variance_output[f"variances_{var}_disc_fake"]
+        
+        elif optimizer_idx == 1:
+            result = {}
+            for var in self.hparams.variances:
+                result[
+                    f"variances_{var}_gen_true"
+                ] = variance_output[f"variances_{var}_gen_true"]
 
         return result
 
-    def training_step(self, batch):
-        result = self(batch)
+    def training_step(self, batch, batch_idx, optimizer_idx=0):
+        result = self(batch, optimizer_idx)
         losses = self.loss(
             result, batch
         )  # frozen_components=self.variance_adaptor.frozen_components)
@@ -837,7 +862,7 @@ class FastSpeech2(pl.LightningModule):
                 self.results_dict[key]["true"] = [
                     x.cpu().numpy() for x in self.results_dict[key]["true"]
                 ]
-                if key != "mel":
+                if key not in "mel":
                     pred_list = np.random.choice(
                         np.array(self.results_dict[key]["pred"]), size=500
                     ).reshape(-1, 1)
@@ -859,12 +884,17 @@ class FastSpeech2(pl.LightningModule):
                         np.exp(kde_pred.score_samples(arange)),
                         np.exp(kde_true.score_samples(arange)),
                     )
-                    var_mae = np.mean(
-                        np.abs(
-                            np.array(self.results_dict[key]["pred"])
-                            - np.array(self.results_dict[key]["true"])
+                    try:
+                        var_mae = np.mean(
+                            np.abs(
+                                np.array(self.results_dict[key]["pred"])
+                                - np.array(self.results_dict[key]["true"])
+                            )
                         )
-                    )
+                    except:
+                        self.eval_log_data = None
+                        print("WARNING: failed to log validation results, this should be fixed in the next release")
+                        return
                     if (
                         self.hparams.variance_early_stopping != "none"
                         and not (
@@ -957,14 +987,19 @@ class FastSpeech2(pl.LightningModule):
                         np.exp(kde_pred.score_samples(arange)),
                         np.exp(kde_true.score_samples(arange)),
                     )
-                    mel_softdtw = SoftDTW(normalize=True)(
+                    mel_softdtw_1 = SoftDTW(normalize=True, gamma=1)(
+                        torch.tensor(self.results_dict[key]["pred"]).float(),
+                        torch.tensor(self.results_dict[key]["true"]).float(),
+                    )
+                    mel_softdtw_0 = SoftDTW(normalize=True, gamma=0.001)(
                         torch.tensor(self.results_dict[key]["pred"]).float(),
                         torch.tensor(self.results_dict[key]["true"]).float(),
                     )
                     self.log_dict(
                         {
                             f"eval/jensenshannon_{key}": mel_js,
-                            f"eval/softdtw_{key}": mel_softdtw,
+                            f"eval/softdtw_{key}": mel_softdtw_1,
+                            f"eval/softdtw_{key}_gamma0": mel_softdtw_0,
                         }
                     )
             self.eval_log_data = None
@@ -977,15 +1012,30 @@ class FastSpeech2(pl.LightningModule):
             eps=1e-8,
             weight_decay=0.01,
         )
+        self.generator_optimizer = torch.optim.AdamW(
+            self.variance_adaptor.parameters(),
+            self.hparams.lr,
+            betas=[0.9, 0.98],
+            eps=1e-8,
+            weight_decay=0.01,
+        )
 
         self.scheduler = NoamLR(self.optimizer, self.hparams.warmup_steps)
+        self.generator_scheduler = NoamLR(
+            self.generator_optimizer, self.hparams.warmup_steps
+        )
 
         sched = {
             "scheduler": self.scheduler,
             "interval": "step",
         }
+        gen_sched = {
+            "scheduler": self.generator_scheduler,
+            "interval": "step",
+        }
 
         return [self.optimizer], [sched]
+        #return [self.optimizer, self.generator_optimizer], [sched, gen_sched]
 
     @staticmethod
     def add_model_specific_args(parent_parser):
@@ -1005,25 +1055,31 @@ class FastSpeech2(pl.LightningModule):
             "--variance_levels",
             nargs="+",
             type=str,
-            default=["frame", "frame", "frame"],
+            default=["frame", "frame", "frame", "frame"],
         )
         parser.add_argument(
             "--variance_transforms",
             nargs="+",
             type=str,
-            default=["cwt", "none", "none"],
+            default=["cwt", "none", "none", "none"],
         )
         parser.add_argument(
-            "--variance_nlayers", nargs="+", type=int, default=[5, 5, 5]
+            "--variance_losses",
+            nargs="+",
+            type=str,
+            default=["mse", "mse", "mse", "mse"],
         )
         parser.add_argument(
-            "--variance_loss_weights", nargs="+", type=float, default=[1, 1e-1, 1e-1]
+            "--variance_nlayers", nargs="+", type=int, default=[5, 5, 5, 5]
         )
         parser.add_argument(
-            "--variance_kernel_size", nargs="+", type=int, default=[3, 3, 3]
+            "--variance_loss_weights", nargs="+", type=float, default=[1, 1e-1, 1e-1, 1e-1]
         )
         parser.add_argument(
-            "--variance_dropout", nargs="+", type=float, default=[0.5, 0.5, 0.5]
+            "--variance_kernel_size", nargs="+", type=int, default=[3, 3, 3, 3]
+        )
+        parser.add_argument(
+            "--variance_dropout", nargs="+", type=float, default=[0.5, 0.5, 0.5, 0.5]
         )
         parser.add_argument("--variance_filter_size", type=int, default=256)
         parser.add_argument("--variance_nbins", type=int, default=256)
@@ -1035,6 +1091,10 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--duration_dropout", type=float, default=0.5)
         parser.add_argument("--duration_filter_size", type=int, default=256)
         parser.add_argument("--duration_depthwise_conv", type=str2bool, default=True)
+        parser.add_argument("--duration_loss", type=str, default="mse")
+        parser.add_argument("--mel_loss", type=str, default="l1")
+        parser.add_argument("--soft_dtw_gamma", type=float, default=0.1)
+        parser.add_argument("--soft_dtw_chunk_size", type=int, default=256)
         parser.add_argument("--priors", nargs="+", type=str, default=[])
         parser.add_argument("--mel_loss_weight", type=float, default=1)
         parser.add_argument("--n_mels", type=int, default=80)
