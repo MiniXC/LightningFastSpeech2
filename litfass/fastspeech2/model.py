@@ -127,15 +127,16 @@ class SpeakerEmbedding(nn.Module):
         super().__init__()
         self.speaker_type = speaker_type
         self.embedding_dim = embedding_dim
-        if speaker_type == "dvector":
+        if "dvector" in speaker_type:
             self.projection = nn.Linear(256, embedding_dim)
+            self.has_projection = True
         elif speaker_type == "id":
             self.speaker_embedding = nn.Embedding(nspeakers, embedding_dim)
 
     def forward(self, x, input_length, output_shape):
-        if self.speaker_type == "dvector":
+        if self.has_projection:
             out = self.projection(x)
-        elif self.speaker_type == "id":
+        else:
             out = self.speaker_embedding(x)
         return out.reshape(-1, 1, output_shape).repeat_interleave(input_length, dim=1)
 

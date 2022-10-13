@@ -57,7 +57,7 @@ class TTSDataset(Dataset):
         overwrite_stats_if_missing=True,
         _stats=None,
         # provided by model
-        speaker_type="dvector",  # "none", "id", "dvector"
+        speaker_type="dvector",  # "none", "id", "dvector", "dvector_utterance"
         min_length=0.5,
         max_length=32,
         augment_duration=0,  # 0.1,
@@ -159,7 +159,8 @@ class TTSDataset(Dataset):
                     self.data = self.data[self.data["speaker"] != speaker]
 
         # DVECTORS
-        if self.speaker_type == "dvector":
+        print(self.speaker_type)
+        if "dvector" in self.speaker_type:
             self._create_dvectors()
             self.speaker2dvector = {}
             for i, row in self.data.iterrows():
@@ -428,6 +429,8 @@ class TTSDataset(Dataset):
             result["speaker"] = self.speaker2dvector[row["speaker"]]
         elif self.speaker_type == "id":
             result["speaker"] = self.speaker2id[row["speaker"]]
+        elif self.speaker_type == "dvector_utterance":
+            result["speaker"] = np.load(row["audio"].with_suffix(".npy"))
         result["speaker_key"] = row["speaker"].name
         result["speaker_path"] = row["speaker"]
 
@@ -501,6 +504,13 @@ class TTSDataset(Dataset):
                     speaker / f"{prior}_prior.npy"
                 )
         return speaker_priors
+
+    def get_speaker_dvectors(self):
+        for speaker in tqdm(self.data["speaker"].unique(), desc="loading d-vectors"):
+            # filter df by speaker
+            wavs = self.data[self.data["speaker"] == speaker]["audio"]
+            dvecs = np.array([np.load(w.with_suffix(".npy")) for w in wavs])
+            yield speaker, dvecs
 
     def _create_phone2id(self):
         unique_phones = set()

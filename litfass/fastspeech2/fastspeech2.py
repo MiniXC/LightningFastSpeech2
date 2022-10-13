@@ -120,6 +120,7 @@ class FastSpeech2(pl.LightningModule):
         priors_gmm_min_samples_per_component=20,
         priors_gmm_reg_covar=1e-3,
         priors_gmm_logs=[0,1,2,3],
+        dvector_gmm=False,
     ):
         super().__init__()
 
@@ -225,7 +226,7 @@ class FastSpeech2(pl.LightningModule):
         if train_ds is not None:
             self.stats = self.train_ds.stats
             self.phone2id = self.train_ds.phone2id
-            if self.train_ds.speaker_type == "dvector":
+            if "dvector" in self.train_ds.speaker_type:
                 self.speaker2dvector = self.train_ds.speaker2dvector
             if self.train_ds.speaker_type == "id":
                 self.speaker2id = self.train_ds.speaker2id
@@ -360,7 +361,7 @@ class FastSpeech2(pl.LightningModule):
             self.prior_embeddings = nn.ModuleDict(self.prior_embeddings)
 
         # speaker
-        if self.hparams.speaker_type == "dvector":
+        if "dvector" in self.hparams.speaker_type:
             self.speaker_embedding = SpeakerEmbedding(
                 self.hparams.encoder_hidden,
                 self.hparams.speaker_type,
@@ -401,7 +402,21 @@ class FastSpeech2(pl.LightningModule):
 
         if len(self.hparams.priors) > 0 and self.hparams.priors_gmm and hasattr(self, "speaker2priors"):
             self._fit_speaker_prior_gmms()
+        
+        if self.hparams.dvector_gmm and self.train_ds is not None and hasattr(self.train_ds, "speaker2dvector"):
+            self._fit_speaker_dvector_gmms()
 
+        elif self.hparams.dvector_gmm:
+            print("dvector_gmm is ignored because train_ds is not provided or speaker2dvector is not provided")
+
+    def _fit_speaker_dvector_gmms(self):
+        self.dvector_gmms = {}
+        for speaker, dvector in self.train_ds.get_speaker_dvectors():
+            self.dvector_gmms[speaker] = LogGMM(
+                n_components=10,
+                random_state=0
+            )
+            self.dvector_gmms[speaker].fit(dvector)
 
     def _fit_speaker_prior_gmms(self):
         self.speaker_gmms = {}
@@ -484,9 +499,8 @@ class FastSpeech2(pl.LightningModule):
             self.speaker2priors = checkpoint["speaker2priors"]
         if "speaker_gmms" in checkpoint:
             self.speaker_gmms = checkpoint["speaker_gmms"]
-
-        # TODO: remove once all checkpoints are updated
-        self._fit_speaker_prior_gmms()
+        if "dvector_gmms" in checkpoint:
+            self.dvector_gmms = checkpoint["dvector_gmms"]
 
         # drop shape mismatched layers
         state_dict = checkpoint["state_dict"]
@@ -522,6 +536,8 @@ class FastSpeech2(pl.LightningModule):
             checkpoint["speaker2priors"] = self.speaker2priors
         if hasattr(self, "speaker_gmms"):
             checkpoint["speaker_gmms"] = self.speaker_gmms
+        if hasattr(self, "dvector_gmms"):
+            checkpoint["dvector_gmms"] = self.dvector_gmms
 
     def forward(self, targets, optimizer_idx=0, inference=False):
 
@@ -1149,6 +1165,7 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--priors_gmm_min_samples_per_component", type=int, default=20)
         parser.add_argument("--priors_gmm_reg_covar", type=float, default=1e-3)
         parser.add_argument("--priors_gmm_logs", nargs="+", type=int, default=[0,1,2,3])
+        parser.add_argument("--dvector_gmm", type=str2bool, default=False)
         return parent_parser
 
     @staticmethod

@@ -3,7 +3,6 @@
 CUDA_VISIBLE_DEVICES="0" pdm run python litfass/train.py \
 --accelerator gpu \
 --devices 1 \
---strategy ddp \
 --precision 16 \
 --batch_size 6 \
 --accumulate_grad_batches 8 \
@@ -38,8 +37,10 @@ CUDA_VISIBLE_DEVICES="0" pdm run python litfass/train.py \
 --wandb_name "icassp_environment" \
 --wandb_mode "offline" \
 --train_target_path "../data/train-clean-a" \
+--speaker_type "dvector_utterance" \
 --train_min_samples_per_speaker 50 \
 --priors_gmm True \
---priors_gmm_max_components 2
+--priors_gmm_max_components 2 \
+--dvector_gmm True
 
 # --priors energy duration snr pitch \
