@@ -4,13 +4,17 @@ import shutil
 import multiprocessing
 import pickle
 from copy import deepcopy
+import random
+
 
 import torch
 import torchaudio
+import torchaudio.functional as F
 from torch.utils.data import DataLoader
 import numpy as np
 from tqdm.auto import tqdm
 from voicefixer import VoiceFixer
+
 
 from litfass.third_party.hifigan import Synthesiser
 from litfass.fastspeech2.fastspeech2 import FastSpeech2
@@ -69,11 +73,14 @@ class SpeechGenerator:
         else:
             return None
 
-    def save_audio(self, audio, path):
-        if self.voicefixer:
-            sampling_rate = 44100
+    def save_audio(self, audio, path, fs=None):
+        if fs is None:
+            if self.voicefixer:
+                sampling_rate = 44100
+            else:
+                sampling_rate = self.model.hparams.sampling_rate
         else:
-            sampling_rate = self.model.hparams.sampling_rate
+            sampling_rate = fs
         # make 2D if mono
         if len(audio.shape) == 1:
             audio = torch.tensor(audio).unsqueeze(0)
@@ -135,38 +142,43 @@ class SpeechGenerator:
             if prior_values[i] != -1:
                 batch[f"priors_{prior}"] = torch.tensor([prior_values[i]]).to(self.device)
                 print(f"Overriding prior {prior} with value {prior_values[i]:.2f}")
-        return self.generate_samples(batch)[0]
+        return self.generate_samples(batch)[1][0]
 
     def generate_samples(
         self,
         batch,
-        remove_silence=True
+        return_original=False,
+        return_duration=False,
     ):
         result = self.model(batch, inference=True)
+        fs = self.model.hparams.sampling_rate
 
         audios = []
+        durations = []
         for i in range(len(result["mel"])):
-            if not remove_silence:
-                prediction_length = torch.sum(result["duration_rounded"][i])
-                mel = result["mel"][i][:prediction_length].cpu()
-            else:
-                start = result["duration_rounded"][i][0] - 2
-                end = torch.sum(result["duration_rounded"][i]) - result["duration_rounded"][i][-1] - 2
-                mel = result["mel"][i][start:end].cpu()
+            mel = result["mel"][i][~result["tgt_mask"][i]].cpu()
+            durations.append(result["duration_rounded"][i].cpu())
             audios.append(int16_samples_to_float32(self.synth(mel)[0]))
 
         if self.voicefixer is not None:
+            fs_new = None
+            fixed_audios = []
             for i, audio in enumerate(audios):
                 tmp_dir = Path("/tmp/voicefixer")
                 tmp_dir.mkdir(exist_ok=True)
-                torchaudio.save(tmp_dir / "tmp.wav", torch.tensor([audio]), 22050)
+                tmp_hash = str(random.getrandbits(128))
+                if fs != 22050:
+                    audio = F.resample(torch.tensor(audio), fs, 22050)
+                    fs = 22050
+                torchaudio.save(tmp_dir / f"{tmp_hash}.wav", torch.tensor([audio]), fs)
                 self.voicefixer.restore(
-                    input=tmp_dir / "tmp.wav",
-                    output=tmp_dir / "tmp_fixed.wav",
+                    input=tmp_dir / f"{tmp_hash}.wav",
+                    output=tmp_dir / f"{tmp_hash}_fixed.wav",
                     cuda=True,
                     mode=1,
                 )
-                audios[0] = torchaudio.load(tmp_dir / "tmp_fixed.wav")[0].numpy()
+                fixed_audio, fs_new = torchaudio.load(tmp_dir / f"{tmp_hash}_fixed.wav")
+                fixed_audios.append(fixed_audio[0].numpy())
 
         if self.augmentations is not None:
             audios = [
@@ -174,330 +186,25 @@ class SpeechGenerator:
                 for audio in audios
             ]
 
-        return audios
-
-    def _create_phone_sampling_dict(
-        self, dataset, variances, batch_size
-    ):  # refactor for DRYness
-        self.sampling_dict = {}
-        done_vars = []
-        if self.sampling_path is not None:
-            for key in variances:
-                dict_path = Path(self.sampling_path, key + "_phone" + ".pkl")
-                if dict_path.exists():
-                    self.sampling_dict[key] = pickle.load(open(dict_path, "rb"))
-        if all([k in self.sampling_dict for k in variances]):
-            return
-        else:
-            for k in self.sampling_dict:
-                done_vars.append(k)
-        for item in tqdm(
-            DataLoader(
-                dataset,
-                batch_size=batch_size,
-                shuffle=False,
-                collate_fn=dataset._collate_fn,
-                num_workers=multiprocessing.cpu_count(),
-            ),
-            desc="Creating sampling dict",
-        ):
-            for key, value in item.items():
-                if (
-                    key not in done_vars
-                    and key in variances
-                    and (
-                        key not in self.sampling_dict
-                        or len(self.sampling_dict[key]) < 1_000_000
-                    )
-                ):
-                    if key == "duration":
-                        var_lvl = "phone"
-                    else:
-                        var_key = key.replace("variances_", "")
-                        var_idx = self.model.hparams.variances.index(var_key)
-                        var_lvl = self.model.hparams.variance_levels[var_idx]
-                    if var_lvl == "phone":
-                        for phone in self.model.phone2id.keys():
-                            if phone != "[PAD]":
-                                if phone not in self.sampling_dict[key]:
-                                    self.sampling_dict[key][phone] = []
-                                var_vals = (
-                                    value[item["phones"].eq(self.model.phone2id[phone])]
-                                    .cpu()
-                                    .numpy()
-                                    .flatten()
-                                    .tolist()
-                                )
-                            self.sampling_dict[key][phone] += var_vals
-                    elif var_lvl == "frame":
-                        # not supported yet
-                        print("Frame variance not supported yet")
-        for key in self.sampling_dict.keys():
-            # to numpy arrays
-            self.sampling_dict[key] = {
-                k: np.array(v) for k, v in self.sampling_dict[key].items()
+        if return_original and self.voicefixer is not None:
+            result = {
+                "original_fs": fs,
+                "original_audios": audios,
+                "fs": fs_new,
+                "audios": fixed_audios,
             }
-            if self.sampling_path is not None:
-                Path(self.sampling_path).mkdir(parents=True, exist_ok=True)
-                dict_path = Path(self.sampling_path, key + "_phone" + ".pkl")
-                pickle.dump(self.sampling_dict[key], open(dict_path, "wb"))
-
-    def _create_sampling_dict(self, dataset, variances, batch_size):
-        self.sampling_dict = {}
-        done_vars = []
-        if self.sampling_path is not None:
-            for key in variances:
-                if Path(self.sampling_path, key + ".npy").exists():
-                    self.sampling_dict[key] = np.load(
-                        self.sampling_path + "/" + key + ".npy"
-                    )
-        if all([k in self.sampling_dict for k in variances]):
-            return
+        elif self.voicefixer is not None:
+            result = {
+                "fs": fs_new,
+                "audios": fixed_audios,
+            }
         else:
-            for k in self.sampling_dict:
-                done_vars.append(k)
-        for item in tqdm(
-            DataLoader(
-                dataset,
-                batch_size=batch_size,
-                shuffle=False,
-                collate_fn=dataset._collate_fn,
-                num_workers=multiprocessing.cpu_count(),
-            ),
-            desc="Creating sampling dict",
-        ):
-            for key, value in item.items():
-                if (
-                    key not in done_vars
-                    and key in variances
-                    and (
-                        key not in self.sampling_dict
-                        or len(self.sampling_dict[key]) < 1_000_000
-                    )
-                ):
-                    if key == "duration":
-                        var_lvl = "phone"
-                    else:
-                        var_key = key.replace("variances_", "")
-                        var_idx = self.model.hparams.variances.index(var_key)
-                        var_lvl = self.model.hparams.variance_levels[var_idx]
-                    if var_lvl == "phone":
-                        var_vals = (
-                            value[~item["phones"].eq(0)]
-                            .cpu()
-                            .numpy()
-                            .flatten()
-                            .tolist()
-                        )
-                    elif var_lvl == "frame":
-                        var_vals = (
-                            value[~item["tgt_mask"]].cpu().numpy().flatten().tolist()
-                        )
-                    if key not in self.sampling_dict:
-                        self.sampling_dict[key] = var_vals
-        for key in self.sampling_dict.keys():
-            self.sampling_dict[key] = np.array(self.sampling_dict[key])
-            if self.sampling_path is not None:
-                Path(self.sampling_path).mkdir(parents=True, exist_ok=True)
-                np.save(
-                    self.sampling_path + "/" + key + ".npy", self.sampling_dict[key]
-                )
+            result = {
+                "fs": fs,
+                "audios": audios,
+            }
 
-    def _create_dataset2model(self, dataset, dataset_dvectors, model_dvectors):
-        if len(dataset.speaker2dvector) > len(self.model.speaker2dvector):
-            model2dataset = {}
-            for m_id, m_speaker in model_dvectors.items():
-                closest_dist = float("inf")
-                closest_speaker = None
-                for d_id, d_speaker in dataset_dvectors.items():
-                    dist = np.sum(np.abs(np.array(m_speaker) - np.array(d_speaker)))
-                    if dist < closest_dist:
-                        closest_dist = dist
-                        closest_speaker = d_id
-                model2dataset[m_id] = closest_speaker
-                del dataset_dvectors[closest_speaker]
-            dataset2model = {v: k for k, v in model2dataset.items()}
-            print(
-                "WARNING: There are more speakers in the dataset than in the model, this means that some speakers will be picked randomly"
-            )
-        else:
-            dataset2model = {}
-            for d_id, d_speaker in dataset_dvectors.items():
-                closest_dist = float("inf")
-                closest_speaker = None
-                for m_id, m_speaker in model_dvectors.items():
-                    dist = np.sum(np.abs(np.array(m_speaker) - np.array(d_speaker)))
-                    if dist < closest_dist:
-                        closest_dist = dist
-                        closest_speaker = m_id
-                dataset2model[d_id] = closest_speaker
-                del model_dvectors[closest_speaker]
-        return dataset2model
+        if return_duration:
+            result["durations"] = durations
 
-    def generate_from_dataset(
-        self,
-        dataset,
-        target_dir,
-        hours=20,
-        batch_size=6,
-        increase_diversity={},
-        fixed_diversity={},
-        sampling_diversity={},
-        oracle_diversity={},
-        sampling_level="all",
-        filter_speakers=None,  # reduces the number of speakers to the top x with the most samples available
-        copy=False,  # simply copies the files to the target directory
-        random_speaker=False,  # randomly selects a speaker from the tts model
-        include_dataset_speakers=False,  # includes the speakers from the dataset in the random speaker selection
-        prior_sampling="none",  # prior sampling
-    ):
-        dataset.stats = self.model.stats
-        if Path(target_dir).exists() and not self.overwrite:
-            print("Target directory exists, not overwriting")
-            return
-        else:
-            shutil.rmtree(target_dir, ignore_errors=True)
-        Path(target_dir).mkdir(parents=True, exist_ok=False)
-        if self.model.hparams.speaker_type == "dvector":
-            dataset_dvectors = deepcopy(dataset.speaker2dvector)
-            model_dvectors = deepcopy(self.model.speaker2dvector)
-            print(
-                f"Dataset has {len(dataset_dvectors)} speakers, model has {len(model_dvectors)}"
-            )
-            if random_speaker and copy:
-                print("Random speaker and copy, this is not supported")
-                return
-            if not random_speaker:
-                dataset2model = self._create_dataset2model(
-                    dataset, dataset_dvectors, model_dvectors
-                )
-            if include_dataset_speakers and not random_speaker:
-                print(
-                    "Including dataset speakers in random speaker selection, this is not supported"
-                )
-                return
-            else:
-                if include_dataset_speakers:
-                    random_vecs = {**dataset_dvectors, **model_dvectors}
-                else:
-                    random_vecs = model_dvectors
-                if filter_speakers is not None:
-                    random_vecs = {
-                        k: v for k, v in list(random_vecs.items())[:filter_speakers]
-                    }
-                    random_keys = sorted(random_vecs.keys())
-                    random_weights = {k: 0.01 for k in random_keys}
-                    print(f"Filtered dataset down to {filter_speakers} speakers")
-            pbar = tqdm(total=hours, desc="Generating Audio")
-            total_hours = 0
-            np.random.seed(42)
-            if len(sampling_diversity) > 0:
-                if sampling_level == "all":
-                    self._create_sampling_dict(
-                        dataset, sampling_diversity.keys(), batch_size * 10
-                    )
-                elif sampling_level == "phone":
-                    self._create_phone_sampling_dict(
-                        dataset, sampling_diversity.keys(), batch_size * 10
-                    )
-                    print(self.sampling_dict)
-                    raise
-            if filter_speakers is not None:
-                if not random_speaker:
-                    orig_len = len(dataset.data)
-                    filtered_speakers = (
-                        dataset.data["speaker"]
-                        .value_counts()
-                        .sort_values(ascending=False)[:filter_speakers]
-                        .index.tolist()
-                    )
-                    dataset.data = dataset.data[
-                        dataset.data["speaker"].isin(filtered_speakers)
-                    ]
-                    final_len = len(dataset.data)
-                    print(
-                        f"Filtered dataset down to {filter_speakers} speakers, conserving {final_len/orig_len*100:.2f}% of the data"
-                    )
-            for item in DataLoader(
-                dataset,
-                batch_size=batch_size,
-                shuffle=False,
-                collate_fn=dataset._collate_fn,
-                num_workers=multiprocessing.cpu_count(),
-            ):
-                if total_hours < 10:
-                    copy = False
-                else:
-                    copy = True
-                if not copy:
-                    speaker_keys = []
-                    if not random_speaker:
-                        for i in range(len(item["speaker_key"])):
-                            if item["speaker_key"][i] in dataset2model:
-                                speaker_key = dataset2model[item["speaker_key"][i]]
-                            else:
-                                speaker_key = item["speaker_key"][i]
-                            if speaker_key not in self.model.speaker2dvector.keys():
-                                print(
-                                    f"WARNING: Speaker {speaker_key} not found in model, random speaker will be used"
-                                )
-                                speaker_key = list(self.model.speaker2dvector.keys())[
-                                    np.random.randint(len(self.model.speaker2dvector))
-                                ]
-                            speaker_keys.append(speaker_key)
-                    else:
-                        speaker_keys = random.choices(
-                            random_keys,
-                            weights=[1 / random_weights[k] for k in random_keys],
-                            k=len(item["speaker_key"]),
-                        )
-                        for speaker_key in speaker_keys:
-                            random_weights[speaker_key] += 1
-                    if random_speaker:
-                        item["speaker"] = torch.tensor(
-                            [random_vecs[x] for x in speaker_keys]
-                        ).to(self.device)
-                        item["speaker_key"] = speaker_keys
-                    else:
-                        item["speaker"] = torch.tensor(
-                            [self.model.speaker2dvector[x] for x in speaker_keys]
-                        ).to(self.device)
-                        item["speaker_key"] = speaker_keys
-                if not copy:
-                    audios = self.generate_samples(
-                        item,
-                        increase_diversity=increase_diversity,
-                        fixed_diversity=fixed_diversity,
-                        sampling_diversity=sampling_diversity,
-                        oracle_diversity=oracle_diversity,
-                        prior_sampling=prior_sampling,
-                    )
-                else:
-                    audios = []
-                    speaker_keys = []
-                    for i in range(len(item["mel"])):
-                        real_mel = item["mel"][i][
-                            : torch.sum(item["duration"][i])
-                        ].cpu()
-                        audios.append(int16_samples_to_float32(self.synth(real_mel)[0]))
-                        speaker_keys.append(item["speaker_key"][i])
-                        # if self.augmentations is not None:
-                        #    audios = [self.augmentations(m, sample_rate=self.model.hparams.sampling_rate) for m in audios]
-                for i, audio in enumerate(audios):
-                    save_dir = Path(target_dir, Path(speaker_keys[i]).name)
-                    save_dir.mkdir(parents=True, exist_ok=True)
-                    torchaudio.save(
-                        save_dir / Path(item["id"][i]).with_suffix(".wav"),
-                        torch.tensor(audio).unsqueeze(0),
-                        sample_rate=22050,
-                    )
-                    open(save_dir / Path(item["id"][i]).with_suffix(".lab"), "w").write(
-                        item["text"][i]
-                    )
-                    add_hours = len(audio) / self.model.hparams.sampling_rate / 3600
-                    pbar.update(add_hours)
-                    total_hours += add_hours
-                    if total_hours > hours:
-                        break
-                if total_hours > hours:
-                    break
+        return result

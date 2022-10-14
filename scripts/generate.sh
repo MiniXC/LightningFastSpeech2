@@ -1,7 +1,11 @@
 pdm run python litfass/generate.py \
---hub "cdminix/litfass_a" \
---sentence '"you are insane!", he screamed in anguish.' \
---output_path . \
+--checkpoint_path "models/icassp_baseline.ckpt" \
+--dataset "../data/train-clean-b" \
+--output_path "../generated" \
+--hours 10.0 \
+--batch_size 1 \
 --use_voicefixer True \
---speaker ../data/train-clean-a/3922 \
---prior_values -1 -1 -1 -1
+--cache_path "../dataset_cache" \
+--tts_device "cuda:0" \
+--hifigan_device "cuda:1" \
+--min_samples_per_speaker 50

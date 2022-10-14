@@ -330,7 +330,7 @@ class VarianceAdaptor(nn.Module):
                 duration_rounded[0] = 1
                 print("Zero duration, setting to 1")
 
-        if inference:
+        if inference and self.variance_gan:
             x_true, tgt_mask_true = self.length_regulator(x, targets["duration"], self.max_length)
 
         x, tgt_mask = self.length_regulator(x, duration_rounded, self.max_length)

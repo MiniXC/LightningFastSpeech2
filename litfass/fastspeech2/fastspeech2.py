@@ -542,7 +542,7 @@ class FastSpeech2(pl.LightningModule):
     def forward(self, targets, optimizer_idx=0, inference=False):
 
         phones = targets["phones"].to(self.device)
-        speakers = targets["speaker"]
+        speakers = targets["speaker"].to(self.device)
 
         src_mask = phones.eq(0)
 

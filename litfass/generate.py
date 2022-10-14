@@ -6,7 +6,13 @@ import inspect
 from alignments.datasets.libritts import LibrittsDataset
 from audiomentations import Compose, RoomSimulator, AddGaussianSNR, PitchShift
 from huggingface_hub import hf_hub_download
-from pytorch_lightning import Trainer
+from torch.utils.data import DataLoader
+import torch
+from tqdm.auto import tqdm
+import pickle
+import json
+import hashlib
+import numpy as np
 
 from litfass.fastspeech2.fastspeech2 import FastSpeech2
 from litfass.synthesis.generator import SpeechGenerator
@@ -28,6 +34,8 @@ if __name__ == "__main__":
     parser.add_argument("--tts_device", type=str, default=None)
     parser.add_argument("--hifigan_device", type=str, default=None)
     parser.add_argument("--use_voicefixer", type=str2bool, default=True)
+
+    parser.add_argument("--cache_path", type=str, default=None)
 
     # override priors
     parser.add_argument(
@@ -51,6 +59,10 @@ if __name__ == "__main__":
 
     # speakers
     parser.add_argument("--speaker", type=str, default=None) # can be "random", "dataset" or a speaker name
+    parser.add_argument("--min_samples_per_speaker", type=int, default=0)
+
+    # number of hours to generate
+    parser.add_argument("--hours", type=float, default=1.0)
 
     args = parser.parse_args()
 
@@ -95,15 +107,6 @@ if __name__ == "__main__":
         raise ValueError("No checkpoint path or hub identifier specified!")
 
     model = FastSpeech2.load_from_checkpoint(args.checkpoint_path)
-    # # load speaker2priors using pickle
-    # speaker2priors = pickle.load(open("speaker2priors.pkl", "rb"))
-    # model.speaker2priors = speaker2priors
-    # model.speaker2dvector = {k.name: v for k, v in model.speaker2dvector.items() if k.name in speaker2priors}
-    # model._fit_speaker_prior_gmms()
-    # # save checkpoint
-    # trainer = Trainer()
-    # trainer.model = model
-    # trainer.save_checkpoint("lit_model.ckpt")
 
     generator = SpeechGenerator(
         model,
@@ -124,23 +127,99 @@ if __name__ == "__main__":
         generator.save_audio(audio, Path(args.output_path) / f"{args.sentence.replace(' ', '_').lower()}.wav")
 
     if args.dataset is not None:
-        ds = TTSDataset(
-            LibrittsDataset(target_directory=args.dataset_path, chunk_size=10_000),
-            speaker_type=model.hparams.speaker_type,
-            min_length=model.hparams.min_length,
-            max_length=model.hparams.max_length,
-            variances=model.hparams.variances,
-            variance_transforms=model.hparams.variance_transforms,
-            variance_levels=model.hparams.variance_levels,
-            priors=model.hparams.priors,
-            n_mels=model.hparams.n_mels,
-            n_fft=model.hparams.n_fft,
-            win_length=model.hparams.win_length,
-            hop_length=model.hparams.hop_length,
+        ds = None
+        if args.cache_path is not None:
+            cache_path = Path(args.cache_path)
+            tts_kwargs = {
+                "speaker_type":model.hparams.speaker_type,
+                "min_length":model.hparams.min_length,
+                "max_length":model.hparams.max_length,
+                "variances":model.hparams.variances,
+                "variance_transforms":model.hparams.variance_transforms,
+                "variance_levels":model.hparams.variance_levels,
+                "priors":model.hparams.priors,
+                "n_mels":model.hparams.n_mels,
+                "n_fft":model.hparams.n_fft,
+                "win_length":model.hparams.win_length,
+                "hop_length":model.hparams.hop_length,
+                "min_samples_per_speaker":args.min_samples_per_speaker,
+                "_stats": model.stats,
+            }
+            hash_kwargs = tts_kwargs.copy()
+            hash_kwargs["dataset"] = args.dataset
+            ds_hash = hashlib.md5(
+                    json.dumps(hash_kwargs, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            cache_path = cache_path / (ds_hash + ".pt")
+            if cache_path.exists():
+                print("Loading from cache...")
+                with cache_path.open("rb") as f:
+                    ds = pickle.load(f)
+        if ds is None:
+            ds = TTSDataset(
+                LibrittsDataset(target_directory=args.dataset, chunk_size=10_000),
+                speaker_type=model.hparams.speaker_type,
+                min_length=model.hparams.min_length,
+                max_length=model.hparams.max_length,
+                variances=model.hparams.variances,
+                variance_transforms=model.hparams.variance_transforms,
+                variance_levels=model.hparams.variance_levels,
+                priors=model.hparams.priors,
+                n_mels=model.hparams.n_mels,
+                n_fft=model.hparams.n_fft,
+                win_length=model.hparams.win_length,
+                hop_length=model.hparams.hop_length,
+                min_samples_per_speaker=args.min_samples_per_speaker,
+                _stats=model.stats,
+            )
+            if args.cache_path is not None and not cache_path.exists():
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                with cache_path.open("wb") as f:
+                    pickle.dump(ds, f)
+
+        dl = DataLoader(
+            ds,
+            batch_size=args.batch_size,
+            num_workers=4,
+            collate_fn=ds._collate_fn,
+            shuffle=False,
         )
 
-        # if args.speaker == "random":
-        #     for item in ds:
-        #         for random.choice(ds.speakers):
-        #             item["speaker"] = speaker
-        #             break
+        with tqdm(total=args.hours) as pbar:
+            for batch in dl:
+                skip_speaker = False
+                for i, speaker in enumerate(batch["speaker_path"]):
+                    speaker = Path(str(speaker).replace("-b", "-a"))
+                    if speaker not in model.speaker2dvector:
+                        skip_speaker = True
+                        break
+                    batch["speaker"][i] = torch.tensor(model.speaker2dvector[speaker]).to(model.device)
+                if skip_speaker:
+                    continue
+                results = generator.generate_samples(
+                    batch,
+                    return_original=True,
+                    return_duration=True,
+                )
+                i = 0
+                for audio, speaker, id in zip(results["audios"], batch["speaker_key"], batch["id"]):
+                    if args.output_path is None:
+                        raise ValueError("No output path specified!")
+                    output_path = Path(args.output_path) / speaker
+                    output_path.mkdir(parents=True, exist_ok=True)
+                    generator.save_audio(audio, output_path / id)
+                    id_name = id.replace(".wav", "")
+                    generator.save_audio(
+                        results["original_audios"][i], 
+                        output_path / f"{id_name}_original.wav", 
+                        fs=model.hparams.sampling_rate,
+                    )
+                    with open(output_path / f"{id_name}.meta", "wb") as f:
+                        pickle.dump({"phones": batch["phones"], "durations": results["durations"]}, f)
+                    with open(output_path / f"{id_name}.lab", "w", encoding="utf-8") as f:
+                        f.write(batch["text"][i])
+                    pbar.update(audio.shape[0] / results["fs"] / 3600)
+                    i += 1
+
+
+    

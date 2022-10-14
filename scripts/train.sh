@@ -1,8 +1,9 @@
 #!/usr/bin/bash
 
-CUDA_VISIBLE_DEVICES="0" pdm run python litfass/train.py \
+CUDA_VISIBLE_DEVICES="0,1" pdm run python litfass/train.py \
 --accelerator gpu \
---devices 1 \
+--devices 2 \
+--strategy "ddp" \
 --precision 16 \
 --batch_size 6 \
 --accumulate_grad_batches 8 \
@@ -34,13 +35,14 @@ CUDA_VISIBLE_DEVICES="0" pdm run python litfass/train.py \
 --decoder_kernel_sizes 9 9 9 9 9 9 \
 --speaker_embedding_every_layer False \
 --prior_embedding_every_layer False \
---wandb_name "icassp_environment" \
---wandb_mode "offline" \
+--wandb_name "icassp_priors_dvector" \
+--wandb_mode "online" \
 --train_target_path "../data/train-clean-a" \
 --speaker_type "dvector_utterance" \
 --train_min_samples_per_speaker 50 \
 --priors_gmm True \
 --priors_gmm_max_components 2 \
---dvector_gmm True
+--dvector_gmm True \
+--priors energy duration snr pitch srmr \
 
 # --priors energy duration snr pitch \
