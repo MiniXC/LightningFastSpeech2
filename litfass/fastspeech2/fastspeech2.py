@@ -374,7 +374,7 @@ class FastSpeech2(pl.LightningModule):
                     len(self.speaker2id),
                 )
 
-        if hasattr(self, "train_ds") and self.train_ds is not None and hasattr(self.train_ds, "speaker2priors"):
+        if hasattr(self, "train_ds") and self.train_ds is not None and hasattr(self.train_ds, "speaker_priors"):
             self.speaker2priors = self.train_ds.speaker_priors
 
         # loss
@@ -400,10 +400,19 @@ class FastSpeech2(pl.LightningModule):
             self.hparams.soft_dtw_chunk_size,
         )
 
-        if len(self.hparams.priors) > 0 and self.hparams.priors_gmm and hasattr(self, "speaker2priors"):
+        if (
+            len(self.hparams.priors) > 0 and
+            self.hparams.priors_gmm and
+            hasattr(self, "speaker2priors")
+        ):
             self._fit_speaker_prior_gmms()
         
-        if self.hparams.dvector_gmm and self.train_ds is not None and hasattr(self.train_ds, "speaker2dvector"):
+        if (
+            self.hparams.dvector_gmm and
+            hasattr(self, "train_ds") and
+            self.train_ds is not None and
+            hasattr(self.train_ds, "speaker2dvector")
+        ):
             self._fit_speaker_dvector_gmms()
 
         elif self.hparams.dvector_gmm:
@@ -445,6 +454,7 @@ class FastSpeech2(pl.LightningModule):
                     break
                 gmm_kwargs["n_components"] += 1
             self.speaker_gmms[speaker] = best_gmm
+        pickle.dump(self.speaker_gmms, open(f"prior_gmms.pkl", "wb"))
 
     def on_load_checkpoint(self, checkpoint):
         self.stats = checkpoint["stats"]

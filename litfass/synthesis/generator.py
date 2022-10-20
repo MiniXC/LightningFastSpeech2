@@ -170,6 +170,8 @@ class SpeechGenerator:
                 if fs != 22050:
                     audio = F.resample(torch.tensor(audio), fs, 22050)
                     fs = 22050
+                pad_width = int(fs * 0.1)
+                audio = np.pad(audio, (pad_width, pad_width), constant_values=(0, 0))
                 torchaudio.save(tmp_dir / f"{tmp_hash}.wav", torch.tensor([audio]), fs)
                 self.voicefixer.restore(
                     input=tmp_dir / f"{tmp_hash}.wav",
@@ -178,7 +180,9 @@ class SpeechGenerator:
                     mode=1,
                 )
                 fixed_audio, fs_new = torchaudio.load(tmp_dir / f"{tmp_hash}_fixed.wav")
-                fixed_audios.append(fixed_audio[0].numpy())
+                # remove padding
+                fixed_audio = fixed_audio[0].numpy()[pad_width:-pad_width]
+                fixed_audios.append(fixed_audio)
 
         if self.augmentations is not None:
             audios = [

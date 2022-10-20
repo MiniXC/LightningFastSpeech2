@@ -9,7 +9,6 @@ from huggingface_hub import hf_hub_download
 from torch.utils.data import DataLoader
 import torch
 from tqdm.auto import tqdm
-import pickle
 import json
 import hashlib
 import numpy as np
@@ -189,11 +188,27 @@ if __name__ == "__main__":
             for batch in dl:
                 skip_speaker = False
                 for i, speaker in enumerate(batch["speaker_path"]):
-                    speaker = Path(str(speaker).replace("-b", "-a"))
-                    if speaker not in model.speaker2dvector:
+                    speaker_dvec = Path(str(speaker).replace("-b", "-a"))
+                    speaker = speaker.name
+                    if speaker_dvec not in model.speaker2dvector:
                         skip_speaker = True
+                        print(f"The speaker {speaker} is not present in the d-vector collection!")
                         break
-                    batch["speaker"][i] = torch.tensor(model.speaker2dvector[speaker]).to(model.device)
+                    # if hasattr(model, "speaker_gmms"):
+                    #     if speaker not in model.speaker_gmms:
+                    #         skip_speaker = True
+                    #         print(f"The speaker {speaker} is not present in the GMM collection!")
+                    #         break
+                    # else:
+                    #     model.speaker_gmms = pickle.load(open("speaker_gmms.pkl", "rb"))
+                    # p_sample = model.speaker_gmms[speaker].sample()[0][0]
+                    # for h, p in enumerate(model.hparams.priors):
+                    #     batch[f"priors_{p}"][i] = p_sample[h]
+                    # if hasattr(model, "dvector_gmms"):
+                    #     dvec = model.dvector_gmms[speaker_dvec].sample()[0][0]
+                    #     batch["speaker"][i] = torch.tensor(dvec)
+                    # else:
+                    batch["speaker"][i] = torch.tensor(model.speaker2dvector[speaker_dvec]).to(model.device)
                 if skip_speaker:
                     continue
                 results = generator.generate_samples(
@@ -202,6 +217,7 @@ if __name__ == "__main__":
                     return_duration=True,
                 )
                 i = 0
+                stop_loop = False
                 for audio, speaker, id in zip(results["audios"], batch["speaker_key"], batch["id"]):
                     if args.output_path is None:
                         raise ValueError("No output path specified!")
@@ -219,7 +235,12 @@ if __name__ == "__main__":
                     with open(output_path / f"{id_name}.lab", "w", encoding="utf-8") as f:
                         f.write(batch["text"][i])
                     pbar.update(audio.shape[0] / results["fs"] / 3600)
+                    if pbar.n >= args.hours:
+                        stop_loop = True
+                        break
                     i += 1
+                if stop_loop:
+                    break
 
 
     
