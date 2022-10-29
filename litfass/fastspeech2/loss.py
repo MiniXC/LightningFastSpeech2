@@ -201,7 +201,7 @@ class FastSpeech2Loss(nn.Module):
         if not self.duration_stochastic:
             losses["duration"] = self.get_loss(
                 result["duration_prediction"],
-                torch.log(target["duration"] + 1),
+                torch.log(target["duration"] + 1).to(dtype=result["mel"].dtype),
                 self.duration_loss,
                 src_mask,
             )

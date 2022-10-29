@@ -1,7 +1,7 @@
 pdm run python litfass/generate.py \
---checkpoint_path "models/icassp_baseline.ckpt" \
+--checkpoint_path "models/icassp_priors_dvector.ckpt" \
 --dataset "../data/train-clean-b" \
---output_path "../generated/base" \
+--output_path "../generated/delphi" \
 --hours 10.0 \
 --batch_size 1 \
 --use_voicefixer True \

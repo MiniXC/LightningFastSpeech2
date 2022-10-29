@@ -208,7 +208,7 @@ if __name__ == "__main__":
                     #     dvec = model.dvector_gmms[speaker_dvec].sample()[0][0]
                     #     batch["speaker"][i] = torch.tensor(dvec)
                     # else:
-                    batch["speaker"][i] = torch.tensor(model.speaker2dvector[speaker_dvec]).to(model.device)
+                    # batch["speaker"][i] = torch.tensor(model.speaker2dvector[speaker_dvec]).to(model.device)
                 if skip_speaker:
                     continue
                 results = generator.generate_samples(
