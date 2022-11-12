@@ -59,6 +59,7 @@ extras = [
 deepspeed = [
     "deepspeed>=0.7.2",
     "fairscale>=0.4.9",
+    "cupy>=11.2.0",
 ]
 [tool.pdm]
 [tool.pdm.dev-dependencies]

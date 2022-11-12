@@ -187,6 +187,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cupy"
+version = "11.2.0"
+requires_python = ">=3.7"
+summary = ""
+dependencies = [
+    "fastrlock>=0.5",
+    "numpy<1.26,>=1.20",
+]
+
+[[package]]
 name = "cycler"
 version = "0.11.0"
 requires_python = ">=3.6"
@@ -268,6 +278,11 @@ dependencies = [
     "numpy>=1.22.0",
     "torch>=1.8.0",
 ]
+
+[[package]]
+name = "fastrlock"
+version = "0.8"
+summary = "Fast, re-entrant optimistic lock implemented in Cython"
 
 [[package]]
 name = "filelock"
@@ -1326,7 +1341,7 @@ summary = "Backport of pathlib-compatible object wrapper for zip files"
 
 [metadata]
 lock_version = "4.0"
-content_hash = "sha256:2e8c3a2129e4624491c431b897f3333f7554ff89de45b63cac91c1dd055ad63d"
+content_hash = "sha256:e9f0569ec25531cfa0cde216a9e73a9aedd74cfa02b75cc2970516988560b3cc"
 
 [metadata.files]
 "absl-py 1.2.0" = [
@@ -1642,6 +1657,9 @@ content_hash = "sha256:2e8c3a2129e4624491c431b897f3333f7554ff89de45b63cac91c1dd0
 "crepe 0.0.12" = [
     {url = "https://files.pythonhosted.org/packages/87/52/ceff4bc3dba743b306d8fe80158f9371bbac24b1c8d23bc122e1f7339677/crepe-0.0.12.tar.gz", hash = "sha256:b6dd41aa070778e0750d545fc386e908c6e926292690e4fae04ef7613e3ef36d"},
 ]
+"cupy 11.2.0" = [
+    {url = "https://files.pythonhosted.org/packages/92/3c/f72d7a85c770ddded45ade707a756f596df1097809480bba2a46996fe278/cupy-11.2.0.tar.gz", hash = "sha256:c33361f117a347a63f6996ea97446d17f1c038f1a1f533e502464235076923e2"},
+]
 "cycler 0.11.0" = [
     {url = "https://files.pythonhosted.org/packages/34/45/a7caaacbfc2fa60bee42effc4bcc7d7c6dbe9c349500e04f65a861c15eb9/cycler-0.11.0.tar.gz", hash = "sha256:9c87405839a19696e837b3b818fed3f5f69f16f1eec1a1ad77e043dcea9c772f"},
     {url = "https://files.pythonhosted.org/packages/5c/f9/695d6bedebd747e5eb0fe8fad57b72fdf25411273a39791cde838d5a8f51/cycler-0.11.0-py3-none-any.whl", hash = "sha256:3a27e95f763a428a739d2add979fa7494c912a32c17c4c38c4d5f082cad165a3"},
@@ -1720,6 +1738,36 @@ content_hash = "sha256:2e8c3a2129e4624491c431b897f3333f7554ff89de45b63cac91c1dd0
 ]
 "fairscale 0.4.10" = [
     {url = "https://files.pythonhosted.org/packages/c0/01/eb8e3ebbd53ee47f7b29306421e7c7d3b1dbc0088d346d018878ee19d563/fairscale-0.4.10.tar.gz", hash = "sha256:e49a2c281b295c266914da1544372a3c81b3b0eaa290e96f03c3cac3614f92ef"},
+]
+"fastrlock 0.8" = [
+    {url = "https://files.pythonhosted.org/packages/14/29/87db9295cf6b75e7f986d0f811c5c01cd061a0d520c7993e71b4698a49c3/fastrlock-0.8-cp38-cp38-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_12_x86_64.manylinux2010_x86_64.whl", hash = "sha256:5c75985ba70fb4e8af595a0f67f58b96e0dbc53562768208890b4b2ac25b4b52"},
+    {url = "https://files.pythonhosted.org/packages/16/5b/fb404df184bcd1ecaf12450e9acddfd3728ea1772613292a2efcc015bae1/fastrlock-0.8-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:fe85f98fa66de41f929b8e01e4a9c5a7d20e660f605054b847c4ac54fadc8f79"},
+    {url = "https://files.pythonhosted.org/packages/2a/ea/9ccc601c6fdda65416d199f842547239d86e65173b5c66699ebf84687ddc/fastrlock-0.8-cp310-cp310-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_12_x86_64.manylinux2010_x86_64.whl", hash = "sha256:09314c5c0f63fe252a3ee038af855d7fb5668d0ccbae94846a35b32487c6256c"},
+    {url = "https://files.pythonhosted.org/packages/2b/1f/25539e03928233446aa8a5c7d524fc9d6ff9947d0a76f3eb1ac9bd64cfb0/fastrlock-0.8.tar.gz", hash = "sha256:9cc100ed0924b32173d7de705a82fdf1257cdf60af1952a13f64759307b40931"},
+    {url = "https://files.pythonhosted.org/packages/35/ac/6c085a7be939fbfa661e93143323633285ed7c236bd49eed56405eae95c6/fastrlock-0.8-cp38-cp38-manylinux_2_5_i686.manylinux1_i686.manylinux_2_12_i686.manylinux2010_i686.whl", hash = "sha256:951a5c4dc6fbe4481082752ce9f21aabcaa1cf6185f683d7b5cbae254f10bb46"},
+    {url = "https://files.pythonhosted.org/packages/3d/2b/77b216137254177419b3c6896e0838a3e968f885487ab1a9241b2eceff0f/fastrlock-0.8-cp39-cp39-win32.whl", hash = "sha256:85c36ac55dc917c7e1f4fb03a841fe84b3fb2669dd0306bb94bf62c5749b1a7f"},
+    {url = "https://files.pythonhosted.org/packages/46/5d/7d9c263efcb8ff144750d1ad665c5327757dd0d42c7bafdb9563dc77e008/fastrlock-0.8-cp37-cp37m-win_amd64.whl", hash = "sha256:5aa6b442b12fa1f9041248506c8ea5ae909a92aedd5a139647dce2ee87e5b944"},
+    {url = "https://files.pythonhosted.org/packages/4d/1c/fdd11c376fadee4dccea18991d317809b8827ea0b2c02c26c0da9ad15758/fastrlock-0.8-cp38-cp38-win_amd64.whl", hash = "sha256:7b612474ddacf808c663aa8020db0a78f54a665ccabd9dbe505d3d4c4b3f6044"},
+    {url = "https://files.pythonhosted.org/packages/4f/20/ec8c0dbeb1d73e575464b4c2180d3e5ce631ab7ac42c88c15fe95266d559/fastrlock-0.8-cp35-cp35m-win_amd64.whl", hash = "sha256:c7ec22a5726467af53950a8baba92327620c0f73c34fab930ce29b94c8645c7e"},
+    {url = "https://files.pythonhosted.org/packages/53/2e/e364e359eec1f176fbb07fbbf464451b1b9d15146a9a8f86ee674f275c98/fastrlock-0.8-cp36-cp36m-win_amd64.whl", hash = "sha256:7c9c66ab93877272169b017dc24f63c9c94b3f9d55b0b0b8c3f6d9644280120c"},
+    {url = "https://files.pythonhosted.org/packages/54/20/27005942483e5ae4dd94ae5e4d4dd41feb84cb08b6e9b9463d9ff48dab6d/fastrlock-0.8-cp27-cp27m-win_amd64.whl", hash = "sha256:b991766baec0113829c5a10bec4c5ec987cab31dfcb1fabf53e370b83b939ef9"},
+    {url = "https://files.pythonhosted.org/packages/69/29/4030c70d7032c5f5832b3d3a3ef06b264913e09092bec0578478c7844dde/fastrlock-0.8-cp37-cp37m-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_12_x86_64.manylinux2010_x86_64.whl", hash = "sha256:719743b5b3c2b214fdf63096ac6a68615b4d9b8cb210e9e6ddf0293b38da2c9a"},
+    {url = "https://files.pythonhosted.org/packages/72/41/d89d7832ee56fe355eee2c3fedcb57bdbb75e2664587d0f62c552ab9ff23/fastrlock-0.8-cp38-cp38-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:af9df4c17c3142c9774cd1b9edea586f709c6421f02bcf7614507937b921ea7f"},
+    {url = "https://files.pythonhosted.org/packages/7c/39/7ced912d9f1e71ce93461b121ff92c87c4b97272863e8594d8dace61ea8f/fastrlock-0.8-cp37-cp37m-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:b5d5fd2a76aa9cd451a8820e2427e512620062ffa62ea5732da0ab8888b6be6e"},
+    {url = "https://files.pythonhosted.org/packages/81/62/d9a155d42803e2ed699a5b296e2949a8b87487eb25f2022d2a4fb5a87144/fastrlock-0.8-cp39-cp39-manylinux_2_5_i686.manylinux1_i686.manylinux_2_12_i686.manylinux2010_i686.whl", hash = "sha256:d2029fb44eac8ab5f7aafb3fcde9419cbdaa07a08f72dac8cd7790dc0f73e596"},
+    {url = "https://files.pythonhosted.org/packages/a0/3b/c87f62d478a5a1e32d368819f02d0691b0cb0f2476755ddce88bef31d18a/fastrlock-0.8-cp36-cp36m-win32.whl", hash = "sha256:f365fc1de226ce96fedbb475c4523b304ce00f9a59beea620dba34e21239f5f3"},
+    {url = "https://files.pythonhosted.org/packages/b5/31/a1add5ce64c75d0e6db7f4d8735418f9a9bca40615587d9afab9773d55bb/fastrlock-0.8-cp38-cp38-win32.whl", hash = "sha256:0b459511349dc96c8961f1d43635bb94cfc2404a8899792a1f9aaa9998fa0eca"},
+    {url = "https://files.pythonhosted.org/packages/b6/69/2c48f2d600ad54f237e3ce151d68e6aecfff660987e8274e910f83f3a080/fastrlock-0.8-cp37-cp37m-win32.whl", hash = "sha256:1cfb5ac6336ff327359a31b690898adf9a813fd44a76196115a3f0afb2367c81"},
+    {url = "https://files.pythonhosted.org/packages/c5/39/5106b13c029400b586f04c06004c10820b7c7e22eb602b7671777c623cc3/fastrlock-0.8-cp36-cp36m-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:dcd7a05ba34702d0f0e9751d35afb06be21034fcf00197567ff0dcdf48cde8e7"},
+    {url = "https://files.pythonhosted.org/packages/c6/6f/23fb661d799f29357866837b55eda924cf8afcc511af00cc6d92c25342ba/fastrlock-0.8-cp35-cp35m-win32.whl", hash = "sha256:b724a7f5c1d5f9cdc30a13022e6e8cf319812c40dad0fd722b5ea18d2cfc4c4d"},
+    {url = "https://files.pythonhosted.org/packages/cc/37/5dde8d44554ff98356a138fbc932c864a989bcc729f5e92aaad99f387f00/fastrlock-0.8-cp39-cp39-win_amd64.whl", hash = "sha256:4bb33625117bc9f1a66a5049a5d03ac4b38a44cb8eefdff1a394f7a435da54c9"},
+    {url = "https://files.pythonhosted.org/packages/d4/a6/f32a8d1645796f1bb42c73948aed846f73d6ee2aa25637311d2c0d19e526/fastrlock-0.8-cp27-cp27m-win32.whl", hash = "sha256:4d414a5e97a545fee64437586c70bd295d22ac49614eeb76fb67980e32a0d1ae"},
+    {url = "https://files.pythonhosted.org/packages/d7/56/e03ba7c8ba7cee60830e8e569efdf0f33c9468eec0e933614ab418343881/fastrlock-0.8-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:5356a15375fab5a8090f255b54122eead504ebcec8a67ac369489e3e315dfd21"},
+    {url = "https://files.pythonhosted.org/packages/dc/60/f6a4d66f9cab907f8c141a6e444315d6799d565785f986ea9dcc54fd14b7/fastrlock-0.8-cp310-cp310-manylinux_2_5_i686.manylinux1_i686.manylinux_2_12_i686.manylinux2010_i686.whl", hash = "sha256:8369ce6d228fc3efbfcff5499468200bd12c35efdbc787eeaf8064153bcf0d72"},
+    {url = "https://files.pythonhosted.org/packages/e0/1e/f2ce7b893564f602a9cdd11e45c6a08260d2181d933a7b263a8907ab2465/fastrlock-0.8-cp36-cp36m-manylinux_2_5_i686.manylinux1_i686.manylinux_2_12_i686.manylinux2010_i686.whl", hash = "sha256:997bc6c4fafda396449e2410a5d32b69d231fdccc5af6de6cefe9d67e5f7157e"},
+    {url = "https://files.pythonhosted.org/packages/f8/00/422bacbfbe5c5f365f6c533428f572502675dc5e03c8745cec02bb0123ea/fastrlock-0.8-cp39-cp39-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_12_x86_64.manylinux2010_x86_64.whl", hash = "sha256:3bba2a866c9f6eb1923ead5e70e1da02b3e57c531830eb4fcbd2d8e9530a2d7e"},
+    {url = "https://files.pythonhosted.org/packages/fa/33/5ee89716d07ad5ed6aa7cdb8ff2c74b1ba34bb69d4049a1f642104ab816c/fastrlock-0.8-cp37-cp37m-manylinux_2_5_i686.manylinux1_i686.manylinux_2_12_i686.manylinux2010_i686.whl", hash = "sha256:340ae0734305d780aaad0893dba8185f4dbb0575d5fd696b5720eaf800526bbc"},
+    {url = "https://files.pythonhosted.org/packages/fc/db/495b49283d22edaee5f20af623b490c36de14d54a5dbe0a3b57840165108/fastrlock-0.8-cp36-cp36m-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_12_x86_64.manylinux2010_x86_64.whl", hash = "sha256:4ba3d3dc0dbb1cff2eee033a1f6369c24a86e8c20b427edfceff3f38b48b391c"},
 ]
 "filelock 3.8.0" = [
     {url = "https://files.pythonhosted.org/packages/94/b3/ff2845971788613e646e667043fdb5f128e2e540aefa09a3c55be8290d6d/filelock-3.8.0-py3-none-any.whl", hash = "sha256:617eb4e5eedc82fc5f47b6d61e4d11cb837c56cb4544e39081099fa17ad109d4"},

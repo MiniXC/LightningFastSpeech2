@@ -182,7 +182,6 @@ class VarianceAdaptor(nn.Module):
         duration_depthwise_conv,
         encoder_hidden,
         max_length,
-        variance_gan=False,
     ):
         super().__init__()
         self.variances = variances
@@ -235,21 +234,6 @@ class VarianceAdaptor(nn.Module):
 
         self.frozen_components = []
 
-        self.variance_gan = variance_gan
-
-        if self.variance_gan:
-            self.variance_discriminators = {}
-            for var in self.variances:
-                self.variance_discriminators[var] = VarianceDiscriminator(
-                    variance_nlayers[variances.index(var)],
-                    encoder_hidden,
-                    variance_filter_size,
-                    variance_kernel_size[variances.index(var)],
-                    variance_dropout[variances.index(var)],
-                    variance_depthwise_conv,
-                )
-            self.variance_discriminators = nn.ModuleDict(self.variance_discriminators)
-
     def freeze(self, component):
         if component == "duration":
             for param in self.duration_predictor.parameters():
@@ -284,6 +268,8 @@ class VarianceAdaptor(nn.Module):
 
         tf_val = np.random.uniform(0, 1) <= tf_ratio
 
+        out_val = None
+
         for i, var in enumerate(self.variances):
             if self.variance_levels[i] == "phone":
                 if (not inference and tf_val) or var in oracles:
@@ -298,22 +284,10 @@ class VarianceAdaptor(nn.Module):
                 else:
                     pred, out = self.encoders[var](x, None, src_mask)
                 result[f"variances_{var}"] = pred
-                if self.variance_gan:
-                    if not inference:
-                        out_true = out
-                        out_fake = self.encoders[var](x, None, src_mask)[1]
-                    else:
-                        out_true = self.encoders[var](x, targets[f"variances_{var}"], src_mask)[1]
-                        out_fake = out
-                    result[f"variances_{var}_disc_fake"] = self.variance_discriminators[
-                        var
-                    ](x.detach() + out_fake.detach(), src_mask)
-                    result[f"variances_{var}_disc_true"] = self.variance_discriminators[
-                        var
-                    ](x.detach() + out_true.detach(), src_mask)
-                    result[f"variances_{var}_gen_true"] = self.variance_discriminators[
-                        var
-                    ](x.detach() + out_fake, src_mask)
+                if out_val is None:
+                    out_val = out
+                else:
+                    out_val = out_val + out
                 x = x + out
 
         if not inference:
@@ -326,14 +300,14 @@ class VarianceAdaptor(nn.Module):
                     (torch.exp(duration_pred + 1e-9))
                 ).masked_fill(duration_pred == 0, 0)
             duration_rounded = torch.clamp(duration_rounded, min=0).int()
-            if duration_rounded.sum() == 0:
-                duration_rounded[0] = 1
-                print("Zero duration, setting to 1")
-
-        if inference and self.variance_gan:
-            x_true, tgt_mask_true = self.length_regulator(x, targets["duration"], self.max_length)
+            for i in range(len(duration_rounded)):
+                if duration_rounded[i][~src_mask[i]].sum() <= (~src_mask[i]).sum() // 2:
+                    duration_rounded[i][~src_mask[i]] = 1
+                    print("Zero duration, setting to 1")
 
         x, tgt_mask = self.length_regulator(x, duration_rounded, self.max_length)
+        if out_val is not None:
+            out_val, _ = self.length_regulator(out_val, duration_rounded, self.max_length)
 
         for i, var in enumerate(self.variances):
             if self.variance_levels[i] == "frame":
@@ -349,30 +323,17 @@ class VarianceAdaptor(nn.Module):
                 else:
                     pred, out = self.encoders[var](x, None, tgt_mask)
                 result[f"variances_{var}"] = pred
-                if self.variance_gan:
-                    if not inference:
-                        out_true = out
-                        out_fake = self.encoders[var](x, None, tgt_mask)[1]
-                        tgt_mask_true = tgt_mask
-                        x_true = x
-                    else:
-                        out_true = self.encoders[var](x_true, targets[f"variances_{var}"], tgt_mask_true)[1]
-                        out_fake = out
-                    result[f"variances_{var}_disc_fake"] = self.variance_discriminators[
-                        var
-                    ](x.detach() + out_fake.detach(), tgt_mask)
-                    result[f"variances_{var}_disc_true"] = self.variance_discriminators[
-                        var
-                    ](x_true.detach() + out_true.detach(), tgt_mask_true)
-                    result[f"variances_{var}_gen_true"] = self.variance_discriminators[
-                        var
-                    ](x.detach() + out_fake, tgt_mask)
+                if out_val is None:
+                    out_val = out
+                else:
+                    out_val = out_val + out
                 x = x + out
 
         result["x"] = x
         result["duration_prediction"] = duration_pred
         result["duration_rounded"] = duration_rounded
         result["tgt_mask"] = tgt_mask
+        result["out"] = out_val
 
         return result
 
@@ -585,37 +546,3 @@ class VarianceConvolutionLayer(nn.Module):
 
     def forward(self, x):
         return self.layers(x)
-
-class VarianceDiscriminator(nn.Module):
-    def __init__(
-        self,
-        nlayers,
-        in_channels,
-        filter_size,
-        kernel_size,
-        dropout,
-        depthwise=False,
-    ):
-        super().__init__()
-
-        self.layers = nn.Sequential(
-            *[
-                VarianceConvolutionLayer(
-                    in_channels, filter_size, kernel_size, dropout, depthwise
-                )
-                for _ in range(nlayers)
-            ]
-        )
-
-        self.linear = nn.Linear(filter_size, filter_size)
-
-        # classification head
-        self.cls_head = nn.Sequential(
-            Reduce("b n e -> b e", reduction="mean"),
-            nn.Linear(filter_size, 1),
-        )
-
-    def forward(self, x, mask=None):
-        out = self.layers(x)
-        out = self.linear(out)
-        return self.cls_head(out)

@@ -12,6 +12,7 @@ import pytorch_lightning as pl
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+import torchaudio
 
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
 from tqdm.auto import tqdm
@@ -32,6 +33,7 @@ from litfass.fastspeech2.model import (
 from litfass.third_party.hifigan import Synthesiser
 from litfass.third_party.softdtw import SoftDTW
 from litfass.third_party.argutils import str2bool
+from litfass.third_party.fastdiff import FastDiff
 from litfass.fastspeech2.log_gmm import LogGMM
 from litfass.fastspeech2.loss import FastSpeech2Loss
 from litfass.fastspeech2.noam import NoamLR
@@ -91,7 +93,7 @@ class FastSpeech2(pl.LightningModule):
         encoder_dropout=0.1,
         encoder_kernel_sizes=[5, 25, 13, 9],
         encoder_dim_feedforward=None,
-        encoder_conformer=True,
+        encoder_conformer=True, 
         encoder_depthwise_conv=True,
         encoder_conv_filter_size=1024,
         decoder_hidden=256,
@@ -121,6 +123,11 @@ class FastSpeech2(pl.LightningModule):
         priors_gmm_reg_covar=1e-3,
         priors_gmm_logs=[0,1,2,3],
         dvector_gmm=False,
+        fastdiff_model=None,
+        fastdiff_schedule=[0,1],
+        fastdiff_schedule_start=0,
+        fastdiff_schedule_end=20,
+        sort_data_by_length=False,
     ):
         super().__init__()
 
@@ -152,6 +159,7 @@ class FastSpeech2(pl.LightningModule):
                 "batch_size",
                 "variance_early_stopping_directory",
                 "num_workers",
+                "fastdiff_model",
             ]
         )
 
@@ -349,6 +357,25 @@ class FastSpeech2(pl.LightningModule):
             self.hparams.n_mels,
         )
 
+        if fastdiff_model is not None:
+            self.fastdiff_model = fastdiff_model
+            self.fastdiff_model.to(self.device)
+            self.fastdiff_linear = nn.Linear(
+                self.hparams.decoder_hidden,
+                self.hparams.n_mels,
+            )
+            self.fastdiff_schedule = np.zeros(self.hparams.fastdiff_schedule_end)
+            # linear
+            self.fastdiff_schedule[
+                self.hparams.fastdiff_schedule_start:self.hparams.fastdiff_schedule_end+1
+            ] = np.linspace(
+                self.hparams.fastdiff_schedule[0], 
+                self.hparams.fastdiff_schedule[1], 
+                self.hparams.fastdiff_schedule_end-self.hparams.fastdiff_schedule_start
+            ) 
+        else:
+            self.fastdiff_model = None
+
         # priors
         if hasattr(self, "stats"):
             self.prior_embeddings = {}
@@ -384,6 +411,11 @@ class FastSpeech2(pl.LightningModule):
         }
         for i, var in enumerate(self.hparams.variances):
             loss_weights[var] = self.hparams.variance_loss_weights[i]
+        if self.fastdiff_model is not None:
+            fastdiff_loss = "mse"
+            loss_weights["fastdiff"] = 1.0
+        else:
+            fastdiff_loss = None
         self.loss = FastSpeech2Loss(
             self.hparams.variances,
             self.hparams.variance_levels,
@@ -398,6 +430,7 @@ class FastSpeech2(pl.LightningModule):
             loss_weights,
             self.hparams.soft_dtw_gamma,
             self.hparams.soft_dtw_chunk_size,
+            fastdiff_loss,
         )
 
         if (
@@ -623,57 +656,65 @@ class FastSpeech2(pl.LightningModule):
         )
         # pylint: enable=not-callable
 
-        if optimizer_idx == 0:
-            output = variance_output["x"]
+        output = variance_output["x"]
 
-            output = self.positional_encoding(output)
+        output = self.positional_encoding(output)
 
-            if not self.hparams.speaker_embedding_every_layer:
-                output = output + self.speaker_embedding(
-                    speakers, output.shape[1], output.shape[-1]
-                )
+        if not self.hparams.speaker_embedding_every_layer:
+            output = output + self.speaker_embedding(
+                speakers, output.shape[1], output.shape[-1]
+            )
+        else:
+            every_decoder_layer = self.speaker_embedding(
+                speakers, output.shape[1], output.shape[-1]
+            )
+
+        if self.hparams.speaker_embedding_every_layer:
+            output = self.decoder(
+                output,
+                src_key_padding_mask=variance_output["tgt_mask"],
+                additional_src=every_decoder_layer,
+            )
+        else:
+            output = self.decoder(
+                output, src_key_padding_mask=variance_output["tgt_mask"]
+            )
+
+        output = self.linear(output)
+
+        result = {
+            "mel": output,
+            "duration_prediction": variance_output["duration_prediction"],
+            "duration_rounded": variance_output["duration_rounded"],
+            "src_mask": src_mask,
+            "tgt_mask": variance_output["tgt_mask"],
+        }
+
+        fd_variance_output = self.fastdiff_linear(variance_output["out"])
+        result["fastdiff_var"] = fd_variance_output * 0.0001
+        if self.fastdiff_model is not None and not inference:
+            if self.current_epoch < self.hparams.fastdiff_schedule_end:
+                sched_idx = self.current_epoch
             else:
-                every_decoder_layer = self.speaker_embedding(
-                    speakers, output.shape[1], output.shape[-1]
+                sched_idx = -1
+            if np.random.rand() < self.fastdiff_schedule[sched_idx] or inference:
+                mel_fastdiff = result["mel"] + result["fastdiff_var"]
+                mel_lengths = torch.sum(
+                    ~result["tgt_mask"], dim=1, dtype=torch.long
                 )
-
-            if self.hparams.speaker_embedding_every_layer:
-                output = self.decoder(
-                    output,
-                    src_key_padding_mask=variance_output["tgt_mask"],
-                    additional_src=every_decoder_layer,
-                )
+                # print(mel_lengths)
             else:
-                output = self.decoder(
-                    output, src_key_padding_mask=variance_output["tgt_mask"]
-                )
+                mel_fastdiff = targets["mel"] + result["fastdiff_var"]
+                mel_lengths = targets["mel_lengths"]
+            # truncate by shortest length
+            mel_fastdiff = mel_fastdiff[:, :(mel_lengths.min()-2), :]
+            wav_fastdiff = targets["wav"][:, :(mel_lengths.min()-2)*self.hparams.hop_length]
+            # the -1 is to avoid edge cases where the mel is longer than the wav
+            mel_fastdiff = mel_fastdiff.transpose(1, 2)
+            result["fastdiff"] = self.fastdiff_model(wav_fastdiff, mel_fastdiff)
 
-            output = self.linear(output)
-
-            result = {
-                "mel": output,
-                "duration_prediction": variance_output["duration_prediction"],
-                "duration_rounded": variance_output["duration_rounded"],
-                "src_mask": src_mask,
-                "tgt_mask": variance_output["tgt_mask"],
-            }
-
-            for var in self.hparams.variances:
-                result[f"variances_{var}"] = variance_output[f"variances_{var}"]
-                if f"variances_{var}_disc_true" in variance_output:
-                    result[
-                        f"variances_{var}_disc_true"
-                    ] = variance_output[f"variances_{var}_disc_true"]
-                    result[
-                        f"variances_{var}_disc_fake"
-                    ] = variance_output[f"variances_{var}_disc_fake"]
-        
-        elif optimizer_idx == 1:
-            result = {}
-            for var in self.hparams.variances:
-                result[
-                    f"variances_{var}_gen_true"
-                ] = variance_output[f"variances_{var}_gen_true"]
+        for var in self.hparams.variances:
+            result[f"variances_{var}"] = variance_output[f"variances_{var}"]
 
         return result
 
@@ -788,40 +829,67 @@ class FastSpeech2(pl.LightningModule):
             if pred_dict["duration"].sum() == 0:
                 print("WARNING: duration is zero (common at beginning of training)")
             else:
-                try:
-                    pred_fig = self.valid_ds.plot(pred_dict, show=False)
-                    true_fig = self.valid_ds.plot(true_dict, show=False)
-                    if self.valid_example_directory is not None:
-                        Path(self.valid_example_directory).mkdir(
-                            parents=True, exist_ok=True
+                # try:
+                pred_fig = self.valid_ds.plot(pred_dict, show=False)
+                true_fig = self.valid_ds.plot(true_dict, show=False)
+                if self.valid_example_directory is not None:
+                    Path(self.valid_example_directory).mkdir(
+                        parents=True, exist_ok=True
+                    )
+                    pred_fig.save(
+                        os.path.join(
+                            self.valid_example_directory,
+                            f"pred_{batch['id'][i]}.png",
                         )
-                        pred_fig.save(
-                            os.path.join(
-                                self.valid_example_directory,
-                                f"pred_{batch['id'][i]}.png",
-                            )
+                    )
+                    true_fig.save(
+                        os.path.join(
+                            self.valid_example_directory,
+                            f"true_{batch['id'][i]}.png",
                         )
-                        true_fig.save(
-                            os.path.join(
-                                self.valid_example_directory,
-                                f"true_{batch['id'][i]}.png",
-                            )
-                        )
+                    )
+                if self.fastdiff_model is None:
                     pred_audio = self.synth(pred_mel.to(self.device).float())[0]
                     true_audio = self.synth(true_mel.to(self.device).float())[0]
-                    self.eval_log_data.append(
-                        [
-                            batch["text"][i],
-                            wandb.Image(pred_fig),
-                            wandb.Image(true_fig),
-                            wandb.Audio(pred_audio, sample_rate=22050),
-                            wandb.Audio(true_audio, sample_rate=22050),
-                        ]
+                else:
+                    pred_mel = pred_mel + inference_result["fastdiff_var"][i][
+                        ~inference_result["tgt_mask"][i]
+                    ].cpu()
+                    true_mel = true_mel + result["fastdiff_var"][i][
+                        ~result["tgt_mask"][i]
+                    ].cpu()
+                    pred_audio = self.fastdiff_model.inference(pred_mel.to(self.device), N=4).cpu()
+                    true_audio = self.fastdiff_model.inference(true_mel.to(self.device), N=4).cpu()
+                if self.valid_example_directory is not None:
+                    torchaudio.save(
+                        os.path.join(
+                            self.valid_example_directory,
+                            f"pred_{batch['id'][i]}.wav",
+                        ),
+                        pred_audio.unsqueeze(0),
+                        22050,
                     )
-                except:
-                    print(
-                        "WARNING: failed to log example (common before training starts)"
+                    torchaudio.save(
+                        os.path.join(
+                            self.valid_example_directory,
+                            f"true_{batch['id'][i]}.wav",
+                        ),
+                        true_audio.unsqueeze(0),
+                        22050,
                     )
+                self.eval_log_data.append(
+                    [
+                        batch["text"][i],
+                        wandb.Image(pred_fig),
+                        wandb.Image(true_fig),
+                        wandb.Audio(pred_audio, sample_rate=22050),
+                        wandb.Audio(true_audio, sample_rate=22050),
+                    ]
+                )
+                # except:
+                #     print(
+                #         "WARNING: failed to log example (common before training starts)"
+                #     )
 
     def _add_to_results_dict(self, inference_result, batch, result, add_n):
         # duration
@@ -1033,35 +1101,20 @@ class FastSpeech2(pl.LightningModule):
     def configure_optimizers(self):
         self.optimizer = torch.optim.AdamW(
             self.parameters(),
-            self.hparams.lr,
-            betas=[0.9, 0.98],
-            eps=1e-8,
-            weight_decay=0.01,
-        )
-        self.generator_optimizer = torch.optim.AdamW(
-            self.variance_adaptor.parameters(),
-            self.hparams.lr,
+            lr=self.hparams.lr,
             betas=[0.9, 0.98],
             eps=1e-8,
             weight_decay=0.01,
         )
 
         self.scheduler = NoamLR(self.optimizer, self.hparams.warmup_steps)
-        self.generator_scheduler = NoamLR(
-            self.generator_optimizer, self.hparams.warmup_steps
-        )
 
         sched = {
             "scheduler": self.scheduler,
             "interval": "step",
         }
-        gen_sched = {
-            "scheduler": self.generator_scheduler,
-            "interval": "step",
-        }
 
         return [self.optimizer], [sched]
-        #return [self.optimizer, self.generator_optimizer], [sched, gen_sched]
 
     @staticmethod
     def add_model_specific_args(parent_parser):
@@ -1176,6 +1229,10 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--priors_gmm_reg_covar", type=float, default=1e-3)
         parser.add_argument("--priors_gmm_logs", nargs="+", type=int, default=[0,1,2,3])
         parser.add_argument("--dvector_gmm", type=str2bool, default=False)
+        parser.add_argument("--fastdiff_schedule", nargs="+", type=int, default=[0.1,1])
+        parser.add_argument("--fastdiff_schedule_start", type=int, default=0)
+        parser.add_argument("--fastdiff_schedule_end", type=int, default=30)
+        parser.add_argument("--sort_data_by_length", type=str2bool, default=False)
         return parent_parser
 
     @staticmethod
@@ -1187,13 +1244,14 @@ class FastSpeech2(pl.LightningModule):
         return parent_parser
 
     def train_dataloader(self):
+        if self.hparams.sort_data_by_length:
+            self.train_ds.sort_by_duration()
         return DataLoader(
             self.train_ds,
             batch_size=self.batch_size,
             collate_fn=self.train_ds._collate_fn,
             num_workers=self.num_workers,
         )
-
     def val_dataloader(self):
         return DataLoader(
             self.valid_ds,

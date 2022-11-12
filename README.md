@@ -35,6 +35,7 @@ This library is a work in progress, and until v1.0, updates might break things o
 - [ ] Configurable metrics.
 - [ ] LJSpeech support.
 - [ ] PyPi package.
+- [ ] Hifi GAN Finetuning (during and after training)
 
 ## v1.0
 

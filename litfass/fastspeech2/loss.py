@@ -21,11 +21,11 @@ class FastSpeech2Loss(nn.Module):
             "energy": 1e-1,
             "snr": 1e-1,
             "duration": 1e-4,
-            "gan": 1e-4,
+            "fastdiff": 1e-1,
         },
         soft_dtw_gamma=0.01,
         soft_dtw_chunk_size=256,
-        variance_gan=False,
+        fastdiff_loss=None,
     ):
         super().__init__()
         self.losses = {
@@ -43,16 +43,13 @@ class FastSpeech2Loss(nn.Module):
         self.duration_loss = duration_loss
         self.max_length = max_length
         self.loss_alphas = loss_alphas
+        self.fastdiff_loss = fastdiff_loss
         self.soft_dtw_chunk_size = soft_dtw_chunk_size
         for i, var in enumerate(self.variances):
             if self.variance_transforms[i] == "cwt":
                 self.loss_alphas[var + "_cwt"] = self.loss_alphas[var]
                 self.loss_alphas[var + "_mean"] = self.loss_alphas[var]
                 self.loss_alphas[var + "_std"] = self.loss_alphas[var]
-            if variance_gan:
-                self.loss_alphas[var + "_discriminator"] = 1 # self.loss_alphas["gan"]
-                self.loss_alphas[var + "_generator"] = 1
-        self.variance_gan = variance_gan
 
     def get_loss(self, pred, truth, loss, mask, unsqueeze=False):
         truth.requires_grad = False
@@ -111,28 +108,6 @@ class FastSpeech2Loss(nn.Module):
 
         src_mask = ~result["src_mask"]
         tgt_mask = ~result["tgt_mask"]
-
-        # DISCRIMINATOR LOSSES
-        disc_acc = {}
-        if self.variance_gan:
-            # true samples
-            variances_disc_true = {var: result[f"variances_{var}_disc_true"] for var in self.variances}
-            for var in self.variances:
-                losses[f"{var}_discriminator"] = self.bce_loss(
-                    variances_disc_true[var], torch.ones_like(variances_disc_true[var])
-                )
-            # fake samples
-            variances_disc_fake = {var: result[f"variances_{var}_disc_fake"] for var in self.variances}
-            for var in self.variances:
-                losses[f"{var}_discriminator"] += self.bce_loss(
-                    variances_disc_fake[var], torch.zeros_like(variances_disc_fake[var])
-                )
-            # accuracy
-            for var in self.variances:
-                disc_acc[var] = (
-                    torch.sum(variances_disc_true[var] > 0.5)
-                    + torch.sum(variances_disc_fake[var] < 0.5)
-                ) / (variances_disc_true[var].shape[0] + variances_disc_fake[var].shape[0])
 
         # VARIANCE LOSSES
         if self.max_length is not None:
@@ -208,6 +183,10 @@ class FastSpeech2Loss(nn.Module):
         else:
             losses["duration"] = torch.sum(result["duration_prediction"])
 
+        # FASTDIFF LOSS
+        if self.fastdiff_loss is not None:
+            losses["fastdiff"] = self.losses[self.fastdiff_loss](result["fastdiff"][0], result["fastdiff"][1])
+
         # TOTAL LOSS
         total_loss = sum(
             [
@@ -217,8 +196,5 @@ class FastSpeech2Loss(nn.Module):
             ]
         )
         losses["total"] = total_loss
-        if self.variance_gan:
-            for var in self.variances:
-                losses[f"{var}_discriminator_acc"] = disc_acc[var]
 
         return losses

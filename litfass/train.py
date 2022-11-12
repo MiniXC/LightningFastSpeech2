@@ -22,6 +22,7 @@ from alignments.datasets.libritts import LibrittsDataset
 
 from litfass.third_party.argutils import str2bool
 from litfass.fastspeech2.fastspeech2 import FastSpeech2
+from litfass.third_party.fastdiff.FastDiff import FastDiff
 
 torch.multiprocessing.set_sharing_strategy("file_system")
 
@@ -84,6 +85,11 @@ if __name__ == "__main__":
 
     parser.add_argument("--visible_gpus", type=int, default=0)
 
+    # fastdiff vocoder
+    parser.add_argument("--fastdiff_vocoder", type=str2bool, default=False)
+    parser.add_argument("--fastdiff_vocoder_checkpoint", type=str, default=None)
+    parser = FastDiff.add_model_specific_args(parser)
+
     args = parser.parse_args()
     var_args = vars(args)
 
@@ -109,6 +115,24 @@ if __name__ == "__main__":
         if k.startswith("valid_")
     }
 
+    if var_args["fastdiff_vocoder"]:
+        train_ds_kwargs["load_wav"] = True
+        valid_ds_kwargs["load_wav"] = True
+        fastdiff_args = {
+            k.replace("fastdiff_", ""): v
+            for k, v in var_args.items()
+            if (
+                k.startswith("fastdiff_") and
+                 "schedule" not in k and 
+                 "vocoder" not in k
+            )
+        }
+        fastdiff_model = FastDiff(**fastdiff_args)
+        state_dict = torch.load(var_args["fastdiff_vocoder_checkpoint"])["state_dict"]["model"]
+        fastdiff_model.load_state_dict(state_dict, strict=True)
+    else:
+        fastdiff_model = None
+
     if not var_args["no_cache"]:
         Path(var_args["dataset_cache_path"]).mkdir(parents=True, exist_ok=True)
         cache_path = Path(var_args["dataset_cache_path"])
@@ -131,11 +155,19 @@ if __name__ == "__main__":
             == -1
             or not cache_path_alignments.exists()
         ):
+            if len(var_args["train_source_path"]) > i:
+                source_path = var_args["train_source_path"][i]
+            else:
+                source_path = None
+            if len(var_args["train_source_url"]) > i:
+                source_url = var_args["train_source_url"][i]
+            else:
+                source_url = None
             train_ds += [
                 LibrittsDataset(
                     target_directory=var_args["train_target_path"][i],
-                    source_directory=var_args["train_source_path"][i],
-                    source_url=var_args["train_source_url"][i],
+                    source_directory=source_path,
+                    source_url=source_url,
                     verbose=True,
                     tmp_directory=var_args["train_tmp_path"],
                     chunk_size=10_000,
@@ -187,33 +219,30 @@ if __name__ == "__main__":
         if k in inspect.signature(FastSpeech2).parameters
     }
 
-    del var_args["train_target_path"]
-    del var_args["train_source_path"]
-    del var_args["train_source_url"]
-    del var_args["train_tmp_path"]
-    del var_args["valid_target_path"]
-    del var_args["valid_source_path"]
-    del var_args["valid_source_url"]
-    del var_args["valid_nexamples"]
-    del var_args["valid_example_directory"]
-    del var_args["valid_tmp_path"]
+    del train_ds_kwargs["target_path"]
+    del train_ds_kwargs["target_directory"]
+    del train_ds_kwargs["source_path"]
+    del train_ds_kwargs["source_url"]
+    del train_ds_kwargs["tmp_path"]
+    del valid_ds_kwargs["target_path"]
+    del valid_ds_kwargs["target_directory"]
+    del valid_ds_kwargs["source_path"]
+    del valid_ds_kwargs["source_url"]
+    del valid_ds_kwargs["nexamples"]
+    del valid_ds_kwargs["example_directory"]
+    del valid_ds_kwargs["tmp_path"]
+    if "load_wav" in valid_ds_kwargs:
+        del valid_ds_kwargs["load_wav"]
 
     if args.from_checkpoint is not None:
         model = FastSpeech2.load_from_checkpoint(
             args.from_checkpoint,
             train_ds=train_ds,
             valid_ds=valid_ds,
-            train_ds_kwargs={
-                k.replace("train_", ""): v
-                for k, v in var_args.items()
-                if k.startswith("train_")
-            },
-            valid_ds_kwargs={
-                k.replace("valid_", ""): v
-                for k, v in var_args.items()
-                if k.startswith("valid_")
-            },
+            train_ds_kwargs=train_ds_kwargs,
+            valid_ds_kwargs=valid_ds_kwargs,
             strict=False,
+            fastdiff_model=fastdiff_model,
             **model_args,
         )
     else:
@@ -221,16 +250,9 @@ if __name__ == "__main__":
         model = FastSpeech2(
             train_ds,
             valid_ds,
-            train_ds_kwargs={
-                k.replace("train_", ""): v
-                for k, v in var_args.items()
-                if k.startswith("train_")
-            },
-            valid_ds_kwargs={
-                k.replace("valid_", ""): v
-                for k, v in var_args.items()
-                if k.startswith("valid_")
-            },
+            train_ds_kwargs=train_ds_kwargs,
+            valid_ds_kwargs=valid_ds_kwargs,
+            fastdiff_model=fastdiff_model,
             **model_args,
         )
 

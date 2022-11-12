@@ -3,8 +3,13 @@ import numpy as np
 import torch.nn.functional as F
 
 
-def dynamic_range_compression(x, C=1, clip_val=1e-7):
-    return torch.log(torch.clamp(x, min=clip_val) * C)
+# clip_val 1e-7, log10=False
+# todo: make configureable without discarding cache
+def dynamic_range_compression(x, C=1, clip_val=1e-6, log10=True):
+    if log10:
+        return torch.log10(torch.clamp(x, min=clip_val) * C)
+    else:
+        return torch.log(torch.clamp(x, min=clip_val) * C)
 
 
 def dynamic_range_decompression(x, C=1):

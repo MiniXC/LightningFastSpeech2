@@ -17,6 +17,7 @@ import torch
 import torchaudio
 import torchaudio.transforms as AT
 from librosa.filters import mel as librosa_mel
+import librosa
 from matplotlib.gridspec import GridSpec
 from pandarallel import pandarallel
 from phones.convert import Converter
@@ -71,6 +72,7 @@ class TTSDataset(Dataset):
         win_length=1024,
         hop_length=256,
         min_samples_per_speaker=0,
+        load_wav=False,
     ):
         super().__init__()
 
@@ -93,6 +95,7 @@ class TTSDataset(Dataset):
         self.dio_speed = int(np.round(1 / pitch_quality))
         self.source_phoneset = source_phoneset
         self.pitch_quality = pitch_quality
+        self.load_wav = load_wav
 
         # PHONES
         self.phone_converter = Converter()
@@ -177,13 +180,9 @@ class TTSDataset(Dataset):
             n_fft=self.n_fft,
             win_length=self.win_length,
             hop_length=self.hop_length,
-            pad=0,
             window_fn=torch.hann_window,
-            power=2.0,
-            normalized=False,
-            center=True,
-            pad_mode="reflect",
-            onesided=True,
+            power=1.0,
+            pad_mode="constant",
         )
         self.mel_basis = librosa_mel(
             sr=self.sampling_rate,
@@ -331,6 +330,7 @@ class TTSDataset(Dataset):
             fmax=self.fmax,
             pitch_quality=self.pitch_quality,
             source_phoneset=self.source_phoneset,
+            load_wav=self.load_wav,
         )
         ds.phone2id = self.phone2id
         ds.id2phone = self.id2phone
@@ -359,9 +359,28 @@ class TTSDataset(Dataset):
         # MEL SPECTROGRAM
         if not self._load_stats_only:
             mel = self.mel_spectrogram(audio.unsqueeze(0))
-            mel = torch.sqrt(mel[0])
+            mel = mel[0]
+            #mel = torch.sqrt(mel[0])
+
             mel = torch.matmul(self.mel_basis, mel)
+
             mel = dynamic_range_compression(mel).cpu()
+            
+            # x_stft = librosa.stft(audio.numpy(), n_fft=self.n_fft, hop_length=self.hop_length,
+            #             win_length=self.win_length, window="hann", pad_mode="constant")
+            # spc = np.abs(x_stft)  # (n_bins, T)
+
+            # # get mel basis
+            # fmin = 0
+            # fmax = 8000
+            # mel_basis = librosa.filters.mel(self.sampling_rate, self.n_fft, self.n_mels, fmin, fmax)
+            # mel = mel_basis @ spc
+            # mel = np.log10(np.maximum(1e-6, mel))  # (n_mel_bins, T)
+            # mel = torch.from_numpy(mel)
+            # mel = mel.unsqueeze(0)
+            mel = mel.T
+            #plt.imshow(mel)
+            #plt.show()
 
         # DURATIONS & SILENCE MASK
         duration = np.array(row["duration"])
@@ -419,7 +438,11 @@ class TTSDataset(Dataset):
         }
 
         if not self._load_stats_only:
-            result["mel"] = np.array(mel.T)[:dur_sum]
+            result["mel"] = mel[:dur_sum].numpy()
+            #result["mel"] = np.array(mel.T)[:dur_sum]
+
+        if self.load_wav:
+            result["wav"] = audio
 
         for var in self.variances:
             result["variances"][var] = variances[var]
@@ -458,14 +481,16 @@ class TTSDataset(Dataset):
             s.name: {k: [] for k in self.priors}
             for s in temp_df["speaker"].unique()
         }
+        for s in temp_df["speaker"].unique():
+            speaker_priors[s.name]["path"] = s
         pbar = tqdm(dl, total=len(speaker_priors.keys()), maxinterval=1, desc="creating prior files (this only runs once)")
         prev_speaker = None
         for item in dl:
             # check if all speakers are the same
             if prev_speaker is None:
                 prev_speaker = item["speaker_key"][0]
-                prev_path = item["speaker_path"][0]
             speaker = item["speaker_key"][0]
+            speaker_path = item["speaker_path"][0]
             if len(set(item["speaker_key"])) == 1:
                 for prior in self.priors:
                     speaker_priors[speaker][prior] += list(item[f"priors_{prior}"])
@@ -479,16 +504,15 @@ class TTSDataset(Dataset):
                 for prior in self.priors:
                     # save prior to file 
                     np.save(
-                        prev_path / f"{prior}_prior.npy", speaker_priors[prev_speaker][prior]
+                        speaker_priors[prev_speaker]["path"] / f"{prior}_prior.npy", speaker_priors[prev_speaker][prior]
                     )
                 del speaker_priors[prev_speaker]
                 pbar.update(1)
                 prev_speaker = speaker
-                prev_path = item["speaker_path"][0]
         for speaker in list(speaker_priors.keys()):
             for prior in self.priors:
                 np.save(
-                    prev_path.parent / speaker / f"{prior}_prior.npy", speaker_priors[speaker][prior]
+                    speaker_priors[speaker]["path"] / f"{prior}_prior.npy", speaker_priors[speaker][prior]
                 )
             del speaker_priors[speaker]
             pbar.update(1)
@@ -817,15 +841,27 @@ class TTSDataset(Dataset):
         data = [TTSDataset._flatten(x) for x in data]
         l2d = lambda x: {k: [dic[k] for dic in x] for k in x[0]}
         data = l2d(data)
+        add_keys = {}
         for key in data.keys():
             if isinstance(data[key][0], np.ndarray):
                 data[key] = [torch.tensor(x) for x in data[key]]
+                add_keys[f"{key}_lengths"] = torch.tensor(
+                    [x.shape[0] for x in data[key]]
+                )
             if torch.is_tensor(data[key][0]):
                 pad_val = 1 if "silence_mask" in key else 0
+                add_keys[f"{key}_lengths"] = torch.tensor(
+                    [x.shape[0] for x in data[key]]
+                )
                 data[key] = pad_sequence(
                     data[key], batch_first=True, padding_value=pad_val
                 )
+        data.update(add_keys)
         return data
+
+    def sort_by_duration(self):
+        self.data["duration_sum"] = self.data["duration"].apply(lambda x: np.array(x).sum()).values
+        self.data = self.data.sort_values(by="duration_sum", ascending=True)
 
     def plot(self, sample_or_idx, show=True):
         if not show:
@@ -845,6 +881,7 @@ class TTSDataset(Dataset):
 
         audio_len = len(mel) * self.hop_length / self.sampling_rate
         ax0 = fig.add_subplot(gs[:2, 1:])
+
         ax0.imshow(
             mel.T,
             origin="lower",
