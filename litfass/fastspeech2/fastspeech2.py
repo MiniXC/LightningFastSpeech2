@@ -360,9 +360,15 @@ class FastSpeech2(pl.LightningModule):
         if fastdiff_model is not None:
             self.fastdiff_model = fastdiff_model
             self.fastdiff_model.to(self.device)
-            self.fastdiff_linear = nn.Linear(
-                self.hparams.decoder_hidden,
-                self.hparams.n_mels,
+            self.fastdiff_linear = nn.Sequential(
+                nn.Linear(
+                    self.hparams.decoder_hidden,
+                    self.hparams.decoder_hidden,
+                ),
+                nn.Linear(
+                    self.hparams.decoder_hidden,
+                    self.hparams.n_mels,
+                ),
             )
             self.fastdiff_schedule = np.zeros(self.hparams.fastdiff_schedule_end)
             # linear
@@ -660,22 +666,18 @@ class FastSpeech2(pl.LightningModule):
 
         output = self.positional_encoding(output)
 
-        if not self.hparams.speaker_embedding_every_layer:
-            output = output + self.speaker_embedding(
-                speakers, output.shape[1], output.shape[-1]
-            )
-        else:
-            every_decoder_layer = self.speaker_embedding(
-                speakers, output.shape[1], output.shape[-1]
-            )
+        spk = self.speaker_embedding(
+            speakers, output.shape[1], output.shape[-1]
+        )
 
         if self.hparams.speaker_embedding_every_layer:
             output = self.decoder(
                 output,
                 src_key_padding_mask=variance_output["tgt_mask"],
-                additional_src=every_decoder_layer,
+                additional_src=spk,
             )
         else:
+            output = output + spk
             output = self.decoder(
                 output, src_key_padding_mask=variance_output["tgt_mask"]
             )
@@ -690,8 +692,10 @@ class FastSpeech2(pl.LightningModule):
             "tgt_mask": variance_output["tgt_mask"],
         }
 
-        fd_variance_output = self.fastdiff_linear(variance_output["out"])
-        result["fastdiff_var"] = fd_variance_output * 0.0001
+        fd_variance_output = self.fastdiff_linear(variance_output["out"] + spk)
+        result["fastdiff_var"] = (
+            fd_variance_output 
+        ) * 0.1
         if self.fastdiff_model is not None and not inference:
             if self.current_epoch < self.hparams.fastdiff_schedule_end:
                 sched_idx = self.current_epoch

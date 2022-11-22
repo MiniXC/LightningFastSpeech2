@@ -35,7 +35,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python litfass/train.py \
 --decoder_kernel_sizes 9 9 9 9 9 9 \
 --speaker_embedding_every_layer False \
 --prior_embedding_every_layer False \
---wandb_name "fastdiff_final" \
+--wandb_name "fastdiff_nopretrain" \
 --wandb_mode "online" \
 --speaker_type "dvector" \
 --train_target_path "../data/train-clean-a" \
@@ -46,9 +46,9 @@ CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python litfass/train.py \
 --priors energy duration snr pitch srmr \
 --sort_data_by_length True \
 --fastdiff_vocoder True \
---fastdiff_schedule 0 1 \
---fastdiff_vocoder_checkpoint "fastdiff_model/model_ckpt_steps_1000000.ckpt" \
---from_checkpoint "models/fastdiff_fixed_inf-v2.ckpt"
+--fastdiff_schedule 0 1
+#--fastdiff_vocoder_checkpoint "fastdiff_model/model_ckpt_steps_1000000.ckpt" \
+#--from_checkpoint "models/fastdiff_fixed_inf-v2.ckpt"
 
 # --priors energy duration snr pitch \
 # --train_target_path "../data/train-clean-100-aligned" "../data/train-clean-360-aligned" "../data/train-other-500-aligned" \

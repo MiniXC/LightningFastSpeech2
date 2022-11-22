@@ -232,60 +232,6 @@ def sampling_given_noise_schedule(
         return xs
     return x
 
-def noise_scheduling(net, size, diffusion_hyperparams, condition=None, ddim=False):
-    """
-    Perform the complete sampling step according to p(x_0|x_T) = \prod_{t=1}^T p_{\theta}(x_{t-1}|x_t)
-
-    Parameters:
-    net (torch network):            the wavenet models
-    size (tuple):                   size of tensor to be generated,
-                                    usually is (number of audios to generate, channels=1, length of audio)
-    diffusion_hyperparams (dict):   dictionary of diffusion hyperparameters returned by calc_diffusion_hyperparams
-                                    note, the tensors need to be cuda tensors
-    condition (torch.tensor):       ground truth mel spectrogram read from disk
-                                    None if used for unconditional generation
-
-    Returns:
-    noise schedule:                 a list of noise scales in torch.tensor, length <= N
-    """
-
-    _dh = diffusion_hyperparams
-    N, betaN, alphaN, rho, alpha = _dh["N"], _dh["betaN"], _dh["alphaN"], _dh["rho"], _dh["alpha"]
-
-    #print('begin noise scheduling, maximum number of reverse steps = %d' % (N))
-
-    betas = []
-    x = std_normal(size)
-    with torch.no_grad():
-        beta_cur = torch.ones(1, 1, 1).cuda() * betaN
-        alpha_cur = torch.ones(1, 1, 1).cuda() * alphaN
-        for n in range(N - 1, -1, -1):
-            # print(n, beta_cur.squeeze().item(), alpha_cur.squeeze().item())
-            step = map_noise_scale_to_time_step(alpha_cur.squeeze().item(), alpha)
-            if step >= 0:
-                betas.append(beta_cur.squeeze().item())
-            diffusion_steps = (step * torch.ones((size[0], 1))).cuda()
-            epsilon_theta = net(x, condition, diffusion_steps) #net((x, condition, diffusion_steps,))
-            if ddim:
-                alpha_nxt = alpha_cur / (1 - beta_cur).sqrt()
-                c1 = alpha_nxt / alpha_cur
-                c2 = -(1 - alpha_cur ** 2.).sqrt() * c1
-                c3 = (1 - alpha_nxt ** 2.).sqrt()
-                x = c1 * x + c2 * epsilon_theta + c3 * epsilon_theta  # std_normal(size)
-            else:
-                x -= beta_cur / torch.sqrt(1 - alpha_cur ** 2.) * epsilon_theta
-                x /= torch.sqrt(1 - beta_cur)
-            alpha_nxt, beta_nxt = alpha_cur, beta_cur
-            alpha_cur = alpha_nxt / (1 - beta_nxt).sqrt()
-            if alpha_cur > 1:
-                break
-            beta_cur = net.noise_pred(
-                x.squeeze(1), (beta_nxt.view(-1, 1), (1 - alpha_cur ** 2.).view(-1, 1)))
-            if beta_cur.squeeze().item() < rho:
-                break
-    return torch.FloatTensor(betas[::-1]).cuda()
-
-
 def theta_timestep_loss(net, X, diffusion_hyperparams, reverse=False):
     """
     Compute the training loss for learning theta
@@ -321,43 +267,6 @@ def theta_timestep_loss(net, X, diffusion_hyperparams, reverse=False):
         return loss_fn(epsilon_theta, z), x0
 
     return loss_fn(epsilon_theta, z)
-
-
-def phi_loss(net, X, diffusion_hyperparams):
-    """
-    Compute the training loss for learning phi
-    Parameters:
-    net (torch network):            the wavenet models
-    X (tuple, shape=(2,)):          training data in tuple form (mel_spectrograms, audios)
-                                    mel_spectrograms: torch.tensor, shape is batchsize followed by each mel_spectrogram shape
-                                    audios: torch.tensor, shape=(batchsize, 1, length of audio)
-    diffusion_hyperparams (dict):   dictionary of diffusion hyperparameters returned by calc_diffusion_hyperparams
-                                    note, the tensors need to be cuda tensors
-
-    Returns:
-    phi loss
-    """
-    assert type(X) == tuple and len(X) == 2
-    _dh = diffusion_hyperparams
-    T, alpha, tau = _dh["T"], _dh["alpha"], _dh["tau"]
-
-    mel_spectrogram, audio = X
-    B, C, L = audio.shape  # B is batchsize, C=1, L is audio length
-    ts = torch.randint(tau, T - tau, size=(B,)).cuda()  # randomly sample steps from 1~T
-    alpha_cur = alpha.index_select(0, ts).view(B, 1, 1)
-    alpha_nxt = alpha.index_select(0, ts + tau).view(B, 1, 1)
-    beta_nxt = 1 - (alpha_nxt / alpha_cur) ** 2.
-    delta = (1 - alpha_cur ** 2.).sqrt()
-    z = std_normal(audio.shape)
-    noisy_audio = alpha_cur * audio + delta * z  # compute x_t from q(x_t|x_0)
-    epsilon_theta = net((noisy_audio, mel_spectrogram, ts.view(B, 1),))
-    beta_est = net.noise_pred(noisy_audio.squeeze(1), (beta_nxt.view(B, 1), delta.view(B, 1) ** 2.))
-    phi_loss = 1 / (2. * (delta ** 2. - beta_est)) * (
-            delta * z - beta_est / delta * epsilon_theta) ** 2.
-    phi_loss += torch.log(1e-8 + delta ** 2. / (beta_est + 1e-8)) / 4.
-    phi_loss = (torch.mean(phi_loss, -1, keepdim=True) + beta_est / delta ** 2 / 2.).mean()
-
-    return phi_loss
 
 
 def compute_hyperparams_given_schedule(beta):

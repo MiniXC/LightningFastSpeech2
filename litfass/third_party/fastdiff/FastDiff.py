@@ -88,37 +88,6 @@ class FastDiff(nn.Module):
         self.noise_schedule = torch.linspace(beta_0, beta_T, T)
         self.diffusion_hyperparams = compute_hyperparams_given_schedule(self.noise_schedule)
 
-    # def forward(self, data):
-    #     """Calculate forward propagation.
-    #     Args:
-    #         x (Tensor): Input noise signal (B, 1, T).
-    #         c (Tensor): Local conditioning auxiliary features (B, C ,T').
-    #     Returns:
-    #         Tensor: Output tensor (B, out_channels, T)
-    #     """
-    #     audio, c, diffusion_steps = data
-    #     #c = c.reshape(c.shape[0], c.shape[2], c.shape[1])
-
-    #     # embed diffusion step t
-    #     diffusion_step_embed = calc_diffusion_step_embedding(diffusion_steps, self.diffusion_step_embed_dim_in)
-    #     diffusion_step_embed = swish(self.fc_t1(diffusion_step_embed))
-    #     diffusion_step_embed = swish(self.fc_t2(diffusion_step_embed))
-
-    #     audio = self.first_audio_conv(audio)
-    #     downsample = []
-    #     for down_layer in self.downsample:
-    #         downsample.append(audio)
-    #         audio = down_layer(audio)
-
-    #     x = audio
-    #     for n, audio_down in enumerate(reversed(downsample)):
-    #         x = self.lvc_blocks[n]((x, audio_down, c, diffusion_step_embed))
-
-    #     # apply final layers
-    #     x = self.final_conv(x)
-
-    #     return x
-
     def forward(self, x, c, ts=None, reverse=False):
         """Calculate forward propagation.
         Args:

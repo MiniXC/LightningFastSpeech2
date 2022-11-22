@@ -45,11 +45,16 @@ class SpeechGenerator:
         sampling_path: str = None,
         augmentations=None,
         speaker_dict=None,
+        fastdiff=False,
+        fastdiff_n=4,
     ):
-        if synth_device is None:
-            self.synth = Synthesiser(device=device)
-        else:
-            self.synth = Synthesiser(device=synth_device)
+        if not fastdiff:
+            if synth_device is None:
+                self.synth = Synthesiser(device=device)
+            else:
+                self.synth = Synthesiser(device=synth_device)
+        self.fastdiff = fastdiff
+        self.fastdiff_n = fastdiff_n
         self.model = model
         self.model.eval()
         self.g2p = g2p_model
@@ -158,7 +163,12 @@ class SpeechGenerator:
         for i in range(len(result["mel"])):
             mel = result["mel"][i][~result["tgt_mask"][i]].cpu()
             durations.append(result["duration_rounded"][i].cpu())
-            audios.append(int16_samples_to_float32(self.synth(mel)[0]))
+            if self.fastdiff:
+                mel = mel + result["fastdiff_var"][i][~result["tgt_mask"][i]].cpu()
+                pred_audio = self.model.fastdiff_model.inference(pred_mel.to(self.device), N=self.fastdiff_n).cpu()
+            else:
+                pred_audio = self.synth(mel)[0]
+            audios.append(int16_samples_to_float32(pred_audio))
 
         if self.voicefixer is not None:
             fs_new = None

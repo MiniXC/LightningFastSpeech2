@@ -33,6 +33,7 @@ if __name__ == "__main__":
     parser.add_argument("--tts_device", type=str, default=None)
     parser.add_argument("--hifigan_device", type=str, default=None)
     parser.add_argument("--use_voicefixer", type=str2bool, default=True)
+    parser.add_argument("--use_fastdiff", type=str2bool, default=False)
 
     parser.add_argument("--cache_path", type=str, default=None)
 
@@ -114,6 +115,7 @@ if __name__ == "__main__":
         synth_device=args.hifigan_device,
         augmentations=augmentations,
         voicefixer=args.use_voicefixer,
+        fastdiff=args.use_fastdiff,
     )
 
     if args.sentence is not None:

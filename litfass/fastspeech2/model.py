@@ -126,18 +126,20 @@ class SpeakerEmbedding(nn.Module):
     def __init__(self, embedding_dim, speaker_type, nspeakers=None):
         super().__init__()
         self.speaker_type = speaker_type
-        self.embedding_dim = embedding_dim
+        self.embedding_dim = embedding_dim  
         if "dvector" in speaker_type:
             self.projection = nn.Linear(256, embedding_dim)
             self.has_projection = True
         elif speaker_type == "id":
             self.speaker_embedding = nn.Embedding(nspeakers, embedding_dim)
+        self.relu = nn.ReLU()
 
     def forward(self, x, input_length, output_shape):
         if self.has_projection:
             out = self.projection(x)
         else:
             out = self.speaker_embedding(x)
+        out = self.relu(out)
         return out.reshape(-1, 1, output_shape).repeat_interleave(input_length, dim=1)
 
 
@@ -153,9 +155,10 @@ class PriorEmbedding(nn.Module):
             nbins,
             embedding_dim,
         )
+        self.relu = nn.ReLU()
 
     def forward(self, x, input_length):
-        out = self.embedding(torch.bucketize(x, self.bins))
+        out = self.relu(self.embedding(torch.bucketize(x, self.bins)))
         return out.reshape(-1, 1, self.embedding_dim).repeat_interleave(
             input_length, dim=1
         )
@@ -506,7 +509,6 @@ class VariancePredictor(nn.Module):
             return out, out_conv
         else:
             return out
-
 
 class VarianceConvolutionLayer(nn.Module):
     def __init__(self, in_channels, filter_size, kernel_size, dropout, depthwise):

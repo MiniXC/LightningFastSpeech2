@@ -128,8 +128,9 @@ if __name__ == "__main__":
             )
         }
         fastdiff_model = FastDiff(**fastdiff_args)
-        state_dict = torch.load(var_args["fastdiff_vocoder_checkpoint"])["state_dict"]["model"]
-        fastdiff_model.load_state_dict(state_dict, strict=True)
+        if var_args["fastdiff_vocoder_checkpoint"] is not None:
+            state_dict = torch.load(var_args["fastdiff_vocoder_checkpoint"])["state_dict"]["model"]
+            fastdiff_model.load_state_dict(state_dict, strict=True)
     else:
         fastdiff_model = None
 
