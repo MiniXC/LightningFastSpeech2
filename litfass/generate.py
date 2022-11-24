@@ -18,6 +18,7 @@ from litfass.synthesis.generator import SpeechGenerator
 from litfass.synthesis.g2p import EnglishG2P
 from litfass.dataset.datasets import TTSDataset
 from litfass.third_party.argutils import str2bool
+from litfass.third_party.fastdiff.FastDiff import FastDiff
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -34,6 +35,8 @@ if __name__ == "__main__":
     parser.add_argument("--hifigan_device", type=str, default=None)
     parser.add_argument("--use_voicefixer", type=str2bool, default=True)
     parser.add_argument("--use_fastdiff", type=str2bool, default=False)
+    parser.add_argument("--fastdiff_n", type=int, default=4)
+    parser.add_argument("--num_workers", type=int, default=-1)
 
     parser.add_argument("--cache_path", type=str, default=None)
 
@@ -116,6 +119,7 @@ if __name__ == "__main__":
         augmentations=augmentations,
         voicefixer=args.use_voicefixer,
         fastdiff=args.use_fastdiff,
+        fastdiff_n=args.fastdiff_n,
     )
 
     if args.sentence is not None:
@@ -172,6 +176,7 @@ if __name__ == "__main__":
                 hop_length=model.hparams.hop_length,
                 min_samples_per_speaker=args.min_samples_per_speaker,
                 _stats=model.stats,
+                num_workers=args.num_workers,
             )
             if args.cache_path is not None and not cache_path.exists():
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -193,9 +198,11 @@ if __name__ == "__main__":
                     speaker_dvec = Path(str(speaker).replace("-b", "-a"))
                     speaker = speaker.name
                     if speaker_dvec not in model.speaker2dvector:
-                        skip_speaker = True
-                        print(f"The speaker {speaker} is not present in the d-vector collection!")
-                        break
+                        #skip_speaker = True
+                        #print(f"The speaker {speaker} is not present in the d-vector collection!")
+                        #break
+                        speaker = list(model.speaker2dvector.keys())[0]
+                        
                     # if hasattr(model, "speaker_gmms"):
                     #     if speaker not in model.speaker_gmms:
                     #         skip_speaker = True

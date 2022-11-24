@@ -165,7 +165,7 @@ class SpeechGenerator:
             durations.append(result["duration_rounded"][i].cpu())
             if self.fastdiff:
                 mel = mel + result["fastdiff_var"][i][~result["tgt_mask"][i]].cpu()
-                pred_audio = self.model.fastdiff_model.inference(pred_mel.to(self.device), N=self.fastdiff_n).cpu()
+                pred_audio = self.model.fastdiff_model.inference(mel.to(self.device), N=self.fastdiff_n).cpu()
             else:
                 pred_audio = self.synth(mel)[0]
             audios.append(int16_samples_to_float32(pred_audio))

@@ -73,6 +73,7 @@ class TTSDataset(Dataset):
         hop_length=256,
         min_samples_per_speaker=0,
         load_wav=False,
+        num_workers=multiprocessing.cpu_count(),
     ):
         super().__init__()
 
@@ -96,6 +97,7 @@ class TTSDataset(Dataset):
         self.source_phoneset = source_phoneset
         self.pitch_quality = pitch_quality
         self.load_wav = load_wav
+        self.num_workers = num_workers
 
         # PHONES
         self.phone_converter = Converter()
@@ -129,7 +131,7 @@ class TTSDataset(Dataset):
                     self._create_entry,
                     zip([i] * len(ds), np.arange(len(ds))),
                     chunksize=10_000,
-                    max_workers=multiprocessing.cpu_count(),
+                    max_workers=self.num_workers,
                     desc=f"processing alignments for dataset {i}",
                     tqdm_class=tqdm,
                 )
@@ -254,7 +256,7 @@ class TTSDataset(Dataset):
             for entry in tqdm(
                 DataLoader(
                     self,
-                    num_workers=multiprocessing.cpu_count(),
+                    num_workers=self.num_workers,
                     batch_size=stat_bs,
                     collate_fn=self._collate_fn,
                     drop_last=True,
@@ -475,7 +477,7 @@ class TTSDataset(Dataset):
             self,
             batch_size=10,
             collate_fn=self._collate_fn,
-            num_workers=multiprocessing.cpu_count(),
+            num_workers=self.num_workers,
         )
         speaker_priors = {
             s.name: {k: [] for k in self.priors}
@@ -524,9 +526,10 @@ class TTSDataset(Dataset):
         }
         for speaker in tqdm(self.data["speaker"].unique(), desc="loading priors"):
             for prior in self.priors:
-                speaker_priors[speaker.name][prior] = np.load(
+                with np.load(
                     speaker / f"{prior}_prior.npy"
-                )
+                ) as prior_arr:
+                    speaker_priors[speaker.name][prior] = np.copy(prior_arr)
         return speaker_priors
 
     def get_speaker_dvectors(self):

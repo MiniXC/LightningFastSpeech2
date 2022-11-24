@@ -124,7 +124,8 @@ if __name__ == "__main__":
             if (
                 k.startswith("fastdiff_") and
                  "schedule" not in k and 
-                 "vocoder" not in k
+                 "vocoder" not in k and
+                 "variances" not in k
             )
         }
         fastdiff_model = FastDiff(**fastdiff_args)

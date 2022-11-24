@@ -26,6 +26,7 @@ class FastSpeech2Loss(nn.Module):
         soft_dtw_gamma=0.01,
         soft_dtw_chunk_size=256,
         fastdiff_loss=None,
+        fastdiff_variances=False,
     ):
         super().__init__()
         self.losses = {
@@ -44,6 +45,7 @@ class FastSpeech2Loss(nn.Module):
         self.max_length = max_length
         self.loss_alphas = loss_alphas
         self.fastdiff_loss = fastdiff_loss
+        self.fastdiff_variances = fastdiff_variances
         self.soft_dtw_chunk_size = soft_dtw_chunk_size
         for i, var in enumerate(self.variances):
             if self.variance_transforms[i] == "cwt":
@@ -81,24 +83,6 @@ class FastSpeech2Loss(nn.Module):
 
         losses = {}
 
-        if f"variances_{self.variances[0]}_gen_true" in result:
-            variances_gen = {var: result[f"variances_{var}_gen_true"] for var in self.variances}
-            for var in self.variances:
-                losses[f"{var}_generator"] = self.bce_loss(
-                    variances_gen[var], torch.ones_like(variances_gen[var])
-                )
-            total_loss = sum(
-                [
-                    v * self.loss_alphas[k]
-                    for k, v in losses.items()
-                    if not any(f in k for f in frozen_components)
-                ]
-            )
-            losses["total"] = total_loss
-
-            return losses
-
-
         variances_pred = {var: result[f"variances_{var}"] for var in self.variances}
         variances_target = {
             var: target[f"variances_{var}"]
@@ -116,6 +100,16 @@ class FastSpeech2Loss(nn.Module):
             for variance, level, transform, loss in zip(
                 self.variances, self.variance_levels, self.variance_transforms, self.variance_losses
             ):
+                if self.fastdiff_variances:
+                    variance_target[variance] = result[f"variances_{variance}_z"]
+                    variance_pred[variance] = result[f"variances_{variance}"]
+                    losses[variance] = self.get_loss(
+                        variances_pred[variance],
+                        variances_target[variance].to(dtype=result["mel"].dtype),
+                        "mse",
+                        variance_mask,
+                    )
+                    continue
                 if transform == "cwt":
                     variances_target[variance] = target[
                         f"variances_{variance}_spectrogram"
@@ -173,6 +167,13 @@ class FastSpeech2Loss(nn.Module):
         )
 
         # DURATION LOSS
+        if self.fastdiff_variances:
+            losses["duration"] = self.get_loss(
+                result["duration_prediction"],
+                result["duration_z"].to(dtype=result["duration"].dtype),
+                "mse",
+                tgt_mask,
+            )
         if not self.duration_stochastic:
             losses["duration"] = self.get_loss(
                 result["duration_prediction"],
@@ -198,3 +199,5 @@ class FastSpeech2Loss(nn.Module):
         losses["total"] = total_loss
 
         return losses
+
+# TODO_NEXT_TIME: just get it to not crash and burn like it does now

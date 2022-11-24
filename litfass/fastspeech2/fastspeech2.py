@@ -128,6 +128,7 @@ class FastSpeech2(pl.LightningModule):
         fastdiff_schedule_start=0,
         fastdiff_schedule_end=20,
         sort_data_by_length=False,
+        fastdiff_variances=True,
     ):
         super().__init__()
 
@@ -290,28 +291,50 @@ class FastSpeech2(pl.LightningModule):
 
         # variances
         if hasattr(self, "stats"):
-            self.variance_adaptor = VarianceAdaptor(
-                self.stats,
-                self.hparams.variances,
-                self.hparams.variance_levels,
-                self.hparams.variance_transforms,
-                self.hparams.variance_nlayers,
-                self.hparams.variance_kernel_size,
-                self.hparams.variance_dropout,
-                self.hparams.variance_filter_size,
-                self.hparams.variance_nbins,
-                self.hparams.variance_depthwise_conv,
-                self.hparams.duration_nlayers,
-                self.hparams.duration_stochastic,
-                self.hparams.duration_kernel_size,
-                self.hparams.duration_dropout,
-                self.hparams.duration_filter_size,
-                self.hparams.duration_depthwise_conv,
-                self.hparams.encoder_hidden,
-                self.hparams.max_length
-                * self.hparams.sampling_rate
-                / self.hparams.hop_length,
-            ).to(self.device)
+            if self.hparams.fastdiff_variances:
+                self.variance_adaptor = FastDiffVarianceAdaptor(
+                    self.stats,
+                    self.hparams.variances,
+                    self.hparams.variance_nlayers,
+                    self.hparams.variance_kernel_size,
+                    self.hparams.variance_dropout,
+                    self.hparams.variance_filter_size,
+                    self.hparams.variance_nbins,
+                    self.hparams.variance_depthwise_conv,
+                    self.hparams.duration_nlayers,
+                    self.hparams.duration_stochastic,
+                    self.hparams.duration_kernel_size,
+                    self.hparams.duration_dropout,
+                    self.hparams.duration_filter_size,
+                    self.hparams.duration_depthwise_conv,
+                    self.hparams.encoder_hidden,
+                    self.hparams.max_length
+                    * self.hparams.sampling_rate
+                    / self.hparams.hop_length,
+                )
+            else:
+                self.variance_adaptor = VarianceAdaptor(
+                    self.stats,
+                    self.hparams.variances,
+                    self.hparams.variance_levels,
+                    self.hparams.variance_transforms,
+                    self.hparams.variance_nlayers,
+                    self.hparams.variance_kernel_size,
+                    self.hparams.variance_dropout,
+                    self.hparams.variance_filter_size,
+                    self.hparams.variance_nbins,
+                    self.hparams.variance_depthwise_conv,
+                    self.hparams.duration_nlayers,
+                    self.hparams.duration_stochastic,
+                    self.hparams.duration_kernel_size,
+                    self.hparams.duration_dropout,
+                    self.hparams.duration_filter_size,
+                    self.hparams.duration_depthwise_conv,
+                    self.hparams.encoder_hidden,
+                    self.hparams.max_length
+                    * self.hparams.sampling_rate
+                    / self.hparams.hop_length,
+                ).to(self.device)
 
         # decoder
         self.decoder = TransformerEncoder(
@@ -437,6 +460,7 @@ class FastSpeech2(pl.LightningModule):
             self.hparams.soft_dtw_gamma,
             self.hparams.soft_dtw_chunk_size,
             fastdiff_loss,
+            fastdiff_variances=self.hparams.fastdiff_variances,
         )
 
         if (
@@ -550,6 +574,19 @@ class FastSpeech2(pl.LightningModule):
             self.speaker_gmms = checkpoint["speaker_gmms"]
         if "dvector_gmms" in checkpoint:
             self.dvector_gmms = checkpoint["dvector_gmms"]
+
+        if any(["fastdiff_model" in x for x in checkpoint["state_dict"].keys()]):
+            self.fastdiff_model = FastDiff.FastDiff()
+            self.fastdiff_linear = nn.Sequential(
+                nn.Linear(
+                    self.hparams.decoder_hidden,
+                    self.hparams.decoder_hidden,
+                ),
+                nn.Linear(
+                    self.hparams.decoder_hidden,
+                    self.hparams.n_mels,
+                ),
+            )
 
         # drop shape mismatched layers
         state_dict = checkpoint["state_dict"]
@@ -1236,6 +1273,7 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--fastdiff_schedule", nargs="+", type=int, default=[0.1,1])
         parser.add_argument("--fastdiff_schedule_start", type=int, default=0)
         parser.add_argument("--fastdiff_schedule_end", type=int, default=30)
+        parser.add_argument("--fastdiff_variances", type=str2bool, default=False)
         parser.add_argument("--sort_data_by_length", type=str2bool, default=False)
         return parent_parser
 
