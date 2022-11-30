@@ -452,6 +452,7 @@ class TTSDataset(Dataset):
             result["priors"][var] = priors[var]
         if self.speaker_type == "dvector":
             result["speaker"] = self.speaker2dvector[row["speaker"]]
+            result["utterance_dvec"] = np.load(row["audio"].with_suffix(".npy"))
         elif self.speaker_type == "id":
             result["speaker"] = self.speaker2id[row["speaker"]]
         elif self.speaker_type == "dvector_utterance":

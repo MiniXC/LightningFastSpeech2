@@ -1,6 +1,9 @@
+from torch import nn
+import torch
 from litfass.fastspeech2.model import VarianceConvolutionLayer, LengthRegulator
-from litfass.third_party.FastDiff.module.util import calc_diffusion_step_embedding, std_normal, compute_hyperparams_given_schedule, sampling_given_noise_schedule
-from litfass.third_party.FastDiff.FastDiff import swish
+from litfass.third_party.fastdiff.module.util import calc_diffusion_step_embedding, std_normal, compute_hyperparams_given_schedule, sampling_given_noise_schedule
+from litfass.third_party.fastdiff.FastDiff import swish
+
 
 class FastDiffVarianceAdaptor(nn.Module):
     """FastSpeech2 Variance Adaptor with FastDiff diffusion. Limited to 1d, frame-level predictions."""
@@ -43,11 +46,16 @@ class FastDiffVarianceAdaptor(nn.Module):
             duration_filter_size,
             duration_kernel_size,
             duration_dropout,
-            self.diffusion_hyperparams,
             duration_depthwise_conv,
+            self.diffusion_hyperparams,
+            diffusion_step_embed_dim_in,
+            diffusion_step_embed_dim_mid,
+            diffusion_step_embed_dim_out,
         )
 
         self.length_regulator = LengthRegulator()
+
+        self.variances = variances
 
         self.encoders = {}
         for var in self.variances:
@@ -64,6 +72,9 @@ class FastDiffVarianceAdaptor(nn.Module):
                 stats[var]["std"],
                 variance_nbins,
                 self.diffusion_hyperparams,
+                diffusion_step_embed_dim_in,
+                diffusion_step_embed_dim_mid,
+                diffusion_step_embed_dim_out,
             )
         self.encoders = nn.ModuleDict(self.encoders)
 
@@ -78,9 +89,16 @@ class FastDiffVarianceAdaptor(nn.Module):
         oracles=[],
     ):
         if not inference:
-            duration_pred, duration_z = self.duration_predictor(torch.log(target["duration"] + 1), x, src_mask)
+            duration = targets["duration"] + 1 + torch.rand(size=targets["duration"].shape, device=targets["duration"].device)*0.49
+            duration = (torch.log(duration) - 1.08) / 0.96
+            duration_pred, duration_z = self.duration_predictor(
+                duration.to(x.dtype),
+                x.transpose(1, 2), 
+                mask=src_mask
+            )
         else:
             duration_pred = self.duration_predictor.inference(x, N=N)
+            duration_z = None
 
         result = {}
 
@@ -89,12 +107,14 @@ class FastDiffVarianceAdaptor(nn.Module):
         if not inference:
             duration_rounded = targets["duration"]
         else:
+            duration_pred = duration_pred * 0.96 + 1.08
             duration_rounded = torch.round((torch.exp(duration_pred) - 1))
             duration_rounded = torch.clamp(duration_rounded, min=0).int()
             for i in range(len(duration_rounded)):
                 if duration_rounded[i][~src_mask[i]].sum() <= (~src_mask[i]).sum() // 2:
                     duration_rounded[i][~src_mask[i]] = 1
                     print("Zero duration, setting to 1")
+                duration_rounded[i][src_mask[i]] = 0
 
         x, tgt_mask = self.length_regulator(x, duration_rounded, self.max_length)
         if out_val is not None:
@@ -103,7 +123,7 @@ class FastDiffVarianceAdaptor(nn.Module):
         for i, var in enumerate(self.variances):
             if not inference:
                 (pred, z), out = self.encoders[var](
-                    x, targets[f"variances_{var}"], tgt_mask
+                    x.transpose(1, 2), targets[f"variances_{var}"], tgt_mask
                 )
             else:
                 pred, out = self.encoders[var](x, None, tgt_mask)
@@ -134,8 +154,11 @@ class FastDiffVariancePredictor(nn.Module):
         filter_size,
         kernel_size,
         dropout,
+        depthwise,
         diffusion_hyperparams,
-        depthwise=False,
+        diffusion_step_embed_dim_in,
+        diffusion_step_embed_dim_mid,
+        diffusion_step_embed_dim_out,
     ):
         super().__init__()
 
@@ -152,13 +175,19 @@ class FastDiffVariancePredictor(nn.Module):
             ]
         )
 
+        self.diffusion_step_embed_dim_in = diffusion_step_embed_dim_in
+
         self.fc_t = nn.ModuleList()
         self.fc_t1 = nn.Linear(diffusion_step_embed_dim_in, diffusion_step_embed_dim_mid)
         self.fc_t2 = nn.Linear(diffusion_step_embed_dim_mid, diffusion_step_embed_dim_out)
 
         self.linear = nn.Linear(filter_size, 1)
 
+        self.linear_noise = nn.Linear(diffusion_step_embed_dim_out, in_channels)
+
     def forward(self, x, c, ts=None, mask=None):
+        # print(x.shape, c.shape, "input shapes")
+
         if len(x.shape) == 2:
             B, L = x.shape  # B is batchsize, C=1, L is audio length
             x = x.unsqueeze(1)
@@ -171,7 +200,7 @@ class FastDiffVariancePredictor(nn.Module):
             no_ts = True
             T, alpha = self.diffusion_hyperparams["T"], self.diffusion_hyperparams["alpha"].to(x.device)
             ts = torch.randint(T, size=(B, 1, 1)).to(x.device)  # randomly sample steps from 1~T
-            z = std_normal(x.shape)
+            z = std_normal(x.shape).to(x.dtype)
             delta = (1 - alpha[ts] ** 2.).sqrt()
             alpha_cur = alpha[ts]
             noisy_audio = alpha_cur * x + delta * z  # compute x_t from q(x_t|x_0)
@@ -185,9 +214,20 @@ class FastDiffVariancePredictor(nn.Module):
         diffusion_step_embed = swish(self.fc_t1(diffusion_step_embed))
         diffusion_step_embed = swish(self.fc_t2(diffusion_step_embed))
 
-        out_conv = self.layers(self.linear_in(x)+c)
+        x = x.transpose(1,2)
+        x = self.linear_in(x.to(diffusion_step_embed.dtype))
+        x = x.transpose(1,2)
+        c = c.to(diffusion_step_embed.dtype)
+        noise_embed = self.linear_noise(diffusion_step_embed).unsqueeze(1).transpose(1, 2)
+
+        # print(x.shape, c.shape, noise_embed.shape, "forward shapes")
+        # print(x.dtype, c.dtype, diffusion_step_embed.dtype)
+
+        out_conv = self.layers(
+            (x+c+noise_embed).transpose(1, 2)
+        )
         out = self.linear(out_conv)
-            out = out.squeeze(-1)
+        out = out.squeeze(-1)
         if mask is not None:
             out = out.masked_fill(mask, 0)
         
@@ -203,7 +243,7 @@ class FastDiffVariancePredictor(nn.Module):
         Returns:
             Tensor: Output tensor (B, out_channels, T)
         """
-        c = c.transpose(0, 1)
+        c = c.transpose(1, 2)
 
         reverse_step = N
         if reverse_step == 1000:
@@ -224,14 +264,16 @@ class FastDiffVariancePredictor(nn.Module):
             raise ValueError("Reverse step should be 3, 4, 6, 8, 200 or 1000.")
 
         if not isinstance(noise_schedule, torch.Tensor):
-            noise_schedule = torch.FloatTensor(noise_schedule)
+            noise_schedule = torch.FloatTensor(noise_schedule).to(c.dtype)
         noise_schedule = noise_schedule.to(c.device)
 
         audio_length = c.shape[-1]
 
+        # print(c.shape, "c shape, inference")
+
         pred_wav = sampling_given_noise_schedule(
             self,
-            (1, 1, audio_length),
+            (c.shape[0], audio_length),
             self.diffusion_hyperparams,
             noise_schedule,
             condition=c,
@@ -239,8 +281,8 @@ class FastDiffVariancePredictor(nn.Module):
             return_sequence=False
         )
 
-        pred_wav = pred_wav / pred_wav.abs().max()
-        pred_wav = pred_wav.view(-1)
+        # pred_wav = pred_wav / pred_wav.abs().max(axis=1, keepdim=True)[0]
+        # pred_wav = pred_wav.view(-1)
         return pred_wav
 
 class FastDiffVarianceEncoder(nn.Module):
@@ -258,11 +300,22 @@ class FastDiffVarianceEncoder(nn.Module):
         std,
         nbins,
         diffusion_hyperparams,
+        diffusion_step_embed_dim_in,
+        diffusion_step_embed_dim_mid,
+        diffusion_step_embed_dim_out,
     ):
         super().__init__()
-        self.cwt = cwt
         self.predictor = FastDiffVariancePredictor(
-            nlayers, in_channels, filter_size, kernel_size, dropout, depthwise, diffusion_hyperparams,
+            nlayers, 
+            in_channels,
+            filter_size,
+            kernel_size,
+            dropout,
+            depthwise,
+            diffusion_hyperparams,
+            diffusion_step_embed_dim_in,
+            diffusion_step_embed_dim_mid,
+            diffusion_step_embed_dim_out,
         )
         self.bins = nn.Parameter(
             torch.linspace(min, max, nbins - 1),
@@ -275,7 +328,7 @@ class FastDiffVarianceEncoder(nn.Module):
     def forward(self, x, tgt, mask, N=4, control=1.0):
         if tgt is not None:
             # training
-            noise_pred, z = self.predictor(tgt, x, mask)
+            noise_pred, z = self.predictor(tgt, x, mask=mask)
             tgt = tgt * self.std + self.mean
             embedding = self.embedding(torch.bucketize(tgt, self.bins).to(x.device))
             return (noise_pred, z), embedding

@@ -180,7 +180,7 @@ def sampling_given_noise_schedule(
     _dh = diffusion_hyperparams
     T, alpha = _dh["T"], _dh["alpha"]
     assert len(alpha) == T
-    assert len(size) == 3
+    assert len(size) == 3 or len(size) == 2
 
     N = len(inference_noise_schedule)
     beta_infer = inference_noise_schedule
@@ -213,6 +213,8 @@ def sampling_given_noise_schedule(
     with torch.no_grad():
         for n in range(N - 1, -1, -1):
             diffusion_steps = (steps_infer[n] * torch.ones((size[0], 1))).cuda()
+            # print(x.shape, condition.shape, diffusion_steps.shape)
+            # raise
             epsilon_theta = net(x, condition, diffusion_steps) #net((x, condition, diffusion_steps,))
             if ddim:
                 alpha_next = alpha_infer[n] / (1 - beta_infer[n]).sqrt()

@@ -30,6 +30,7 @@ from litfass.fastspeech2.model import (
     PriorEmbedding,
     SpeakerEmbedding,
 )
+from litfass.fastspeech2.fastdiff_variances import FastDiffVarianceAdaptor
 from litfass.third_party.hifigan import Synthesiser
 from litfass.third_party.softdtw import SoftDTW
 from litfass.third_party.argutils import str2bool
@@ -110,11 +111,6 @@ class FastSpeech2(pl.LightningModule):
         variance_early_stopping="none",  # "mae", "js", "none"
         variance_early_stopping_patience=4,
         variance_early_stopping_directory="variance_encoders",
-        tf_ratio=1.0,
-        tf_linear_schedule=False,
-        tf_linear_schedule_start=0,
-        tf_linear_schedule_end=20,
-        tf_linear_schedule_end_ratio=0.0,
         num_workers=num_cpus,
         cache_path=None,
         priors_gmm=False,
@@ -302,7 +298,6 @@ class FastSpeech2(pl.LightningModule):
                     self.hparams.variance_nbins,
                     self.hparams.variance_depthwise_conv,
                     self.hparams.duration_nlayers,
-                    self.hparams.duration_stochastic,
                     self.hparams.duration_kernel_size,
                     self.hparams.duration_dropout,
                     self.hparams.duration_filter_size,
@@ -673,29 +668,12 @@ class FastSpeech2(pl.LightningModule):
                     output.shape[1],
                 )
 
-        tf_ratio = self.hparams.tf_ratio
-
-        if self.hparams.tf_linear_schedule:
-            if self.current_epoch > self.hparams.tf_linear_schedule_start:
-                tf_ratio = tf_ratio - (
-                    (tf_ratio - self.hparams.tf_linear_schedule_end_ratio)
-                    * (self.current_epoch - self.hparams.tf_linear_schedule_start)
-                    / (
-                        self.hparams.tf_linear_schedule_end
-                        - self.hparams.tf_linear_schedule_start
-                    )
-                )
-
-        
-        self.log("tf_ratio", tf_ratio)
-
         # pylint: disable=not-callable
         variance_output = self.variance_adaptor(
             output,
             src_mask,
             targets,
             inference=inference,
-            tf_ratio=tf_ratio,
         )
         # pylint: enable=not-callable
 
@@ -756,6 +734,13 @@ class FastSpeech2(pl.LightningModule):
 
         for var in self.hparams.variances:
             result[f"variances_{var}"] = variance_output[f"variances_{var}"]
+            if self.hparams.fastdiff_variances:
+                result[f"variances_{var}_z"] = variance_output[
+                    f"variances_{var}_z"
+                ]
+        
+        if self.hparams.fastdiff_variances:
+            result["duration_z"] = variance_output["duration_z"]
 
         return result
 
@@ -1251,11 +1236,6 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument(
             "--variance_early_stopping_directory", type=str, default="variance_encoders"
         )
-        parser.add_argument("--tf_ratio", type=float, default=1.0)
-        parser.add_argument("--tf_linear_schedule", type=str2bool, default=False)
-        parser.add_argument("--tf_linear_schedule_start", type=int, default=0)
-        parser.add_argument("--tf_linear_schedule_end", type=int, default=20)
-        parser.add_argument("--tf_linear_schedule_end_ratio", type=float, default=0.0)
         parser.add_argument("--num_workers", type=int, default=num_cpus)
         parser.add_argument(
             "--speaker_embedding_every_layer", type=str2bool, default=False

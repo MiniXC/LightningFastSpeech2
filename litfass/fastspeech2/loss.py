@@ -84,6 +84,7 @@ class FastSpeech2Loss(nn.Module):
         losses = {}
 
         variances_pred = {var: result[f"variances_{var}"] for var in self.variances}
+
         variances_target = {
             var: target[f"variances_{var}"]
             for var in self.variances
@@ -101,13 +102,14 @@ class FastSpeech2Loss(nn.Module):
                 self.variances, self.variance_levels, self.variance_transforms, self.variance_losses
             ):
                 if self.fastdiff_variances:
-                    variance_target[variance] = result[f"variances_{variance}_z"]
-                    variance_pred[variance] = result[f"variances_{variance}"]
+                    variances_target[variance] = result[f"variances_{variance}_z"].squeeze(1)
+                    variances_pred[variance] = result[f"variances_{variance}"]
+                    # print(variances_pred[variance].shape, variances_target[variance].shape, tgt_mask.shape, "variance loss shapes")
                     losses[variance] = self.get_loss(
                         variances_pred[variance],
                         variances_target[variance].to(dtype=result["mel"].dtype),
                         "mse",
-                        variance_mask,
+                        tgt_mask,
                     )
                     continue
                 if transform == "cwt":
@@ -168,13 +170,14 @@ class FastSpeech2Loss(nn.Module):
 
         # DURATION LOSS
         if self.fastdiff_variances:
+            # print(result["duration_prediction"].shape, result["duration_z"].shape, src_mask.shape, "duration loss shapes")
             losses["duration"] = self.get_loss(
-                result["duration_prediction"],
-                result["duration_z"].to(dtype=result["duration"].dtype),
+                result["duration_prediction"].to(dtype=result["mel"].dtype),
+                result["duration_z"].to(dtype=result["mel"].dtype).squeeze(1),
                 "mse",
-                tgt_mask,
+                src_mask,
             )
-        if not self.duration_stochastic:
+        elif not self.duration_stochastic:
             losses["duration"] = self.get_loss(
                 result["duration_prediction"],
                 torch.log(target["duration"] + 1).to(dtype=result["mel"].dtype),
