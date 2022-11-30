@@ -341,3 +341,138 @@ class FastDiffVarianceEncoder(nn.Module):
                 torch.bucketize(bucket_prediction, self.bins).to(x.device)
             )
             return prediction, embedding
+
+class FastDiffSpeakerGenerator(nn.Module):
+    def __init__(
+        self,
+        hidden_dim,
+        c_dim,
+        diffusion_hyperparams,
+        diffusion_step_embed_dim_in,
+        diffusion_step_embed_dim_mid,
+        diffusion_step_embed_dim_out,
+        speaker_embed_dim,
+    ):
+        super().__init__()
+
+        self.diffusion_hyperparams = diffusion_hyperparams
+
+        self.mlp = nn.Sequential(
+            *[
+                nn.Linear(speaker_embed_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+            ]
+        )
+
+        self.conditional_in = nn.Linear(c_dim, speaker_embed_dim)
+        self.linear_out = nn.Linear(hidden_dim, speaker_embed_dim)
+
+        self.diffusion_step_embed_dim_in = diffusion_step_embed_dim_in
+
+        self.fc_t = nn.ModuleList()
+        self.fc_t1 = nn.Linear(diffusion_step_embed_dim_in, diffusion_step_embed_dim_mid)
+        self.fc_t2 = nn.Linear(diffusion_step_embed_dim_mid, diffusion_step_embed_dim_out)
+
+        self.linear_noise = nn.Linear(diffusion_step_embed_dim_out, speaker_embed_dim)
+
+    def forward(self, x, c, ts=None, mask=None):
+        # print(x.shape, c.shape, "input shapes")
+
+        if len(x.shape) == 2:
+            B, L = x.shape  # B is batchsize, C=1, L is audio length
+            x = x.unsqueeze(1)
+        if len(c.shape) == 2:
+            c = c.unsqueeze(0)
+
+        B, C, L = c.shape
+
+        if ts is None:
+            no_ts = True
+            T, alpha = self.diffusion_hyperparams["T"], self.diffusion_hyperparams["alpha"].to(x.device)
+            ts = torch.randint(T, size=(B, 1, 1)).to(x.device)  # randomly sample steps from 1~T
+            z = std_normal(x.shape).to(x.dtype)
+            delta = (1 - alpha[ts] ** 2.).sqrt()
+            alpha_cur = alpha[ts]
+            noisy_audio = alpha_cur * x + delta * z  # compute x_t from q(x_t|x_0)
+            x = noisy_audio
+            ts = ts.view(B, 1)
+        else:
+            no_ts = False
+
+        # embed diffusion step t
+        diffusion_step_embed = calc_diffusion_step_embedding(ts, self.diffusion_step_embed_dim_in)
+        diffusion_step_embed = swish(self.fc_t1(diffusion_step_embed))
+        diffusion_step_embed = swish(self.fc_t2(diffusion_step_embed))
+
+        # x = x.transpose(1,2)
+        # x = self.mlp(x.to(diffusion_step_embed.dtype))
+        # x = x.transpose(1,2)
+        c = self.conditional_in(c.to(diffusion_step_embed.dtype).mean(dim=1)) # TODO: investigate attention here
+        noise_embed = self.linear_noise(diffusion_step_embed).unsqueeze(1).transpose(1, 2)
+
+        # print(x.shape, c.shape, noise_embed.shape, "forward shapes")
+        # print(x.dtype, c.dtype, diffusion_step_embed.dtype)
+
+        out_conv = self.mlp(
+            (x+c+noise_embed).transpose(1, 2)
+        )
+        out = self.linear_out(out_conv)
+        out = out.squeeze(-1)
+        if mask is not None:
+            out = out.masked_fill(mask, 0)
+        
+        if no_ts:
+            return out, z
+        else:
+            return out
+
+    def inference(self, c, N=4):
+        """Inference with the given local conditioning auxiliary features.
+        Args:
+            c (Tensor): Local conditioning auxiliary features (B, C, T').
+        Returns:
+            Tensor: Output tensor (B, out_channels, T)
+        """
+        c = c.transpose(1, 2)
+
+        reverse_step = N
+        if reverse_step == 1000:
+                noise_schedule = torch.linspace(0.000001, 0.01, 1000)
+        elif reverse_step == 200:
+            noise_schedule = torch.linspace(0.0001, 0.02, 200)
+        elif reverse_step == 8:
+            noise_schedule = [6.689325005027058e-07, 1.0033881153503899e-05, 0.00015496854030061513,
+                                0.002387222135439515, 0.035597629845142365, 0.3681158423423767, 0.4735414385795593, 0.5]
+        elif reverse_step == 6:
+            noise_schedule = [1.7838445955931093e-06, 2.7984189728158526e-05, 0.00043231004383414984,
+                                0.006634317338466644, 0.09357017278671265, 0.6000000238418579]
+        elif reverse_step == 4:
+            noise_schedule = [3.2176e-04, 2.5743e-03, 2.5376e-02, 7.0414e-01]
+        elif reverse_step == 3:
+            noise_schedule = [9.0000e-05, 9.0000e-03, 6.0000e-01]
+        else:
+            raise ValueError("Reverse step should be 3, 4, 6, 8, 200 or 1000.")
+
+        if not isinstance(noise_schedule, torch.Tensor):
+            noise_schedule = torch.FloatTensor(noise_schedule).to(c.dtype)
+        noise_schedule = noise_schedule.to(c.device)
+
+        audio_length = c.shape[-1]
+
+        # print(c.shape, "c shape, inference")
+
+        pred_wav = sampling_given_noise_schedule(
+            self,
+            (c.shape[0], audio_length),
+            self.diffusion_hyperparams,
+            noise_schedule,
+            condition=c,
+            ddim=False,
+            return_sequence=False
+        )
+
+        # pred_wav = pred_wav / pred_wav.abs().max(axis=1, keepdim=True)[0]
+        # pred_wav = pred_wav.view(-1)
+        return pred_wav

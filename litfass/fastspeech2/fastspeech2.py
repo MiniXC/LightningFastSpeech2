@@ -125,6 +125,7 @@ class FastSpeech2(pl.LightningModule):
         fastdiff_schedule_end=20,
         sort_data_by_length=False,
         fastdiff_variances=True,
+        fastdiff_speakers=False,
     ):
         super().__init__()
 
@@ -1254,6 +1255,7 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--fastdiff_schedule_start", type=int, default=0)
         parser.add_argument("--fastdiff_schedule_end", type=int, default=30)
         parser.add_argument("--fastdiff_variances", type=str2bool, default=False)
+        parser.add_argument("--fastdiff_speaker", type=str2bool, default=False)
         parser.add_argument("--sort_data_by_length", type=str2bool, default=False)
         return parent_parser
 
