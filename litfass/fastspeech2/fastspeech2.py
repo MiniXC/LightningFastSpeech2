@@ -30,7 +30,7 @@ from litfass.fastspeech2.model import (
     PriorEmbedding,
     SpeakerEmbedding,
 )
-from litfass.fastspeech2.fastdiff_variances import FastDiffVarianceAdaptor
+from litfass.fastspeech2.fastdiff_variances import FastDiffVarianceAdaptor, FastDiffSpeakerGenerator
 from litfass.third_party.hifigan import Synthesiser
 from litfass.third_party.softdtw import SoftDTW
 from litfass.third_party.argutils import str2bool
@@ -258,6 +258,13 @@ class FastSpeech2(pl.LightningModule):
             num_layers=self.hparams.encoder_layers,
             # layer_drop_prob=self.hparams.layer_dropout,
         )
+
+        if self.hparams.fastdiff_speakers:
+            self.fastdiff_speaker_generator = FastDiffSpeakerGenerator(
+                512, # hidden dim
+                self.hparams.encoder_hidden, # conditional dim
+                self.hparams.encoder_hidden, # speaker dim
+            )
 
         if self.hparams.encoder_conformer:
             if self.hparams.encoder_dim_feedforward is not None:
@@ -621,7 +628,7 @@ class FastSpeech2(pl.LightningModule):
         if hasattr(self, "dvector_gmms"):
             checkpoint["dvector_gmms"] = self.dvector_gmms
 
-    def forward(self, targets, optimizer_idx=0, inference=False):
+    def forward(self, targets, inference=False):
 
         phones = targets["phones"].to(self.device)
         speakers = targets["speaker"].to(self.device)

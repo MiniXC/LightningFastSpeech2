@@ -1,9 +1,8 @@
 #!/usr/bin/bash
 
-CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python litfass/train.py \
+CUDA_VISIBLE_DEVICES="0" pdm run python litfass/train.py \
 --accelerator gpu \
 --precision 16 \
---strategy "ddp" \
 --batch_size 4 \
 --accumulate_grad_batches 12 \
 --val_check_interval 1.0 \
@@ -36,7 +35,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python litfass/train.py \
 --speaker_embedding_every_layer False \
 --prior_embedding_every_layer False \
 --wandb_name "fastdiff_nopretrain_variances_fixed" \
---wandb_mode "online" \
+--wandb_mode "offline" \
 --speaker_type "dvector" \
 --train_target_path "../data/train-clean-a" \
 --train_min_samples_per_speaker 50 \
@@ -47,8 +46,8 @@ CUDA_VISIBLE_DEVICES="0,1,2,3" pdm run python litfass/train.py \
 --sort_data_by_length True \
 --fastdiff_vocoder True \
 --fastdiff_schedule 1 1 \
---fastdiff_variances True \
---from_checkpoint "models/fastdiff_nopretrain_variances_fixed-v1.ckpt"
+--fastdiff_variances True #\
+#--from_checkpoint "models/fastdiff_nopretrain_variances_fixed-v1.ckpt"
 
 #--fastdiff_vocoder_checkpoint "fastdiff_model/model_ckpt_steps_1000000.ckpt" \
 #--from_checkpoint "models/fastdiff_fixed_inf-v2.ckpt"

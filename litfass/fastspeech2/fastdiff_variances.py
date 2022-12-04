@@ -27,7 +27,6 @@ class FastDiffVarianceAdaptor(nn.Module):
         diffusion_step_embed_dim_in=128,
         diffusion_step_embed_dim_mid=512,
         diffusion_step_embed_dim_out=512,
-        use_weight_norm=True,
         beta_0=1e-6,
         beta_T=0.01,
         T=1000,
@@ -86,7 +85,6 @@ class FastDiffVarianceAdaptor(nn.Module):
         targets,
         inference=False,
         N=4,
-        oracles=[],
     ):
         if not inference:
             duration = targets["duration"] + 1 + torch.rand(size=targets["duration"].shape, device=targets["duration"].device)*0.49
@@ -330,6 +328,7 @@ class FastDiffVarianceEncoder(nn.Module):
             # training
             noise_pred, z = self.predictor(tgt, x, mask=mask)
             tgt = tgt * self.std + self.mean
+            print(torch.bucketize(tgt, self.bins))
             embedding = self.embedding(torch.bucketize(tgt, self.bins).to(x.device))
             return (noise_pred, z), embedding
         else:
@@ -347,13 +346,18 @@ class FastDiffSpeakerGenerator(nn.Module):
         self,
         hidden_dim,
         c_dim,
-        diffusion_hyperparams,
-        diffusion_step_embed_dim_in,
-        diffusion_step_embed_dim_mid,
-        diffusion_step_embed_dim_out,
         speaker_embed_dim,
+        diffusion_step_embed_dim_in=128,
+        diffusion_step_embed_dim_mid=512,
+        diffusion_step_embed_dim_out=512,
+        beta_0=1e-6,
+        beta_T=0.01,
+        T=1000,
     ):
         super().__init__()
+
+        self.noise_schedule = torch.linspace(beta_0, beta_T, T)
+        diffusion_hyperparams = compute_hyperparams_given_schedule(self.noise_schedule)
 
         self.diffusion_hyperparams = diffusion_hyperparams
 

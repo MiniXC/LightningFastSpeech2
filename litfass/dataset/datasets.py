@@ -527,10 +527,9 @@ class TTSDataset(Dataset):
         }
         for speaker in tqdm(self.data["speaker"].unique(), desc="loading priors"):
             for prior in self.priors:
-                with np.load(
-                    speaker / f"{prior}_prior.npy"
-                ) as prior_arr:
-                    speaker_priors[speaker.name][prior] = np.copy(prior_arr)
+                prior_arr = np.load(speaker / f"{prior}_prior.npy")
+                speaker_priors[speaker.name][prior] = np.copy(prior_arr)
+                del prior_arr
         return speaker_priors
 
     def get_speaker_dvectors(self):
