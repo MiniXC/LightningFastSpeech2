@@ -24,6 +24,7 @@ from phones.convert import Converter
 from PIL import Image
 from rich import print # pylint: disable=redefined-builtin
 from torch.nn.utils.rnn import pad_sequence
+from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from tqdm.rich import tqdm
 from tqdm.contrib.concurrent import process_map
@@ -74,6 +75,7 @@ class TTSDataset(Dataset):
         min_samples_per_speaker=0,
         load_wav=False,
         num_workers=multiprocessing.cpu_count(),
+        pad_to_multiple_of=None,
     ):
         super().__init__()
 
@@ -98,6 +100,7 @@ class TTSDataset(Dataset):
         self.pitch_quality = pitch_quality
         self.load_wav = load_wav
         self.num_workers = num_workers
+        self.pad_to_multiple_of = 64
 
         # PHONES
         self.phone_converter = Converter()
@@ -333,6 +336,7 @@ class TTSDataset(Dataset):
             pitch_quality=self.pitch_quality,
             source_phoneset=self.source_phoneset,
             load_wav=self.load_wav,
+            pad_to_multiple_of=self.pad_to_multiple_of,
         )
         ds.phone2id = self.phone2id
         ds.id2phone = self.id2phone
@@ -846,6 +850,8 @@ class TTSDataset(Dataset):
         data = l2d(data)
         add_keys = {}
         for key in data.keys():
+            if "silence_mask" in key:
+                continue
             if isinstance(data[key][0], np.ndarray):
                 data[key] = [torch.tensor(x) for x in data[key]]
                 add_keys[f"{key}_lengths"] = torch.tensor(
@@ -856,15 +862,21 @@ class TTSDataset(Dataset):
                 add_keys[f"{key}_lengths"] = torch.tensor(
                     [x.shape[0] for x in data[key]]
                 )
+                if self.pad_to_multiple_of is not None and (key in ["mel", "phones"] or "variances" in key or "duration" in key):
+                    max_len = int((np.ceil(max(add_keys[f"{key}_lengths"]) / self.pad_to_multiple_of) * self.pad_to_multiple_of).item())
+                    if len(data[key][0].shape) == 1:
+                        data[key][0] = nn.ConstantPad1d((0, max_len - data[key][0].shape[0]), pad_val)(data[key][0])
+                    elif len(data[key][0].shape) == 2:
+                        data[key][0] = nn.ConstantPad2d((0, 0, 0, max_len - data[key][0].shape[0]), pad_val)(data[key][0])
                 data[key] = pad_sequence(
-                    data[key], batch_first=True, padding_value=pad_val
+                    data[key], batch_first=True, padding_value=pad_val, 
                 )
         data.update(add_keys)
         return data
 
-    def sort_by_duration(self):
+    def sort_by_duration(self, ascending=True):
         self.data["duration_sum"] = self.data["duration"].apply(lambda x: np.array(x).sum()).values
-        self.data = self.data.sort_values(by="duration_sum", ascending=True)
+        self.data = self.data.sort_values(by="duration_sum", ascending=ascending)
 
     def plot(self, sample_or_idx, show=True):
         if not show:
@@ -1015,5 +1027,8 @@ class TTSDataset(Dataset):
         )
         parser.add_argument(
             f"--{split_name}_min_samples_per_speaker", type=int, default=0
+        )
+        parser.add_argument(
+            f"--{split_name}_pad_to_multiple_of", type=int, default=None
         )
         return parent_parser

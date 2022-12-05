@@ -126,6 +126,7 @@ class FastSpeech2(pl.LightningModule):
         sort_data_by_length=False,
         fastdiff_variances=True,
         fastdiff_speakers=False,
+        fastdiff_speakers_loss_weight=1,
     ):
         super().__init__()
 
@@ -265,6 +266,8 @@ class FastSpeech2(pl.LightningModule):
                 self.hparams.encoder_hidden, # conditional dim
                 self.hparams.encoder_hidden, # speaker dim
             )
+        else:
+            self.fastdiff_speaker_generator = None
 
         if self.hparams.encoder_conformer:
             if self.hparams.encoder_dim_feedforward is not None:
@@ -440,6 +443,7 @@ class FastSpeech2(pl.LightningModule):
         loss_weights = {
             "mel": self.hparams.mel_loss_weight,
             "duration": self.hparams.duration_loss_weight,
+            "speakers": self.hparams.fastdiff_speakers_loss_weight
         }
         for i, var in enumerate(self.hparams.variances):
             loss_weights[var] = self.hparams.variance_loss_weights[i]
@@ -629,9 +633,19 @@ class FastSpeech2(pl.LightningModule):
             checkpoint["dvector_gmms"] = self.dvector_gmms
 
     def forward(self, targets, inference=False):
+        #print(targets["phones"].shape[1], targets["mel"].shape[1], targets["mel"].shape[1]/targets["phones"].shape[1])
 
         phones = targets["phones"].to(self.device)
-        speakers = targets["speaker"].to(self.device)
+        if self.fastdiff_speaker_generator is None:
+            speakers = targets["speaker"].to(self.device)
+        else:
+            speakers_mean = targets["speaker"].to(self.device)
+            if inference:
+                speaker_pred = self.fastdiff_speaker_generator(speakers_mean, inference=True)
+                speakers = speaker_pred
+            else:
+                speakers = targets["utterance_dvec"].to(self.device)
+                speaker_pred, speaker_z = self.fastdiff_speaker_generator(speakers_mean, speakers)
 
         src_mask = phones.eq(0)
 
@@ -733,12 +747,21 @@ class FastSpeech2(pl.LightningModule):
             else:
                 mel_fastdiff = targets["mel"] + result["fastdiff_var"]
                 mel_lengths = targets["mel_lengths"]
-            # truncate by shortest length
-            mel_fastdiff = mel_fastdiff[:, :(mel_lengths.min()-2), :]
-            wav_fastdiff = targets["wav"][:, :(mel_lengths.min()-2)*self.hparams.hop_length]
+            # truncate by longest length
+            mel_fastdiff = mel_fastdiff[:, :(mel_lengths.max()-2), :]
+            wav_max_length = (mel_lengths.max()-2)*self.hparams.hop_length
+            wav_fastdiff = targets["wav"][:, :wav_max_length]
+            # print(torch.arange(wav_max_length).device)
+            # print(((mel_lengths-2)*self.hparams.hop_length).device)
+            # print(len(mel_lengths).device)
+            # print(wav_max_length.device)
+            result["wav_mask"] = (
+                torch.arange(wav_max_length).to(mel_lengths.device).expand(len(mel_lengths), wav_max_length)
+                < ((mel_lengths-2)*self.hparams.hop_length).unsqueeze(1)
+            )
             # the -1 is to avoid edge cases where the mel is longer than the wav
             mel_fastdiff = mel_fastdiff.transpose(1, 2)
-            result["fastdiff"] = self.fastdiff_model(wav_fastdiff, mel_fastdiff)
+            result["fastdiff"] = self.fastdiff_model(wav_fastdiff, mel_fastdiff, mask=result["wav_mask"])
 
         for var in self.hparams.variances:
             result[f"variances_{var}"] = variance_output[f"variances_{var}"]
@@ -749,6 +772,13 @@ class FastSpeech2(pl.LightningModule):
         
         if self.hparams.fastdiff_variances:
             result["duration_z"] = variance_output["duration_z"]
+
+        if self.fastdiff_speaker_generator is not None:
+            if inference:
+                result["speaker_z"] = None
+            else:
+                result["speaker_z"] = speaker_z
+            result["speaker_pred"] = speaker_pred
 
         return result
 
@@ -1262,7 +1292,7 @@ class FastSpeech2(pl.LightningModule):
         parser.add_argument("--fastdiff_schedule_start", type=int, default=0)
         parser.add_argument("--fastdiff_schedule_end", type=int, default=30)
         parser.add_argument("--fastdiff_variances", type=str2bool, default=False)
-        parser.add_argument("--fastdiff_speaker", type=str2bool, default=False)
+        parser.add_argument("--fastdiff_speakers", type=str2bool, default=False)
         parser.add_argument("--sort_data_by_length", type=str2bool, default=False)
         return parent_parser
 

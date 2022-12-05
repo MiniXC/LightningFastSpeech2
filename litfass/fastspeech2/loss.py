@@ -22,6 +22,7 @@ class FastSpeech2Loss(nn.Module):
             "snr": 1e-1,
             "duration": 1e-4,
             "fastdiff": 1e-1,
+            "speakers": 1,
         },
         soft_dtw_gamma=0.01,
         soft_dtw_chunk_size=256,
@@ -189,7 +190,15 @@ class FastSpeech2Loss(nn.Module):
 
         # FASTDIFF LOSS
         if self.fastdiff_loss is not None:
-            losses["fastdiff"] = self.losses[self.fastdiff_loss](result["fastdiff"][0], result["fastdiff"][1])
+            losses["fastdiff"] = self.get_loss(
+                result["fastdiff"][0],
+                result["fastdiff"][1],
+                self.fastdiff_loss,
+                result["wav_mask"],
+            )
+
+        if "speaker_z" in result:
+            losses["speakers"] = self.losses[self.fastdiff_loss](result["speaker_pred"], result["speaker_z"])
 
         # TOTAL LOSS
         total_loss = sum(

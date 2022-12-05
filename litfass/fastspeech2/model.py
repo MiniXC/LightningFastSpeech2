@@ -342,6 +342,10 @@ class VarianceAdaptor(nn.Module):
 
 
 class LengthRegulator(nn.Module):
+    def __init__(self, pad_to_multiple_of=None):
+        super().__init__()
+        self.pad_to_multiple_of = pad_to_multiple_of
+
     def forward(self, x, durations, max_length=None):
         repeated_list = [
             torch.repeat_interleave(x[i], durations[i], dim=0)
@@ -349,10 +353,17 @@ class LengthRegulator(nn.Module):
         ]
         lengths = torch.tensor([t.shape[0] for t in repeated_list]).long()
         max_length = min(lengths.max(), int(max_length))
+        if self.pad_to_multiple_of is not None:
+            max_length = int((np.ceil(max_length / self.pad_to_multiple_of) * self.pad_to_multiple_of).item())
         mask = ~(
             torch.arange(max_length).expand(len(lengths), max_length)
             < lengths.unsqueeze(1)
         ).to(x.device)
+        if self.pad_to_multiple_of is not None:
+            if len(repeated_list[0].shape) == 1:
+                repeated_list[0] = nn.ConstantPad1d((0, max_length - repeated_list[0].shape[0]), 0)(repeated_list[0])
+            elif len(repeated_list[0].shape) == 2:
+                repeated_list[0] = nn.ConstantPad2d((0, 0, 0, max_length - repeated_list[0].shape[0]), 0)(repeated_list[0])
         out = pad_sequence(repeated_list, batch_first=True, padding_value=0)
         if max_length is not None:
             out = out[:, :max_length]

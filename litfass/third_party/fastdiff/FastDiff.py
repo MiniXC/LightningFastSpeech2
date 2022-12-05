@@ -88,7 +88,7 @@ class FastDiff(nn.Module):
         self.noise_schedule = torch.linspace(beta_0, beta_T, T)
         self.diffusion_hyperparams = compute_hyperparams_given_schedule(self.noise_schedule)
 
-    def forward(self, x, c, ts=None, reverse=False):
+    def forward(self, x, c, ts=None, reverse=False, mask=None):
         """Calculate forward propagation.
         Args:
             x (Tensor): Input noise signal (B, 1, T).
@@ -133,6 +133,9 @@ class FastDiff(nn.Module):
 
         # apply final layers
         x = self.final_conv(x)
+
+        if mask is not None:
+            x = x.masked_fill(mask, 0)
 
         if not reverse:
             if no_ts:

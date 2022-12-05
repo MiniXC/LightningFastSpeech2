@@ -52,7 +52,7 @@ class FastDiffVarianceAdaptor(nn.Module):
             diffusion_step_embed_dim_out,
         )
 
-        self.length_regulator = LengthRegulator()
+        self.length_regulator = LengthRegulator(pad_to_multiple_of=64) # TODO: change this to use target length
 
         self.variances = variances
 
@@ -328,7 +328,6 @@ class FastDiffVarianceEncoder(nn.Module):
             # training
             noise_pred, z = self.predictor(tgt, x, mask=mask)
             tgt = tgt * self.std + self.mean
-            print(torch.bucketize(tgt, self.bins))
             embedding = self.embedding(torch.bucketize(tgt, self.bins).to(x.device))
             return (noise_pred, z), embedding
         else:
@@ -342,6 +341,52 @@ class FastDiffVarianceEncoder(nn.Module):
             return prediction, embedding
 
 class FastDiffSpeakerGenerator(nn.Module):
+    def __init__(
+        self,
+        hidden_dim,
+        c_dim,
+        speaker_embed_dim,
+        diffusion_step_embed_dim_in=128,
+        diffusion_step_embed_dim_mid=512,
+        diffusion_step_embed_dim_out=512,
+        beta_0=1e-6,
+        beta_T=0.01,
+        T=1000,
+    ):
+        super().__init__()
+        self.noise_schedule = torch.linspace(beta_0, beta_T, T)
+        self.diffusion_hyperparams = compute_hyperparams_given_schedule(self.noise_schedule)
+        
+        self.predictor = FastDiffSpeakerPredictor(
+            hidden_dim,
+            c_dim,
+            speaker_embed_dim,
+            diffusion_step_embed_dim_in,
+            diffusion_step_embed_dim_mid,
+            diffusion_step_embed_dim_out,
+            beta_0,
+            beta_T,
+            T,
+        )
+
+    def forward(
+        self,
+        x,
+        dvec=None,
+        inference=False,
+        N=4,
+    ):
+        if inference:
+            # inference
+            prediction = self.predictor.inference(x, N=N)
+            return prediction
+        else:
+            # training
+            noise_pred, z = self.predictor(dvec, x)
+            return noise_pred, z
+
+
+class FastDiffSpeakerPredictor(nn.Module):
     def __init__(
         self,
         hidden_dim,
@@ -384,23 +429,20 @@ class FastDiffSpeakerGenerator(nn.Module):
     def forward(self, x, c, ts=None, mask=None):
         # print(x.shape, c.shape, "input shapes")
 
-        if len(x.shape) == 2:
-            B, L = x.shape  # B is batchsize, C=1, L is audio length
-            x = x.unsqueeze(1)
-        if len(c.shape) == 2:
-            c = c.unsqueeze(0)
-
-        B, C, L = c.shape
+        B, C = c.shape
 
         if ts is None:
             no_ts = True
             T, alpha = self.diffusion_hyperparams["T"], self.diffusion_hyperparams["alpha"].to(x.device)
             ts = torch.randint(T, size=(B, 1, 1)).to(x.device)  # randomly sample steps from 1~T
+            x = x.unsqueeze(-1)
             z = std_normal(x.shape).to(x.dtype)
             delta = (1 - alpha[ts] ** 2.).sqrt()
             alpha_cur = alpha[ts]
             noisy_audio = alpha_cur * x + delta * z  # compute x_t from q(x_t|x_0)
             x = noisy_audio
+            x = x.squeeze(-1)
+            z = z.squeeze(-1)
             ts = ts.view(B, 1)
         else:
             no_ts = False
@@ -413,14 +455,14 @@ class FastDiffSpeakerGenerator(nn.Module):
         # x = x.transpose(1,2)
         # x = self.mlp(x.to(diffusion_step_embed.dtype))
         # x = x.transpose(1,2)
-        c = self.conditional_in(c.to(diffusion_step_embed.dtype).mean(dim=1)) # TODO: investigate attention here
-        noise_embed = self.linear_noise(diffusion_step_embed).unsqueeze(1).transpose(1, 2)
+        c = self.conditional_in(c.to(diffusion_step_embed.dtype)) # TODO: investigate attention here
+        noise_embed = self.linear_noise(diffusion_step_embed)
 
         # print(x.shape, c.shape, noise_embed.shape, "forward shapes")
         # print(x.dtype, c.dtype, diffusion_step_embed.dtype)
 
         out_conv = self.mlp(
-            (x+c+noise_embed).transpose(1, 2)
+            (x+c+noise_embed)
         )
         out = self.linear_out(out_conv)
         out = out.squeeze(-1)
@@ -439,7 +481,6 @@ class FastDiffSpeakerGenerator(nn.Module):
         Returns:
             Tensor: Output tensor (B, out_channels, T)
         """
-        c = c.transpose(1, 2)
 
         reverse_step = N
         if reverse_step == 1000:

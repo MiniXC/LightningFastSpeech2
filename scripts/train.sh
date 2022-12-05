@@ -44,9 +44,12 @@ CUDA_VISIBLE_DEVICES="0" pdm run python litfass/train.py \
 --dvector_gmm False \
 --priors energy duration snr pitch srmr \
 --sort_data_by_length True \
+--train_pad_to_multiple_of 64 \
 --fastdiff_vocoder True \
 --fastdiff_schedule 1 1 \
---fastdiff_variances True #\
+--fastdiff_variances True \
+--fastdiff_speakers True \
+--num_sanity_val_steps 0
 #--from_checkpoint "models/fastdiff_nopretrain_variances_fixed-v1.ckpt"
 
 #--fastdiff_vocoder_checkpoint "fastdiff_model/model_ckpt_steps_1000000.ckpt" \
