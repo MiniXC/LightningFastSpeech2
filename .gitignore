@@ -22,3 +22,4 @@ speechbrain
 .ipynb_checkpoints
 examples
 fastdiff_model
+*.lock
