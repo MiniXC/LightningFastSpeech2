@@ -227,7 +227,8 @@ class FastSpeech2(pl.LightningModule):
                     valid_ds, **valid_ds_kwargs
                 )
 
-        self.synth = Synthesiser(device=self.device)
+        if fastdiff_model is None:
+            self.synth = Synthesiser(device=self.device)
 
         # needed for inference without a dataset
         if train_ds is not None:

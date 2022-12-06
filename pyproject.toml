@@ -7,7 +7,6 @@ authors = [
 ]
 dependencies = [
     "pytorch-lightning>=1.5.10",
-    "torchaudio>=0.11.0",
     "wandb>=0.12.11",
     "pillow>=9.0.1",
     "matplotlib>=3.5.1",
@@ -21,7 +20,6 @@ dependencies = [
     "librosa>=0.9.1",
     "click>=8.0.4",
     "diskcache>=5.4.0",
-    "torchvision==0.13.1",
     "plotly>=5.7.0",
     "kaleido==0.2.1",
     "snreval>=1.2",
@@ -31,7 +29,6 @@ dependencies = [
     "rich>=12.4.4",
     "alignments>=0.0.9",
     "g2p-en>=2.1.0",
-    "torch>=1.12.0",
     "voicefixer>=0.0.17",
     "huggingface-hub>=0.7.0rc0",
     "pysdtw>=0.0.5",

@@ -254,6 +254,12 @@ class TTSDataset(Dataset):
                     "stats file exists but number of samples does not match"
                 )
 
+        # needed for stats and priors
+        pad_temp = None
+        if self.pad_to_multiple_of is not None:
+            pad_temp = self.pad_to_multiple_of
+            self.pad_to_multiple_of = None
+
         if compute_stats:
             self._load_stats_only = False
             for entry in tqdm(
@@ -304,6 +310,7 @@ class TTSDataset(Dataset):
             self.speaker_priors = self._create_priors()
 
         self._load_stats_only = False
+        self.pad_to_multiple_of = pad_temp
 
     def create_validation_dataset(
         self,
@@ -850,7 +857,7 @@ class TTSDataset(Dataset):
         data = l2d(data)
         add_keys = {}
         for key in data.keys():
-            if "silence_mask" in key:
+            if "silence_mask" in key and self.pad_to_multiple_of is not None:
                 continue
             if isinstance(data[key][0], np.ndarray):
                 data[key] = [torch.tensor(x) for x in data[key]]
@@ -862,7 +869,7 @@ class TTSDataset(Dataset):
                 add_keys[f"{key}_lengths"] = torch.tensor(
                     [x.shape[0] for x in data[key]]
                 )
-                if self.pad_to_multiple_of is not None and (key in ["mel", "phones"] or "variances" in key or "duration" in key):
+                if self.pad_to_multiple_of is not None and (key in ["mel", "phones"] or "variances" in key or "duration" in key or self._load_stats_only):
                     max_len = int((np.ceil(max(add_keys[f"{key}_lengths"]) / self.pad_to_multiple_of) * self.pad_to_multiple_of).item())
                     if len(data[key][0].shape) == 1:
                         data[key][0] = nn.ConstantPad1d((0, max_len - data[key][0].shape[0]), pad_val)(data[key][0])

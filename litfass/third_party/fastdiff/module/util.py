@@ -60,15 +60,15 @@ def print_size(net):
 
 # Utilities for diffusion models
 
-def std_normal(size):
+def std_normal(size, device="cuda:0"):
     """
     Generate the standard Gaussian variable of a certain size
     """
 
-    return torch.normal(0, 1, size=size).cuda()
+    return torch.normal(0, 1, size=size).to(device)
 
 
-def calc_noise_scale_embedding(noise_scales, noise_scale_embed_dim_in):
+def calc_noise_scale_embedding(noise_scales, noise_scale_embed_dim_in, device="cuda:0"):
     """
     Embed a noise scale $t$ into a higher dimensional space
     E.g. the embedding vector in the 128-dimensional space is
@@ -88,7 +88,7 @@ def calc_noise_scale_embedding(noise_scales, noise_scale_embed_dim_in):
 
     half_dim = noise_scale_embed_dim_in // 2
     _embed = np.log(10000) / (half_dim - 1)
-    _embed = torch.exp(torch.arange(half_dim) * -_embed).cuda()
+    _embed = torch.exp(torch.arange(half_dim) * -_embed).to(device)
     _embed = noise_scales * _embed
     noise_scale_embed = torch.cat((torch.sin(_embed), 
                                       torch.cos(_embed)), 1)
@@ -162,7 +162,9 @@ def sampling_given_noise_schedule(
         inference_noise_schedule,
         condition=None,
         ddim=False,
-        return_sequence=False):
+        return_sequence=False,
+        device="cuda:0"
+        ):
     """
     Perform the complete sampling step according to p(x_0|x_T) = \prod_{t=1}^T p_{\theta}(x_{t-1}|x_t)
     Parameters:
@@ -206,13 +208,13 @@ def sampling_given_noise_schedule(
 
     #print('begin sampling, total number of reverse steps = %s' % N)
 
-    x = std_normal(size)
+    x = std_normal(size, device=device)
     if return_sequence:
         x_ = copy.deepcopy(x)
         xs = [x_]
     with torch.no_grad():
         for n in range(N - 1, -1, -1):
-            diffusion_steps = (steps_infer[n] * torch.ones((size[0], 1))).cuda()
+            diffusion_steps = (steps_infer[n] * torch.ones((size[0], 1))).to(device)
             # print(x.shape, condition.shape, diffusion_steps.shape)
             # raise
             epsilon_theta = net(x, condition, diffusion_steps) #net((x, condition, diffusion_steps,))
@@ -226,7 +228,7 @@ def sampling_given_noise_schedule(
                 x -= beta_infer[n] / torch.sqrt(1 - alpha_infer[n] ** 2.) * epsilon_theta
                 x /= torch.sqrt(1 - beta_infer[n])
                 if n > 0:
-                    x = x + sigma_infer[n] * std_normal(size)
+                    x = x + sigma_infer[n] * std_normal(size, device=device)
             if return_sequence:
                 x_ = copy.deepcopy(x)
                 xs.append(x_)
@@ -234,7 +236,7 @@ def sampling_given_noise_schedule(
         return xs
     return x
 
-def theta_timestep_loss(net, X, diffusion_hyperparams, reverse=False):
+def theta_timestep_loss(net, X, diffusion_hyperparams, reverse=False, device="cuda:0"):
     """
     Compute the training loss for learning theta
 
@@ -257,8 +259,8 @@ def theta_timestep_loss(net, X, diffusion_hyperparams, reverse=False):
 
     mel_spectrogram, audio = X
     B, C, L = audio.shape  # B is batchsize, C=1, L is audio length
-    ts = torch.randint(T, size=(B, 1, 1)).cuda()  # randomly sample steps from 1~T
-    z = std_normal(audio.shape)
+    ts = torch.randint(T, size=(B, 1, 1)).to(device) # randomly sample steps from 1~T
+    z = std_normal(audio.shape, device=device)
     delta = (1 - alpha[ts] ** 2.).sqrt()
     alpha_cur = alpha[ts]
     noisy_audio = alpha_cur * audio + delta * z  # compute x_t from q(x_t|x_0)
@@ -313,7 +315,7 @@ def map_noise_scale_to_time_step(alpha_infer, alpha):
     return -1
 
 
-def calc_diffusion_step_embedding(diffusion_steps, diffusion_step_embed_dim_in):
+def calc_diffusion_step_embedding(diffusion_steps, diffusion_step_embed_dim_in, device="cuda:0"):
     """
     Embed a diffusion step $t$ into a higher dimensional space
     E.g. the embedding vector in the 128-dimensional space is
@@ -333,7 +335,7 @@ def calc_diffusion_step_embedding(diffusion_steps, diffusion_step_embed_dim_in):
 
     half_dim = diffusion_step_embed_dim_in // 2
     _embed = np.log(10000) / (half_dim - 1)
-    _embed = torch.exp(torch.arange(half_dim) * -_embed).cuda()
+    _embed = torch.exp(torch.arange(half_dim) * -_embed).to(device)
     _embed = diffusion_steps * _embed
     diffusion_step_embed = torch.cat((torch.sin(_embed),
                                       torch.cos(_embed)), 1)

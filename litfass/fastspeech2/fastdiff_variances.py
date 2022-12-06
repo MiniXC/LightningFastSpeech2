@@ -198,7 +198,7 @@ class FastDiffVariancePredictor(nn.Module):
             no_ts = True
             T, alpha = self.diffusion_hyperparams["T"], self.diffusion_hyperparams["alpha"].to(x.device)
             ts = torch.randint(T, size=(B, 1, 1)).to(x.device)  # randomly sample steps from 1~T
-            z = std_normal(x.shape).to(x.dtype)
+            z = std_normal(x.shape, device=x.device).to(x.dtype)
             delta = (1 - alpha[ts] ** 2.).sqrt()
             alpha_cur = alpha[ts]
             noisy_audio = alpha_cur * x + delta * z  # compute x_t from q(x_t|x_0)
@@ -276,7 +276,8 @@ class FastDiffVariancePredictor(nn.Module):
             noise_schedule,
             condition=c,
             ddim=False,
-            return_sequence=False
+            return_sequence=False,
+            device=c.device,
         )
 
         # pred_wav = pred_wav / pred_wav.abs().max(axis=1, keepdim=True)[0]
@@ -436,7 +437,7 @@ class FastDiffSpeakerPredictor(nn.Module):
             T, alpha = self.diffusion_hyperparams["T"], self.diffusion_hyperparams["alpha"].to(x.device)
             ts = torch.randint(T, size=(B, 1, 1)).to(x.device)  # randomly sample steps from 1~T
             x = x.unsqueeze(-1)
-            z = std_normal(x.shape).to(x.dtype)
+            z = std_normal(x.shape, device=x.device).to(x.dtype)
             delta = (1 - alpha[ts] ** 2.).sqrt()
             alpha_cur = alpha[ts]
             noisy_audio = alpha_cur * x + delta * z  # compute x_t from q(x_t|x_0)
@@ -515,7 +516,8 @@ class FastDiffSpeakerPredictor(nn.Module):
             noise_schedule,
             condition=c,
             ddim=False,
-            return_sequence=False
+            return_sequence=False,
+            device=c.device
         )
 
         # pred_wav = pred_wav / pred_wav.abs().max(axis=1, keepdim=True)[0]

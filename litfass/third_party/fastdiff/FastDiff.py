@@ -108,7 +108,7 @@ class FastDiff(nn.Module):
             no_ts = True
             T, alpha = self.diffusion_hyperparams["T"], self.diffusion_hyperparams["alpha"].to(x.device)
             ts = torch.randint(T, size=(B, 1, 1)).to(x.device)  # randomly sample steps from 1~T
-            z = std_normal(x.shape)
+            z = std_normal(x.shape, device=x.device)
             delta = (1 - alpha[ts] ** 2.).sqrt()
             alpha_cur = alpha[ts]
             noisy_audio = alpha_cur * x + delta * z  # compute x_t from q(x_t|x_0)
@@ -118,7 +118,7 @@ class FastDiff(nn.Module):
             no_ts = False
 
         # embed diffusion step t
-        diffusion_step_embed = calc_diffusion_step_embedding(ts, self.diffusion_step_embed_dim_in)
+        diffusion_step_embed = calc_diffusion_step_embedding(ts, self.diffusion_step_embed_dim_in, device=x.device)
         diffusion_step_embed = swish(self.fc_t1(diffusion_step_embed))
         diffusion_step_embed = swish(self.fc_t2(diffusion_step_embed))
 
@@ -186,7 +186,8 @@ class FastDiff(nn.Module):
             noise_schedule,
             condition=c,
             ddim=False,
-            return_sequence=False
+            return_sequence=False,
+            device=c.device
         )
 
         pred_wav = pred_wav / pred_wav.abs().max()
