@@ -3,9 +3,10 @@
 python3 litfass/train.py \
 --accelerator tpu \
 --devices 1 \
+--strategy "tpu_spawn_debug" \
 --precision 16 \
---batch_size 4 \
---accumulate_grad_batches 12 \
+--batch_size 11 \
+--accumulate_grad_batches 4 \
 --val_check_interval 1.0 \
 --log_every_n_steps 10 \
 --layer_dropout 0.00 \
@@ -47,12 +48,17 @@ python3 litfass/train.py \
 --dvector_gmm False \
 --priors energy duration snr pitch srmr \
 --sort_data_by_length True \
---train_pad_to_multiple_of 64 \
---fastdiff_vocoder True \
---fastdiff_schedule 1 1 \
---fastdiff_variances True \
---fastdiff_speakers True \
---num_sanity_val_steps 0
+--train_pad_to_multiple_of 16 256 \
+--fastdiff_vocoder False \
+--num_workers 1 \
+--num_sanity_val_steps 0 \
+--replace_sampler_ddp False
+
+# --fastdiff_schedule 1 1 \
+# --fastdiff_variances True \
+# --fastdiff_speakers True \
+
+#--devices 1 \
 #--from_checkpoint "models/fastdiff_nopretrain_variances_fixed-v1.ckpt"
 
 #--fastdiff_vocoder_checkpoint "fastdiff_model/model_ckpt_steps_1000000.ckpt" \

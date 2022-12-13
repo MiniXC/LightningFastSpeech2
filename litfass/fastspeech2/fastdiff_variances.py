@@ -1,9 +1,10 @@
+from time import time
 from torch import nn
 import torch
 from litfass.fastspeech2.model import VarianceConvolutionLayer, LengthRegulator
 from litfass.third_party.fastdiff.module.util import calc_diffusion_step_embedding, std_normal, compute_hyperparams_given_schedule, sampling_given_noise_schedule
 from litfass.third_party.fastdiff.FastDiff import swish
-
+from litfass.fastspeech2.utils import Timer, bucketize
 
 class FastDiffVarianceAdaptor(nn.Module):
     """FastSpeech2 Variance Adaptor with FastDiff diffusion. Limited to 1d, frame-level predictions."""
@@ -52,7 +53,7 @@ class FastDiffVarianceAdaptor(nn.Module):
             diffusion_step_embed_dim_out,
         )
 
-        self.length_regulator = LengthRegulator(pad_to_multiple_of=64) # TODO: change this to use target length
+        self.length_regulator = LengthRegulator(pad_to_multiple_of=256) # TODO: change this to use target length
 
         self.variances = variances
 
@@ -86,53 +87,59 @@ class FastDiffVarianceAdaptor(nn.Module):
         inference=False,
         N=4,
     ):
-        if not inference:
-            duration = targets["duration"] + 1 + torch.rand(size=targets["duration"].shape, device=targets["duration"].device)*0.49
-            duration = (torch.log(duration) - 1.08) / 0.96
-            duration_pred, duration_z = self.duration_predictor(
-                duration.to(x.dtype),
-                x.transpose(1, 2), 
-                mask=src_mask
-            )
-        else:
-            duration_pred = self.duration_predictor.inference(x, N=N)
-            duration_z = None
+        print(inference, "inference")
 
-        result = {}
-
-        out_val = None
-
-        if not inference:
-            duration_rounded = targets["duration"]
-        else:
-            duration_pred = duration_pred * 0.96 + 1.08
-            duration_rounded = torch.round((torch.exp(duration_pred) - 1))
-            duration_rounded = torch.clamp(duration_rounded, min=0).int()
-            for i in range(len(duration_rounded)):
-                if duration_rounded[i][~src_mask[i]].sum() <= (~src_mask[i]).sum() // 2:
-                    duration_rounded[i][~src_mask[i]] = 1
-                    print("Zero duration, setting to 1")
-                duration_rounded[i][src_mask[i]] = 0
-
-        x, tgt_mask = self.length_regulator(x, duration_rounded, self.max_length)
-        if out_val is not None:
-            out_val, _ = self.length_regulator(out_val, duration_rounded, self.max_length)
-
-        for i, var in enumerate(self.variances):
+        with Timer("vars_duration") as t:
             if not inference:
-                (pred, z), out = self.encoders[var](
-                    x.transpose(1, 2), targets[f"variances_{var}"], tgt_mask
+                duration = targets["duration"] + 1 + torch.rand(size=targets["duration"].shape, device=targets["duration"].device)*0.49
+                duration = (torch.log(duration) - 1.08) / 0.96
+                print(duration.shape, x.transpose(1, 2).shape)
+                duration_pred, duration_z = self.duration_predictor(
+                    duration.to(x.dtype),
+                    x.transpose(1, 2), 
+                    mask=src_mask
                 )
             else:
-                pred, out = self.encoders[var](x, None, tgt_mask)
-                z = None
-            result[f"variances_{var}"] = pred
-            result[f"variances_{var}_z"] = z
-            if out_val is None:
-                out_val = out
+                duration_pred = self.duration_predictor.inference(x, N=N)
+                duration_z = None
+
+            result = {}
+
+            out_val = None
+
+            if not inference:
+                duration_rounded = targets["duration"]
             else:
-                out_val = out_val + out
-                x = x + out
+                duration_pred = duration_pred * 0.96 + 1.08
+                duration_rounded = torch.round((torch.exp(duration_pred) - 1))
+                duration_rounded = torch.clamp(duration_rounded, min=0).int()
+                for i in range(len(duration_rounded)):
+                    if duration_rounded[i][~src_mask[i]].sum() <= (~src_mask[i]).sum() // 2:
+                        duration_rounded[i][~src_mask[i]] = 1
+                        print("Zero duration, setting to 1")
+                    duration_rounded[i][src_mask[i]] = 0
+
+        with Timer("vars_length_regulator") as t:
+            x, tgt_mask = self.length_regulator(x, duration_rounded, self.max_length)
+            if out_val is not None:
+                out_val, _ = self.length_regulator(out_val, duration_rounded, self.max_length)
+
+        with Timer("vars_encoders") as t:
+            for i, var in enumerate(self.variances):
+                if not inference:
+                    (pred, z), out = self.encoders[var](
+                        x.transpose(1, 2), targets[f"variances_{var}"], tgt_mask
+                    )
+                else:
+                    pred, out = self.encoders[var](x, None, tgt_mask)
+                    z = None
+                result[f"variances_{var}"] = pred
+                result[f"variances_{var}_z"] = z
+                if out_val is None:
+                    out_val = out
+                else:
+                    out_val = out_val + out
+                    x = x + out
 
         result["x"] = x
         result["duration_prediction"] = duration_pred
@@ -208,7 +215,7 @@ class FastDiffVariancePredictor(nn.Module):
             no_ts = False
 
         # embed diffusion step t
-        diffusion_step_embed = calc_diffusion_step_embedding(ts, self.diffusion_step_embed_dim_in)
+        diffusion_step_embed = calc_diffusion_step_embedding(ts, self.diffusion_step_embed_dim_in, x.device)
         diffusion_step_embed = swish(self.fc_t1(diffusion_step_embed))
         diffusion_step_embed = swish(self.fc_t2(diffusion_step_embed))
 
@@ -218,7 +225,7 @@ class FastDiffVariancePredictor(nn.Module):
         c = c.to(diffusion_step_embed.dtype)
         noise_embed = self.linear_noise(diffusion_step_embed).unsqueeze(1).transpose(1, 2)
 
-        # print(x.shape, c.shape, noise_embed.shape, "forward shapes")
+        print(x.shape, c.shape, noise_embed.shape, "forward shapes")
         # print(x.dtype, c.dtype, diffusion_step_embed.dtype)
 
         out_conv = self.layers(
@@ -329,7 +336,7 @@ class FastDiffVarianceEncoder(nn.Module):
             # training
             noise_pred, z = self.predictor(tgt, x, mask=mask)
             tgt = tgt * self.std + self.mean
-            embedding = self.embedding(torch.bucketize(tgt, self.bins).to(x.device))
+            embedding = self.embedding(bucketize(tgt, self.bins).to(x.device))
             return (noise_pred, z), embedding
         else:
             # inference
@@ -337,7 +344,7 @@ class FastDiffVarianceEncoder(nn.Module):
             bucket_prediction = prediction * self.std + self.mean
             prediction = prediction * control
             embedding = self.embedding(
-                torch.bucketize(bucket_prediction, self.bins).to(x.device)
+                bucketize(bucket_prediction, self.bins).to(x.device)
             )
             return prediction, embedding
 
@@ -449,7 +456,7 @@ class FastDiffSpeakerPredictor(nn.Module):
             no_ts = False
 
         # embed diffusion step t
-        diffusion_step_embed = calc_diffusion_step_embedding(ts, self.diffusion_step_embed_dim_in)
+        diffusion_step_embed = calc_diffusion_step_embedding(ts, self.diffusion_step_embed_dim_in, x.device)
         diffusion_step_embed = swish(self.fc_t1(diffusion_step_embed))
         diffusion_step_embed = swish(self.fc_t2(diffusion_step_embed))
 

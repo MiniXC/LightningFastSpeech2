@@ -1,9 +1,11 @@
 import torch.nn as nn
 import torch
 import logging
+from time import time
 from .module.modules import DiffusionDBlock, TimeAware_LVCBlock
 from .module.util import calc_diffusion_step_embedding, std_normal, compute_hyperparams_given_schedule, sampling_given_noise_schedule
 from litfass.third_party.argutils import str2bool
+from litfass.fastspeech2.utils import Timer
 
 def swish(x):
     return x * torch.sigmoid(x)
@@ -104,47 +106,53 @@ class FastDiff(nn.Module):
             c = c.unsqueeze(0)
         B, C, L = c.shape  # B is batchsize, C=80, L is audio length
 
-        if ts is None:
-            no_ts = True
-            T, alpha = self.diffusion_hyperparams["T"], self.diffusion_hyperparams["alpha"].to(x.device)
-            ts = torch.randint(T, size=(B, 1, 1)).to(x.device)  # randomly sample steps from 1~T
-            z = std_normal(x.shape, device=x.device)
-            delta = (1 - alpha[ts] ** 2.).sqrt()
-            alpha_cur = alpha[ts]
-            noisy_audio = alpha_cur * x + delta * z  # compute x_t from q(x_t|x_0)
-            x = noisy_audio
-            ts = ts.view(B, 1)
-        else:
-            no_ts = False
 
-        # embed diffusion step t
-        diffusion_step_embed = calc_diffusion_step_embedding(ts, self.diffusion_step_embed_dim_in, device=x.device)
-        diffusion_step_embed = swish(self.fc_t1(diffusion_step_embed))
-        diffusion_step_embed = swish(self.fc_t2(diffusion_step_embed))
+        with Timer("fastdiff_forward_ts") as t:
+            if ts is None:
+                no_ts = True
+                T, alpha = self.diffusion_hyperparams["T"], self.diffusion_hyperparams["alpha"].to(x.device)
+                ts = torch.randint(T, size=(B, 1, 1)).to(x.device)  # randomly sample steps from 1~T
+                z = std_normal(x.shape, device=x.device)
+                delta = (1 - alpha[ts] ** 2.).sqrt()
+                alpha_cur = alpha[ts]
+                noisy_audio = alpha_cur * x + delta * z  # compute x_t from q(x_t|x_0)
+                x = noisy_audio
+                ts = ts.view(B, 1)
+            else:
+                no_ts = False
 
-        x = self.first_audio_conv(x)
-        downsample = []
-        for down_layer in self.downsample:
-            downsample.append(x)
-            x = down_layer(x)
+        with Timer("fastdiff_forward_diff_embed") as t:
+            # embed diffusion step t
+            diffusion_step_embed = calc_diffusion_step_embedding(ts, self.diffusion_step_embed_dim_in, device=x.device)
+            diffusion_step_embed = swish(self.fc_t1(diffusion_step_embed))
+            diffusion_step_embed = swish(self.fc_t2(diffusion_step_embed))
 
-        for n, audio_down in enumerate(reversed(downsample)):
-            x = self.lvc_blocks[n]((x, audio_down, c, diffusion_step_embed))
+        with Timer("fastdiff_forward_downsample") as t:
+            x = self.first_audio_conv(x)
+            downsample = []
+            for down_layer in self.downsample:
+                downsample.append(x)
+                x = down_layer(x)
+
+        with Timer("fastdiff_forward_upsample") as t:
+            for n, audio_down in enumerate(reversed(downsample)):
+                x = self.lvc_blocks[n]((x, audio_down, c, diffusion_step_embed))
 
         # apply final layers
-        x = self.final_conv(x)
+        with Timer("fastdiff_forward_final_step") as t:
+            x = self.final_conv(x)
 
-        if mask is not None:
-            x = x.masked_fill(mask, 0)
+            if mask is not None:
+                x = x.masked_fill(mask, 0)
 
-        if not reverse:
-            if no_ts:
-                return x, z
+            if not reverse:
+                if no_ts:
+                    return x, z
+                else:
+                    return x
             else:
-                return x
-        else:
-            x0 = (noisy_audio - delta * x) / alpha_cur
-            return (x, z), x0
+                x0 = (noisy_audio - delta * x) / alpha_cur
+                return (x, z), x0
 
     def inference(self, c, N=4, hop_size=256):
         """Inference with the given local conditioning auxiliary features.

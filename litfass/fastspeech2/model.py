@@ -11,6 +11,7 @@ from einops.layers.torch import Rearrange, Reduce
 
 from litfass.third_party.stochastic_duration_predictor.sdp import StochasticDurationPredictor
 from litfass.dataset.cwt import CWT
+from litfass.fastspeech2.utils import bucketize
 
 
 def generate_square_subsequent_mask(sz):
@@ -64,12 +65,19 @@ class Transpose(nn.Module):
         return self.module(x.transpose(1, 2)).transpose(1, 2)
 
 
+class LinearDummy():
+    def __init__(self):
+        self.weight = None
+        self.bias = None
+
 class ConformerEncoderLayer(TransformerEncoderLayer):
     def __init__(self, *args, **kwargs):
         old_kwargs = {k: v for k, v in kwargs.items() if "conv_" not in k}
         super().__init__(*args, **old_kwargs)
         del self.linear1
         del self.linear2
+        self.linear1 = LinearDummy()
+        self.linear2 = LinearDummy()
         if "conv_depthwise" in kwargs and kwargs["conv_depthwise"]:
             self.conv1 = nn.Sequential(
                 nn.Conv1d(
@@ -158,7 +166,7 @@ class PriorEmbedding(nn.Module):
         self.relu = nn.ReLU()
 
     def forward(self, x, input_length):
-        out = self.relu(self.embedding(torch.bucketize(x, self.bins)))
+        out = self.relu(self.embedding(bucketize(x, self.bins)))
         return out.reshape(-1, 1, self.embedding_dim).repeat_interleave(
             input_length, dim=1
         )
@@ -215,7 +223,7 @@ class VarianceAdaptor(nn.Module):
                 duration_depthwise_conv,
             )
 
-        self.length_regulator = LengthRegulator()
+        self.length_regulator = LengthRegulator(pad_to_multiple_of=256)
 
         self.encoders = {}
         for var in self.variances:
@@ -419,7 +427,7 @@ class VarianceEncoder(nn.Module):
                 tgt = torch.log(tgt)
             else:
                 tgt = tgt * self.std + self.mean
-            embedding = self.embedding(torch.bucketize(tgt, self.bins).to(x.device))
+            embedding = self.embedding(bucketize(tgt, self.bins).to(x.device))
         else:
             if self.cwt:
                 tmp_prediction = []
@@ -434,7 +442,7 @@ class VarianceEncoder(nn.Module):
                 bucket_prediction = prediction * self.std + self.mean
             prediction = prediction * control
             embedding = self.embedding(
-                torch.bucketize(bucket_prediction, self.bins).to(x.device)
+                bucketize(bucket_prediction, self.bins).to(x.device)
             )
 
         if not self.cwt:

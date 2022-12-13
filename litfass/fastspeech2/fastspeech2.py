@@ -13,6 +13,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 import torchaudio
+from torch.utils.data.sampler import BatchSampler, SequentialSampler
 
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
 from tqdm.auto import tqdm
@@ -38,6 +39,7 @@ from litfass.third_party.fastdiff import FastDiff
 from litfass.fastspeech2.log_gmm import LogGMM
 from litfass.fastspeech2.loss import FastSpeech2Loss
 from litfass.fastspeech2.noam import NoamLR
+from litfass.fastspeech2.utils import Timer
 
 num_cpus = multiprocessing.cpu_count()
 
@@ -634,93 +636,102 @@ class FastSpeech2(pl.LightningModule):
             checkpoint["dvector_gmms"] = self.dvector_gmms
 
     def forward(self, targets, inference=False):
-        #print(targets["phones"].shape[1], targets["mel"].shape[1], targets["mel"].shape[1]/targets["phones"].shape[1])
+        print(
+            targets["phones"].shape[1],
+            targets["mel"].shape[1],
+            targets["mel"].shape[1]/targets["phones"].shape[1],
+            "init shapes"
+        )
 
-        phones = targets["phones"].to(self.device)
-        if self.fastdiff_speaker_generator is None:
-            speakers = targets["speaker"].to(self.device)
-        else:
-            speakers_mean = targets["speaker"].to(self.device)
-            if inference:
-                speaker_pred = self.fastdiff_speaker_generator(speakers_mean, inference=True)
-                speakers = speaker_pred
+        with Timer("phones_and_speaker_generator") as t:
+            phones = targets["phones"].to(self.device)
+            if self.fastdiff_speaker_generator is None:
+                speakers = targets["speaker"].to(self.device)
             else:
-                speakers = targets["utterance_dvec"].to(self.device)
-                speaker_pred, speaker_z = self.fastdiff_speaker_generator(speakers_mean, speakers)
+                speakers_mean = targets["speaker"].to(self.device)
+                if inference:
+                    speaker_pred = self.fastdiff_speaker_generator(speakers_mean, inference=True)
+                    speakers = speaker_pred
+                else:
+                    speakers = targets["utterance_dvec"].to(self.device)
+                    speaker_pred, speaker_z = self.fastdiff_speaker_generator(speakers_mean, speakers)
 
-        src_mask = phones.eq(0)
+            src_mask = phones.eq(0)
 
-        output = self.phone_embedding(phones)
+            output = self.phone_embedding(phones)
 
-        output = self.positional_encoding(output)
+            output = self.positional_encoding(output)
 
-        if not self.hparams.speaker_embedding_every_layer:
-            output = output + self.speaker_embedding(
-                speakers, output.shape[1], output.shape[-1]
-            )
-        else:
-            every_encoder_layer = self.speaker_embedding(
-                speakers, output.shape[1], output.shape[-1]
-            )
-
-        if self.hparams.prior_embedding_every_layer:
-            for prior in self.hparams.priors:
-                every_encoder_layer = every_encoder_layer + self.prior_embeddings[
-                    prior
-                ](
-                    torch.tensor(targets[f"priors_{prior}"]).to(self.device),
-                    output.shape[1],
+        with Timer("encoder") as t:
+            if not self.hparams.speaker_embedding_every_layer:
+                output = output + self.speaker_embedding(
+                    speakers, output.shape[1], output.shape[-1]
+                )
+            else:
+                every_encoder_layer = self.speaker_embedding(
+                    speakers, output.shape[1], output.shape[-1]
                 )
 
-        if (
-            self.hparams.prior_embedding_every_layer
-            or self.hparams.speaker_embedding_every_layer
-        ):
-            output = self.encoder(
-                output,
-                src_key_padding_mask=src_mask,
-                additional_src=every_encoder_layer,
-            )
-        else:
-            output = self.encoder(output, src_key_padding_mask=src_mask)
+            if self.hparams.prior_embedding_every_layer:
+                for prior in self.hparams.priors:
+                    every_encoder_layer = every_encoder_layer + self.prior_embeddings[
+                        prior
+                    ](
+                        torch.tensor(targets[f"priors_{prior}"]).to(self.device),
+                        output.shape[1],
+                    )
 
-        if not self.hparams.prior_embedding_every_layer:
-            for prior in self.hparams.priors:
-                output = output + self.prior_embeddings[prior](
-                    torch.tensor(targets[f"priors_{prior}"]).to(self.device),
-                    output.shape[1],
+            if (
+                self.hparams.prior_embedding_every_layer
+                or self.hparams.speaker_embedding_every_layer
+            ):
+                output = self.encoder(
+                    output,
+                    src_key_padding_mask=src_mask,
+                    additional_src=every_encoder_layer,
+                )
+            else:
+                output = self.encoder(output, src_key_padding_mask=src_mask)
+
+            if not self.hparams.prior_embedding_every_layer:
+                for prior in self.hparams.priors:
+                    output = output + self.prior_embeddings[prior](
+                        torch.tensor(targets[f"priors_{prior}"]).to(self.device),
+                        output.shape[1],
+                    )
+
+        with Timer("variances") as t:
+            # pylint: disable=not-callable
+            variance_output = self.variance_adaptor(
+                output,
+                src_mask,
+                targets,
+                inference=inference,
+            )
+            # pylint: enable=not-callable
+
+            output = variance_output["x"]
+
+            output = self.positional_encoding(output)
+
+        with Timer("decoder") as t:
+            spk = self.speaker_embedding(
+                speakers, output.shape[1], output.shape[-1]
+            )
+
+            if self.hparams.speaker_embedding_every_layer:
+                output = self.decoder(
+                    output,
+                    src_key_padding_mask=variance_output["tgt_mask"],
+                    additional_src=spk,
+                )
+            else:
+                output = output + spk
+                output = self.decoder(
+                    output, src_key_padding_mask=variance_output["tgt_mask"]
                 )
 
-        # pylint: disable=not-callable
-        variance_output = self.variance_adaptor(
-            output,
-            src_mask,
-            targets,
-            inference=inference,
-        )
-        # pylint: enable=not-callable
-
-        output = variance_output["x"]
-
-        output = self.positional_encoding(output)
-
-        spk = self.speaker_embedding(
-            speakers, output.shape[1], output.shape[-1]
-        )
-
-        if self.hparams.speaker_embedding_every_layer:
-            output = self.decoder(
-                output,
-                src_key_padding_mask=variance_output["tgt_mask"],
-                additional_src=spk,
-            )
-        else:
-            output = output + spk
-            output = self.decoder(
-                output, src_key_padding_mask=variance_output["tgt_mask"]
-            )
-
-        output = self.linear(output)
+            output = self.linear(output)
 
         result = {
             "mel": output,
@@ -730,39 +741,42 @@ class FastSpeech2(pl.LightningModule):
             "tgt_mask": variance_output["tgt_mask"],
         }
 
-        fd_variance_output = self.fastdiff_linear(variance_output["out"] + spk)
-        result["fastdiff_var"] = (
-            fd_variance_output 
-        ) * 0.1
-        if self.fastdiff_model is not None and not inference:
-            if self.current_epoch < self.hparams.fastdiff_schedule_end:
-                sched_idx = self.current_epoch
-            else:
-                sched_idx = -1
-            if np.random.rand() < self.fastdiff_schedule[sched_idx] or inference:
-                mel_fastdiff = result["mel"] + result["fastdiff_var"]
-                mel_lengths = torch.sum(
-                    ~result["tgt_mask"], dim=1, dtype=torch.long
+        with Timer("fastdiff_vocoder") as t:
+            if self.fastdiff_model is not None:
+                fd_variance_output = self.fastdiff_linear(variance_output["out"] + spk)
+                result["fastdiff_var"] = (
+                    fd_variance_output 
+                ) * 0.1
+            if self.fastdiff_model is not None and not inference:
+                if self.current_epoch < self.hparams.fastdiff_schedule_end:
+                    sched_idx = self.current_epoch
+                else:
+                    sched_idx = -1
+                if np.random.rand() < self.fastdiff_schedule[sched_idx] or inference:
+                    mel_fastdiff = result["mel"] + result["fastdiff_var"]
+                    mel_lengths = torch.sum(
+                        ~result["tgt_mask"], dim=1, dtype=torch.long
+                    )
+                    # print(mel_lengths)
+                else:
+                    mel_fastdiff = targets["mel"] + result["fastdiff_var"]
+                    mel_lengths = targets["mel_lengths"]
+                # truncate by longest length
+                mel_fastdiff = mel_fastdiff[:, :(mel_lengths.max()-2)]
+                wav_max_length = (mel_lengths.max()-2)*self.hparams.hop_length
+                wav_fastdiff = targets["wav"][:, :wav_max_length]
+                # print(torch.arange(wav_max_length).device)
+                # print(((mel_lengths-2)*self.hparams.hop_length).device)
+                # print(len(mel_lengths).device)
+                # print(wav_max_length.device)
+                result["wav_mask"] = (
+                    torch.arange(wav_max_length).to(mel_lengths.device).expand(len(mel_lengths), wav_max_length)
+                    < ((mel_lengths-2)*self.hparams.hop_length).unsqueeze(1)
                 )
-                # print(mel_lengths)
-            else:
-                mel_fastdiff = targets["mel"] + result["fastdiff_var"]
-                mel_lengths = targets["mel_lengths"]
-            # truncate by longest length
-            mel_fastdiff = mel_fastdiff[:, :(mel_lengths.max()-2), :]
-            wav_max_length = (mel_lengths.max()-2)*self.hparams.hop_length
-            wav_fastdiff = targets["wav"][:, :wav_max_length]
-            # print(torch.arange(wav_max_length).device)
-            # print(((mel_lengths-2)*self.hparams.hop_length).device)
-            # print(len(mel_lengths).device)
-            # print(wav_max_length.device)
-            result["wav_mask"] = (
-                torch.arange(wav_max_length).to(mel_lengths.device).expand(len(mel_lengths), wav_max_length)
-                < ((mel_lengths-2)*self.hparams.hop_length).unsqueeze(1)
-            )
-            # the -1 is to avoid edge cases where the mel is longer than the wav
-            mel_fastdiff = mel_fastdiff.transpose(1, 2)
-            result["fastdiff"] = self.fastdiff_model(wav_fastdiff, mel_fastdiff, mask=result["wav_mask"])
+                # the -1 is to avoid edge cases where the mel is longer than the wav
+                mel_fastdiff = mel_fastdiff.transpose(1, 2)
+                with Timer("fastdiff_vocoder_forward_pass") as t:
+                    result["fastdiff"] = self.fastdiff_model(wav_fastdiff, mel_fastdiff, mask=result["wav_mask"])
 
         for var in self.hparams.variances:
             result[f"variances_{var}"] = variance_output[f"variances_{var}"]
@@ -995,9 +1009,17 @@ class FastSpeech2(pl.LightningModule):
                     batch[f"variances_{var}"][~result[mask]]
                 )[:add_n]
 
+    def on_validation_start(self):
+        for v in self.trainer.val_dataloaders:
+            v.sampler.shuffle = False
+    
+    def on_training_start(self):
+        for v in self.trainer.train_dataloaders:
+            v.sampler.shuffle = False
+
     def validation_epoch_end(self, validation_step_outputs):
         if self.trainer.is_global_zero:
-            wandb.init(project="FastSpeech2")
+            #wandb.init(project="FastSpeech2")
             table = wandb.Table(
                 data=self.eval_log_data,
                 columns=[
@@ -1307,14 +1329,17 @@ class FastSpeech2(pl.LightningModule):
 
     def train_dataloader(self):
         if self.hparams.sort_data_by_length:
-            self.train_ds.sort_by_duration()
+            self.train_ds.sort_by_duration(False)
         return DataLoader(
             self.train_ds,
             batch_size=self.batch_size,
             collate_fn=self.train_ds._collate_fn,
             num_workers=self.num_workers,
         )
+
     def val_dataloader(self):
+        if self.hparams.sort_data_by_length:
+            self.valid_ds.sort_by_duration(False)
         return DataLoader(
             self.valid_ds,
             batch_size=self.batch_size,

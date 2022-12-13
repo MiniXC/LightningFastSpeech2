@@ -100,7 +100,7 @@ class TTSDataset(Dataset):
         self.pitch_quality = pitch_quality
         self.load_wav = load_wav
         self.num_workers = num_workers
-        self.pad_to_multiple_of = 64
+        self.pad_to_multiple_of = pad_to_multiple_of
 
         # PHONES
         self.phone_converter = Converter()
@@ -455,7 +455,10 @@ class TTSDataset(Dataset):
             #result["mel"] = np.array(mel.T)[:dur_sum]
 
         if self.load_wav:
-            result["wav"] = audio
+            if len(audio) < dur_sum * self.hop_length:
+                result["wav"] = nn.ConstantPad1d((0, len(audio) - dur_sum * self.hop_length), 0)(audio)
+            else:
+                result["wav"] = audio[:dur_sum * self.hop_length]
 
         for var in self.variances:
             result["variances"][var] = variances[var]
@@ -870,7 +873,11 @@ class TTSDataset(Dataset):
                     [x.shape[0] for x in data[key]]
                 )
                 if self.pad_to_multiple_of is not None and (key in ["mel", "phones"] or "variances" in key or "duration" in key or self._load_stats_only):
-                    max_len = int((np.ceil(max(add_keys[f"{key}_lengths"]) / self.pad_to_multiple_of) * self.pad_to_multiple_of).item())
+                    if key == "phones" or "duration" in key:
+                        pad_to_num = self.pad_to_multiple_of[0]
+                    else:
+                        pad_to_num = self.pad_to_multiple_of[1]
+                    max_len = int((np.ceil(max(add_keys[f"{key}_lengths"]) / pad_to_num) * pad_to_num).item())
                     if len(data[key][0].shape) == 1:
                         data[key][0] = nn.ConstantPad1d((0, max_len - data[key][0].shape[0]), pad_val)(data[key][0])
                     elif len(data[key][0].shape) == 2:
@@ -882,8 +889,9 @@ class TTSDataset(Dataset):
         return data
 
     def sort_by_duration(self, ascending=True):
-        self.data["duration_sum"] = self.data["duration"].apply(lambda x: np.array(x).sum()).values
+        self.data["duration_sum"] = self.data["phones"].apply(lambda x: len(x)).values
         self.data = self.data.sort_values(by="duration_sum", ascending=ascending)
+        self.data = self.data.reset_index()
 
     def plot(self, sample_or_idx, show=True):
         if not show:
@@ -1036,6 +1044,6 @@ class TTSDataset(Dataset):
             f"--{split_name}_min_samples_per_speaker", type=int, default=0
         )
         parser.add_argument(
-            f"--{split_name}_pad_to_multiple_of", type=int, default=None
+            f"--{split_name}_pad_to_multiple_of", nargs="+", type=int, default=[32, 256]
         )
         return parent_parser

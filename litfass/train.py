@@ -286,7 +286,7 @@ if __name__ == "__main__":
         args,
         callbacks=callbacks,
         default_root_dir="logs",
-        logger=wandb_logger,
+        #logger=wandb_logger,
     )
 
     trainer.fit(model)

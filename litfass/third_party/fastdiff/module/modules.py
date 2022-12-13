@@ -3,11 +3,13 @@ import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
+from time import time
 
 from torch.nn import Conv1d
 
-LRELU_SLOPE = 0.1
+from litfass.fastspeech2.utils import Timer
 
+LRELU_SLOPE = 0.1
 
 
 def get_sinusoid_encoding_table(n_position, d_hid, padding_idx=None):
@@ -132,8 +134,8 @@ class DiffusionDBlock(nn.Module):
 
     x = F.interpolate(x, size=size)
     for layer in self.conv:
-      x = F.leaky_relu(x, 0.2)
-      x = layer(x)
+        x = F.leaky_relu(x, 0.2)
+        x = layer(x)
 
     return x + residual
 
@@ -186,6 +188,11 @@ class TimeAware_LVCBlock(torch.nn.Module):
 
             self.convs.append(conv)
 
+        padding = 1 * int((self.conv_kernel_size - 1) / 2)
+        #print(padding, self.cond_hop_length + 2 * padding, self.cond_hop_length)
+        # self.unfold = nn.Unfold(self.cond_hop_length + 2 * padding, self.cond_hop_length)
+        self.index_dict = {}
+
 
     def forward(self, data):
         ''' forward propagation of the time-aware location-variable convolutions.
@@ -213,11 +220,11 @@ class TimeAware_LVCBlock(torch.nn.Module):
 
             k = kernels[:, i, :, :, :, :]
             b = bias[:, i, :, :]
-            y = self.location_variable_convolution(y, k, b, 1, self.cond_hop_length)
+            y = self.location_variable_convolution(y, k, b, 1)
             x = x + torch.sigmoid(y[:, :in_channels, :]) * torch.tanh(y[:, in_channels:, :])
         return x
 
-    def location_variable_convolution(self, x, kernel, bias, dilation, hop_size):
+    def location_variable_convolution(self, x, kernel, bias, dilation):
         ''' perform location-variable convolution operation on the input sequence (x) using the local convolution kernl.
         Time: 414 μs ± 309 ns per loop (mean ± std. dev. of 7 runs, 1000 loops each), test on NVIDIA V100.
         Args:
@@ -233,21 +240,41 @@ class TimeAware_LVCBlock(torch.nn.Module):
         batch, in_channels, out_channels, kernel_size, kernel_length = kernel.shape
 
 
-        assert in_length == (kernel_length * hop_size), "length of (x, kernel) is not matched"
+        assert in_length == (kernel_length * self.cond_hop_length), "length of (x, kernel) is not matched"
 
-        padding = dilation * int((kernel_size - 1) / 2)
+        padding = dilation * int((self.conv_kernel_size - 1) / 2)
         x = F.pad(x, (padding, padding), 'constant', 0)  # (batch, in_channels, in_length + 2*padding)
-        x = x.unfold(2, hop_size + 2 * padding, hop_size)  # (batch, in_channels, kernel_length, hop_size + 2*padding)
+        #print(x.shape, "shape before")
+        if str(in_length) not in self.index_dict:
+            self.index_dict[str(in_length)] = torch.arange(0, torch.numel(x)).view(
+                *x.shape
+            ).unfold(2, self.cond_hop_length + 2 * padding, self.cond_hop_length)
+        x = x.flatten()[self.index_dict[str(in_length)]]
+        #x = x.unfold(2, self.cond_hop_length + 2 * padding, self.cond_hop_length)  # (batch, in_channels, kernel_length, hop_size + 2*padding)
+        
+        #x = self.unfold(x)
+        #print(x.shape, "shape after")
 
-        if hop_size < dilation:
+        if self.cond_hop_length < dilation:
             x = F.pad(x, (0, dilation), 'constant', 0)
-        x = x.unfold(3, dilation,
-                     dilation)  # (batch, in_channels, kernel_length, (hop_size + 2*padding)/dilation, dilation)
-        x = x[:, :, :, :, :hop_size]
-        x = x.transpose(3, 4)  # (batch, in_channels, kernel_length, dilation, (hop_size + 2*padding)/dilation)
-        x = x.unfold(4, kernel_size, 1)  # (batch, in_channels, kernel_length, dilation, _, kernel_size)
+        key = str(in_length) + "_2"
+        if key not in self.index_dict:
+            self.index_dict[key] = torch.arange(0, torch.numel(x)).view(
+                *x.shape
+            ).unfold(3, dilation, dilation)
+        x = x.flatten()[self.index_dict[key]]  # (batch, in_channels, kernel_length, (hop_size + 2*padding)/dilation, dilation)
+        x = x[:, :, :, :, :self.cond_hop_length]
 
+        x = x.transpose(3, 4)  # (batch, in_channels, kernel_length, dilation, (hop_size + 2*padding)/dilation)
+        key = str(in_length) + "_3"
+        if key not in self.index_dict:
+            self.index_dict[key] = torch.arange(0, torch.numel(x)).view(
+                *x.shape
+            ).unfold(4, kernel_size, 1)
+        x = x.flatten()[self.index_dict[key]]  # (batch, in_channels, kernel_length, dilation, _, kernel_size)
+        
         o = torch.einsum('bildsk,biokl->bolsd', x, kernel)
+    
         o = o + bias.unsqueeze(-1).unsqueeze(-1)
         o = o.contiguous().view(batch, out_channels, -1)
         return o

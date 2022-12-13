@@ -43,7 +43,7 @@ class FastSpeech2Loss(nn.Module):
         self.mel_loss = mel_loss
         self.bce_loss = nn.BCEWithLogitsLoss()
         self.duration_loss = duration_loss
-        self.max_length = max_length
+        self.max_length = max_length + 256
         self.loss_alphas = loss_alphas
         self.fastdiff_loss = fastdiff_loss
         self.fastdiff_variances = fastdiff_variances
@@ -105,7 +105,6 @@ class FastSpeech2Loss(nn.Module):
                 if self.fastdiff_variances:
                     variances_target[variance] = result[f"variances_{variance}_z"].squeeze(1)
                     variances_pred[variance] = result[f"variances_{variance}"]
-                    # print(variances_pred[variance].shape, variances_target[variance].shape, tgt_mask.shape, "variance loss shapes")
                     losses[variance] = self.get_loss(
                         variances_pred[variance],
                         variances_target[variance].to(dtype=result["mel"].dtype),
@@ -171,7 +170,6 @@ class FastSpeech2Loss(nn.Module):
 
         # DURATION LOSS
         if self.fastdiff_variances:
-            # print(result["duration_prediction"].shape, result["duration_z"].shape, src_mask.shape, "duration loss shapes")
             losses["duration"] = self.get_loss(
                 result["duration_prediction"].to(dtype=result["mel"].dtype),
                 result["duration_z"].to(dtype=result["mel"].dtype).squeeze(1),
@@ -189,13 +187,13 @@ class FastSpeech2Loss(nn.Module):
             losses["duration"] = torch.sum(result["duration_prediction"])
 
         # FASTDIFF LOSS
-        if self.fastdiff_loss is not None:
-            losses["fastdiff"] = self.get_loss(
-                result["fastdiff"][0],
-                result["fastdiff"][1],
-                self.fastdiff_loss,
-                result["wav_mask"],
-            )
+        # if self.fastdiff_loss is not None:
+        #     losses["fastdiff"] = self.get_loss(
+        #         result["fastdiff"][0],
+        #         result["fastdiff"][1],
+        #         self.fastdiff_loss,
+        #         result["wav_mask"],
+        #     )
 
         if "speaker_z" in result:
             losses["speakers"] = self.losses[self.fastdiff_loss](result["speaker_pred"], result["speaker_z"])

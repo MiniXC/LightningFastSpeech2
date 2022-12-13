@@ -25,7 +25,7 @@ class Synthesiser:
             config = json.load(f)
         config = AttrDict(config)
         vocoder = Generator(config)
-        ckpt = torch.load(Path(__file__).parent / f"generator_{model}.pth.tar")
+        ckpt = torch.load(Path(__file__).parent / f"generator_{model}.pth.tar", map_location=device)
         vocoder.load_state_dict(ckpt["generator"])
         vocoder.eval()
         vocoder.remove_weight_norm()
