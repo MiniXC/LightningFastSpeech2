@@ -119,6 +119,11 @@ class FastDiffVarianceAdaptor(nn.Module):
                         print("Zero duration, setting to 1")
                     duration_rounded[i][src_mask[i]] = 0
 
+        if not inference:
+            max_len = targets["mel"].shape[1]
+        else:
+            max_len = duration_rounded.sum(axis=1).max()
+
         with Timer("vars_length_regulator") as t:
             x, tgt_mask = self.length_regulator(x, duration_rounded, self.max_length)
             if out_val is not None:

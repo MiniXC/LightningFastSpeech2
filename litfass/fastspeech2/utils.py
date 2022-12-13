@@ -14,4 +14,4 @@ class Timer:
         print(f'{self.name} took {interval:.03f} sec.')
 
 def bucketize(x, boundaries):
-  return (v.unsqueeze(-1)>boundaries).sum(axis=-1)
+    return (x.unsqueeze(-1)>boundaries).sum(axis=-1)

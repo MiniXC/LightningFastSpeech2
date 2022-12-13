@@ -62,8 +62,8 @@ class FastSpeech2Loss(nn.Module):
         if unsqueeze or loss == "soft_dtw":
             mask = mask.unsqueeze(-1)
         if loss != "soft_dtw":
-            pred = pred.masked_select(mask)
-            truth = truth.masked_select(mask)
+            pred = pred[mask]#pred.masked_select(mask)
+            truth = truth[mask]#truth.masked_select(mask)
         loss_func = self.losses[loss]
         if loss == "soft_dtw":
             pred = pred.masked_fill_(~mask, 0)
