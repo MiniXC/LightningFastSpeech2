@@ -1,14 +1,19 @@
 #!/usr/bin/bash
+export PT_XLA_DEBUG=1
+# export XLA_GET_TENSORS_OPBYOP=1
+# export XLA_SYNC_TENSORS_OPBYOP=1
+# export XLA_FLAGS="--xla_dump_to=xla.log"
+# export TPU_VISIBLE_DEVICES="1"
+
+# --accumulate_grad_batches 3 \
 
 python3 litfass/train.py \
 --accelerator tpu \
 --devices 1 \
---strategy "tpu_spawn_debug" \
---precision 16 \
---batch_size 11 \
---accumulate_grad_batches 4 \
+--precision 32 \
+--batch_size 16 \
 --val_check_interval 1.0 \
---log_every_n_steps 10 \
+--log_every_n_steps 100 \
 --layer_dropout 0.00 \
 --duration_dropout 0.1 \
 --variance_dropout 0.1 0.1 0.1 0.1 \
@@ -48,10 +53,11 @@ python3 litfass/train.py \
 --dvector_gmm False \
 --priors energy duration snr pitch srmr \
 --sort_data_by_length True \
---train_pad_to_multiple_of 16 256 \
+--train_pad_to_multiple_of 16 16 \
 --fastdiff_vocoder False \
 --num_workers 1 \
 --num_sanity_val_steps 0 \
+--fastdiff_variances False \
 --replace_sampler_ddp False
 
 # --fastdiff_schedule 1 1 \
@@ -71,3 +77,5 @@ python3 litfass/train.py \
 # --strategy "ddp" \
 
 # --valid_example_directory "examples"
+
+# tpu_spawn_debug

@@ -40,6 +40,7 @@ from litfass.fastspeech2.log_gmm import LogGMM
 from litfass.fastspeech2.loss import FastSpeech2Loss
 from litfass.fastspeech2.noam import NoamLR
 from litfass.fastspeech2.utils import Timer
+import torch_xla.debug.metrics as met
 
 num_cpus = multiprocessing.cpu_count()
 
@@ -636,12 +637,12 @@ class FastSpeech2(pl.LightningModule):
             checkpoint["dvector_gmms"] = self.dvector_gmms
 
     def forward(self, targets, inference=False):
-        print(
-            targets["phones"].shape[1],
-            targets["mel"].shape[1],
-            targets["mel"].shape[1]/targets["phones"].shape[1],
-            "init shapes"
-        )
+        # print(
+        #     targets["phones"].shape[1],
+        #     targets["mel"].shape[1],
+        #     targets["mel"].shape[1]/targets["phones"].shape[1],
+        #     "init shapes"
+        # )
 
         with Timer("phones_and_speaker_generator") as t:
             phones = targets["phones"].to(self.device)
@@ -798,22 +799,31 @@ class FastSpeech2(pl.LightningModule):
         return result
 
     def training_step(self, batch, batch_idx, optimizer_idx=0):
+        print("forward")
         result = self(batch, optimizer_idx)
         losses = self.loss(
             result, batch
         )  # frozen_components=self.variance_adaptor.frozen_components)
-        log_dict = {f"train/{k}_loss": v.item() for k, v in losses.items()}
-        self.log_dict(
-            log_dict,
-            batch_size=self.batch_size,
-            sync_dist=True,
-        )
-        return losses["total"]
+
+        # if batch_idx == 2:
+        #     print(met.metrics_report())
+        #     raise
+
+        with Timer("log dict") as t:
+            if (batch_idx + 1) % 100 == 0:
+                log_dict = {f"train/{k}_loss": v.detach() for k, v in losses.items()}
+                self.log_dict(
+                    log_dict,
+                    batch_size=self.batch_size,
+                    sync_dist=True,
+                )
+            print("backward")
+            return losses["total"]
 
     def validation_step(self, batch, batch_idx):
         result = self(batch)
         losses = self.loss(result, batch)
-        log_dict = {f"eval/{k}_loss": v.item() for k, v in losses.items()}
+        log_dict = {f"eval/{k}_loss": v.detach() for k, v in losses.items()}
         self.log_dict(
             log_dict,
             batch_size=self.batch_size,
@@ -1020,17 +1030,17 @@ class FastSpeech2(pl.LightningModule):
     def validation_epoch_end(self, validation_step_outputs):
         if self.trainer.is_global_zero:
             #wandb.init(project="FastSpeech2")
-            table = wandb.Table(
-                data=self.eval_log_data,
-                columns=[
-                    "text",
-                    "predicted_mel",
-                    "true_mel",
-                    "predicted_audio",
-                    "true_audio",
-                ],
-            )
-            wandb.log({"examples": table})
+            # table = wandb.Table(
+            #     data=self.eval_log_data,
+            #     columns=[
+            #         "text",
+            #         "predicted_mel",
+            #         "true_mel",
+            #         "predicted_audio",
+            #         "true_audio",
+            #     ],
+            # )
+            # wandb.log({"examples": table})
             if (
                 not hasattr(self, "best_variances")
                 and self.hparams.variance_early_stopping
@@ -1186,7 +1196,7 @@ class FastSpeech2(pl.LightningModule):
             self.eval_log_data = None
 
     def configure_optimizers(self):
-        self.optimizer = torch.optim.AdamW(
+        self.optimizer = torch.optim.Adam(
             self.parameters(),
             lr=self.hparams.lr,
             betas=[0.9, 0.98],
@@ -1329,20 +1339,22 @@ class FastSpeech2(pl.LightningModule):
 
     def train_dataloader(self):
         if self.hparams.sort_data_by_length:
-            self.train_ds.sort_by_duration(False)
+            self.train_ds.batch_by_duration(True, bins=10)
         return DataLoader(
             self.train_ds,
             batch_size=self.batch_size,
             collate_fn=self.train_ds._collate_fn,
             num_workers=self.num_workers,
+            drop_last=True,
         )
 
     def val_dataloader(self):
         if self.hparams.sort_data_by_length:
-            self.valid_ds.sort_by_duration(False)
+            self.valid_ds.batch_by_duration(True, bins=10)
         return DataLoader(
             self.valid_ds,
             batch_size=self.batch_size,
             collate_fn=self.valid_ds._collate_fn,
             num_workers=self.num_workers,
+            drop_last=True,
         )

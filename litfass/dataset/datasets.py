@@ -474,6 +474,11 @@ class TTSDataset(Dataset):
         result["speaker_key"] = row["speaker"].name
         result["speaker_path"] = row["speaker"]
 
+        if "duration_out_max" in row:
+            result["duration_out_max"] = row["duration_out_max"]
+        if "duration_in_max" in row:
+            result["duration_in_max"] = row["duration_in_max"]
+
         return result
 
     def _create_priors(self):
@@ -860,7 +865,7 @@ class TTSDataset(Dataset):
         data = l2d(data)
         add_keys = {}
         for key in data.keys():
-            if "silence_mask" in key and self.pad_to_multiple_of is not None:
+            if ("silence_mask" in key and self.pad_to_multiple_of is not None) or "_max" in key:
                 continue
             if isinstance(data[key][0], np.ndarray):
                 data[key] = [torch.tensor(x) for x in data[key]]
@@ -877,7 +882,10 @@ class TTSDataset(Dataset):
                         pad_to_num = self.pad_to_multiple_of[0]
                     else:
                         pad_to_num = self.pad_to_multiple_of[1]
-                    max_len = int((np.ceil(max(add_keys[f"{key}_lengths"]) / pad_to_num) * pad_to_num).item())
+                    if key == "phones" or "duration" in key:
+                        max_len = int((np.ceil(max(data["duration_in_max"]) / pad_to_num) * pad_to_num).item())
+                    elif "variances" in key or key == "mel":
+                        max_len = int((np.ceil(max(data["duration_out_max"]) / pad_to_num) * pad_to_num).item())
                     if len(data[key][0].shape) == 1:
                         data[key][0] = nn.ConstantPad1d((0, max_len - data[key][0].shape[0]), pad_val)(data[key][0])
                     elif len(data[key][0].shape) == 2:
@@ -892,6 +900,21 @@ class TTSDataset(Dataset):
         self.data["duration_sum"] = self.data["phones"].apply(lambda x: len(x)).values
         self.data = self.data.sort_values(by="duration_sum", ascending=ascending)
         self.data = self.data.reset_index()
+
+    def batch_by_duration(self, ascending=True, bins=100):
+        self.data["duration_sum_in"] = self.data["phones"].apply(lambda x: len(x)).values
+        self.data["duration_sum_out"] = self.data["duration"].apply(lambda x: np.array(x).sum()).values
+        self.data = self.data.sort_values(by="duration_sum_in", ascending=ascending)
+        self.data = self.data.reset_index()
+        bin_size = len(self.data) // bins
+        self.data["duration_in_max"] = 0
+        self.data["duration_out_max"] = 0
+        for i in tqdm(range(bins), desc=f"binning data by length (n={bins})"):
+            df_bin = self.data.iloc[bin_size*i:bin_size*(i+1)]
+            in_max = df_bin["duration_sum_in"].max()
+            out_max = df_bin["duration_sum_out"].max()
+            self.data["duration_in_max"][bin_size*i:bin_size*(i+1)] = in_max
+            self.data["duration_out_max"][bin_size*i:bin_size*(i+1)] = out_max
 
     def plot(self, sample_or_idx, show=True):
         if not show:

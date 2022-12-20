@@ -1,5 +1,6 @@
 from torch import nn
 import torch
+from litfass.fastspeech2.utils import Timer
 
 #from litfass.third_party.softdtw.sdtw_cuda_loss import SoftDTW
 from pysdtw import SoftDTW
@@ -62,12 +63,14 @@ class FastSpeech2Loss(nn.Module):
         if unsqueeze or loss == "soft_dtw":
             mask = mask.unsqueeze(-1)
         if loss != "soft_dtw":
-            pred = pred[mask]#pred.masked_select(mask)
-            truth = truth[mask]#truth.masked_select(mask)
+            #pred = pred[mask.squeeze(-1)]#pred.masked_select(mask)
+            #truth = truth[mask.squeeze(-1)]#truth.masked_select(mask)
+            pred[~mask.squeeze(-1)] = 0
+            truth[~mask.squeeze(-1)] = 0
         loss_func = self.losses[loss]
         if loss == "soft_dtw":
-            pred = pred.masked_fill_(~mask, 0)
-            truth = truth.masked_fill_(~mask, 0)
+            pred[~mask] = 0
+            truth[~mask] = 0
             pred_chunks = pred.split(self.soft_dtw_chunk_size, dim=1)
             truth_chunks = truth.split(self.soft_dtw_chunk_size, dim=1)
             for i, (pred_chunk, truth_chunk) in enumerate(zip(pred_chunks, truth_chunks)):
@@ -81,133 +84,133 @@ class FastSpeech2Loss(nn.Module):
         return loss
 
     def forward(self, result, target, frozen_components=[]):
+        with Timer("losses") as t:
+            losses = {}
 
-        losses = {}
+            variances_pred = {var: result[f"variances_{var}"] for var in self.variances}
 
-        variances_pred = {var: result[f"variances_{var}"] for var in self.variances}
+            variances_target = {
+                var: target[f"variances_{var}"]
+                for var in self.variances
+                if f"variances_{var}" in target
+            }
 
-        variances_target = {
-            var: target[f"variances_{var}"]
-            for var in self.variances
-            if f"variances_{var}" in target
-        }
+            src_mask = ~result["src_mask"]
+            tgt_mask = ~result["tgt_mask"]
 
-        src_mask = ~result["src_mask"]
-        tgt_mask = ~result["tgt_mask"]
+            # VARIANCE LOSSES
+            if self.max_length is not None:
+                #assert target["mel"].shape[1] <= self.max_length
 
-        # VARIANCE LOSSES
-        if self.max_length is not None:
-            assert target["mel"].shape[1] <= self.max_length
-
-            for variance, level, transform, loss in zip(
-                self.variances, self.variance_levels, self.variance_transforms, self.variance_losses
-            ):
-                if self.fastdiff_variances:
-                    variances_target[variance] = result[f"variances_{variance}_z"].squeeze(1)
-                    variances_pred[variance] = result[f"variances_{variance}"]
-                    losses[variance] = self.get_loss(
-                        variances_pred[variance],
-                        variances_target[variance].to(dtype=result["mel"].dtype),
-                        "mse",
-                        tgt_mask,
-                    )
-                    continue
-                if transform == "cwt":
-                    variances_target[variance] = target[
-                        f"variances_{variance}_spectrogram"
-                    ]
-                    variances_pred[variance] = result[f"variances_{variance}"][
-                        "spectrogram"
-                    ]
-                if level == "frame":
-                    if transform != "cwt":
-                        variances_target[variance] = variances_target[variance][
-                            :, :int(self.max_length)
+                for variance, level, transform, loss in zip(
+                    self.variances, self.variance_levels, self.variance_transforms, self.variance_losses
+                ):
+                    if self.fastdiff_variances:
+                        variances_target[variance] = result[f"variances_{variance}_z"].squeeze(1)
+                        variances_pred[variance] = result[f"variances_{variance}"]
+                        losses[variance] = self.get_loss(
+                            variances_pred[variance],
+                            variances_target[variance].to(dtype=result["mel"].dtype),
+                            "mse",
+                            tgt_mask,
+                        )
+                        continue
+                    if transform == "cwt":
+                        variances_target[variance] = target[
+                            f"variances_{variance}_spectrogram"
                         ]
-                    variance_mask = tgt_mask
-                elif level == "phone":
-                    variance_mask = src_mask
-                else:
-                    raise ValueError("Unknown variance level: {}".format(level))
-                if transform == "cwt":
-                    losses[variance + "_cwt"] = self.get_loss(
-                        variances_pred[variance],
-                        variances_target[variance].to(dtype=result["mel"].dtype),
-                        loss,
-                        variance_mask,
-                        unsqueeze=True,
-                    )
-                    losses[variance + "_mean"] = self.mse_loss(
-                        result[f"variances_{variance}"]["mean"],
-                        torch.tensor(target[f"variances_{variance}_mean"]).to(
-                            result[f"variances_{variance}"]["mean"].device,
-                            dtype=result["mel"].dtype,
-                        ),
-                    )
-                    losses[variance + "_std"] = self.mse_loss(
-                        result[f"variances_{variance}"]["std"],
-                        torch.tensor(target[f"variances_{variance}_std"]).to(
-                            result[f"variances_{variance}"]["std"].device,
-                            dtype=result["mel"].dtype,
-                        ),
-                    )
-                else:
-                    losses[variance] = self.get_loss(
-                        variances_pred[variance],
-                        variances_target[variance].to(dtype=result["mel"].dtype),
-                        loss,
-                        variance_mask,
-                    )
+                        variances_pred[variance] = result[f"variances_{variance}"][
+                            "spectrogram"
+                        ]
+                    if level == "frame":
+                        # if transform != "cwt":
+                        #     variances_target[variance] = variances_target[variance][
+                        #         :, :int(self.max_length)
+                        #     ]
+                        variance_mask = tgt_mask
+                    elif level == "phone":
+                        variance_mask = src_mask
+                    else:
+                        raise ValueError("Unknown variance level: {}".format(level))
+                    if transform == "cwt":
+                        losses[variance + "_cwt"] = self.get_loss(
+                            variances_pred[variance],
+                            variances_target[variance].to(dtype=result["mel"].dtype),
+                            loss,
+                            variance_mask,
+                            unsqueeze=True,
+                        )
+                        losses[variance + "_mean"] = self.mse_loss(
+                            result[f"variances_{variance}"]["mean"],
+                            torch.tensor(target[f"variances_{variance}_mean"]).to(
+                                result[f"variances_{variance}"]["mean"].device,
+                                dtype=result["mel"].dtype,
+                            ),
+                        )
+                        losses[variance + "_std"] = self.mse_loss(
+                            result[f"variances_{variance}"]["std"],
+                            torch.tensor(target[f"variances_{variance}_std"]).to(
+                                result[f"variances_{variance}"]["std"].device,
+                                dtype=result["mel"].dtype,
+                            ),
+                        )
+                    else:
+                        losses[variance] = self.get_loss(
+                            variances_pred[variance],
+                            variances_target[variance].to(dtype=result["mel"].dtype),
+                            loss,
+                            variance_mask,
+                        )
 
-        # MEL SPECTROGRAM LOSS
-        losses["mel"] = self.get_loss(
-            result["mel"],
-            target["mel"].to(dtype=result["mel"].dtype),
-            self.mel_loss,
-            tgt_mask,
-            unsqueeze=True,
-        )
-
-        # DURATION LOSS
-        if self.fastdiff_variances:
-            losses["duration"] = self.get_loss(
-                result["duration_prediction"].to(dtype=result["mel"].dtype),
-                result["duration_z"].to(dtype=result["mel"].dtype).squeeze(1),
-                "mse",
-                src_mask,
+            # MEL SPECTROGRAM LOSS
+            losses["mel"] = self.get_loss(
+                result["mel"],
+                target["mel"].to(dtype=result["mel"].dtype),
+                self.mel_loss,
+                tgt_mask,
+                unsqueeze=True,
             )
-        elif not self.duration_stochastic:
-            losses["duration"] = self.get_loss(
-                result["duration_prediction"],
-                torch.log(target["duration"] + 1).to(dtype=result["mel"].dtype),
-                self.duration_loss,
-                src_mask,
+
+            # DURATION LOSS
+            if self.fastdiff_variances:
+                losses["duration"] = self.get_loss(
+                    result["duration_prediction"].to(dtype=result["mel"].dtype),
+                    result["duration_z"].to(dtype=result["mel"].dtype).squeeze(1),
+                    "mse",
+                    src_mask,
+                )
+            elif not self.duration_stochastic:
+                losses["duration"] = self.get_loss(
+                    result["duration_prediction"],
+                    torch.log(target["duration"] + 1).to(dtype=result["mel"].dtype),
+                    self.duration_loss,
+                    src_mask,
+                )
+            else:
+                losses["duration"] = torch.sum(result["duration_prediction"])
+
+            # FASTDIFF LOSS
+            # if self.fastdiff_loss is not None:
+            #     losses["fastdiff"] = self.get_loss(
+            #         result["fastdiff"][0],
+            #         result["fastdiff"][1],
+            #         self.fastdiff_loss,
+            #         result["wav_mask"],
+            #     )
+
+            if "speaker_z" in result:
+                losses["speakers"] = self.losses[self.fastdiff_loss](result["speaker_pred"], result["speaker_z"])
+
+            # TOTAL LOSS
+            total_loss = sum(
+                [
+                    v * self.loss_alphas[k]
+                    for k, v in losses.items()
+                    if not any(f in k for f in frozen_components)
+                ]
             )
-        else:
-            losses["duration"] = torch.sum(result["duration_prediction"])
+            losses["total"] = total_loss
 
-        # FASTDIFF LOSS
-        # if self.fastdiff_loss is not None:
-        #     losses["fastdiff"] = self.get_loss(
-        #         result["fastdiff"][0],
-        #         result["fastdiff"][1],
-        #         self.fastdiff_loss,
-        #         result["wav_mask"],
-        #     )
-
-        if "speaker_z" in result:
-            losses["speakers"] = self.losses[self.fastdiff_loss](result["speaker_pred"], result["speaker_z"])
-
-        # TOTAL LOSS
-        total_loss = sum(
-            [
-                v * self.loss_alphas[k]
-                for k, v in losses.items()
-                if not any(f in k for f in frozen_components)
-            ]
-        )
-        losses["total"] = total_loss
-
-        return losses
+            return losses
 
 # TODO_NEXT_TIME: just get it to not crash and burn like it does now

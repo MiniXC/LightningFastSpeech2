@@ -87,13 +87,11 @@ class FastDiffVarianceAdaptor(nn.Module):
         inference=False,
         N=4,
     ):
-        print(inference, "inference")
 
         with Timer("vars_duration") as t:
             if not inference:
                 duration = targets["duration"] + 1 + torch.rand(size=targets["duration"].shape, device=targets["duration"].device)*0.49
                 duration = (torch.log(duration) - 1.08) / 0.96
-                print(duration.shape, x.transpose(1, 2).shape)
                 duration_pred, duration_z = self.duration_predictor(
                     duration.to(x.dtype),
                     x.transpose(1, 2), 
@@ -125,9 +123,9 @@ class FastDiffVarianceAdaptor(nn.Module):
             max_len = duration_rounded.sum(axis=1).max()
 
         with Timer("vars_length_regulator") as t:
-            x, tgt_mask = self.length_regulator(x, duration_rounded, self.max_length)
+            x, tgt_mask = self.length_regulator(x, duration_rounded, max_len)
             if out_val is not None:
-                out_val, _ = self.length_regulator(out_val, duration_rounded, self.max_length)
+                out_val, _ = self.length_regulator(out_val, duration_rounded, max_len)
 
         with Timer("vars_encoders") as t:
             for i, var in enumerate(self.variances):
@@ -230,7 +228,7 @@ class FastDiffVariancePredictor(nn.Module):
         c = c.to(diffusion_step_embed.dtype)
         noise_embed = self.linear_noise(diffusion_step_embed).unsqueeze(1).transpose(1, 2)
 
-        print(x.shape, c.shape, noise_embed.shape, "forward shapes")
+        #print(x.shape, c.shape, noise_embed.shape, "forward shapes")
         # print(x.dtype, c.dtype, diffusion_step_embed.dtype)
 
         out_conv = self.layers(
@@ -239,7 +237,7 @@ class FastDiffVariancePredictor(nn.Module):
         out = self.linear(out_conv)
         out = out.squeeze(-1)
         if mask is not None:
-            out = out.masked_fill(mask, 0)
+            out[mask] = 0
         
         if no_ts:
             return out, z
@@ -480,7 +478,7 @@ class FastDiffSpeakerPredictor(nn.Module):
         out = self.linear_out(out_conv)
         out = out.squeeze(-1)
         if mask is not None:
-            out = out.masked_fill(mask, 0)
+            out[mask] = 0
         
         if no_ts:
             return out, z

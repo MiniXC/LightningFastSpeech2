@@ -11,30 +11,7 @@ from einops.layers.torch import Rearrange, Reduce
 
 from litfass.third_party.stochastic_duration_predictor.sdp import StochasticDurationPredictor
 from litfass.dataset.cwt import CWT
-from litfass.fastspeech2.utils import bucketize
-
-
-def generate_square_subsequent_mask(sz):
-    mask = (torch.triu(torch.ones((sz, sz))) == 1).transpose(0, 1)
-    mask = (
-        mask.float()
-        .masked_fill(mask == 0, float("-inf"))
-        .masked_fill(mask == 1, float(0.0))
-    )
-    return mask
-
-
-def create_mask(src, tgt, pad_idx):
-    src_seq_len = src.shape[1]
-    tgt_seq_len = tgt.shape[1]
-
-    tgt_mask = generate_square_subsequent_mask(tgt_seq_len)
-    src_mask = torch.zeros((src_seq_len, src_seq_len)).type(torch.bool)
-
-    src_padding_mask = src == pad_idx
-    tgt_padding_mask = tgt == pad_idx
-    return src_mask, tgt_mask, src_padding_mask, tgt_padding_mask
-
+from litfass.fastspeech2.utils import bucketize, Timer
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000, dropout=0.1):
@@ -148,7 +125,7 @@ class SpeakerEmbedding(nn.Module):
         else:
             out = self.speaker_embedding(x)
         out = self.relu(out)
-        return out.reshape(-1, 1, output_shape).expand(-1, input_length)
+        return out.reshape(-1, 1, output_shape).expand(-1, input_length, -1)
 
 
 class PriorEmbedding(nn.Module):
@@ -167,7 +144,7 @@ class PriorEmbedding(nn.Module):
 
     def forward(self, x, input_length):
         out = self.relu(self.embedding(bucketize(x, self.bins)))
-        return out.reshape(-1, 1, self.embedding_dim).expand(-1, input_length)
+        return out.reshape(-1, 1, self.embedding_dim).expand(-1, input_length, -1)
 
 
 class VarianceAdaptor(nn.Module):
@@ -307,7 +284,8 @@ class VarianceAdaptor(nn.Module):
             else:
                 duration_rounded = torch.ceil(
                     (torch.exp(duration_pred + 1e-9))
-                ).masked_fill(duration_pred == 0, 0)
+                )
+                duration_rounded[duration_pred == 0] = 0
             duration_rounded = torch.clamp(duration_rounded, min=0).int()
             for i in range(len(duration_rounded)):
                 if duration_rounded[i][~src_mask[i]].sum() <= (~src_mask[i]).sum() // 2:
@@ -362,16 +340,17 @@ class LengthRegulator(nn.Module):
         durations = nn.ConstantPad1d((0, 1), 0)(durations)
         durations[:, -1] += pad_to - durations.sum(axis=1)
         x = nn.ConstantPad1d((0, 0, 0, 1), padding_value)(x)
-        bat_ind = torch.arange(0, x.shape[0]).unsqueeze(-1).expand(-1, pad_to).flatten()
+        bat_ind = torch.arange(0, x.shape[0]).unsqueeze(-1).expand(-1, int(pad_to)).flatten()
         val_ind = torch.arange(0, x.shape[1]).repeat(x.shape[0])
-        val_ind = val_ind.flatten().repeat_interleave(durations.flatten(), dim=0)
+        val_ind = val_ind.flatten().repeat_interleave(durations.to(device="cpu").flatten(), dim=0)
         tgt_mask = ~(val_ind.view(x.shape[0], -1) == durations.shape[1]-1)
         x = x[bat_ind, val_ind].view(x.shape[0], -1, x.shape[-1])
         return x, tgt_mask
 
     def forward(self, x, durations, target_length=None, max_length=None):
-        out, mask = LengthRegulator.repeat_batched(x, durations, target_length)
-        return out, mask
+        with Timer("repeat_batched") as t:
+            out, mask = LengthRegulator.repeat_batched(x, durations, target_length)
+            return out, mask.to(x.device)
         # repeated_list = [
         #     torch.repeat_interleave(x[i], durations[i], dim=0)
         #     for i in range(x.shape[0])
@@ -500,7 +479,7 @@ class StochasticDurationPredictorWrapper(nn.Module):
     def forward(self, x, mask, tgt=None, sigma=1.0, inference=False):
         out = self.sdp(x, mask, tgt, reverse=inference, noise_scale=sigma)
         if mask is not None and inference:
-            out = out.masked_fill(mask, 0)
+            out[mask] = 0
         return out
 
 
@@ -540,7 +519,7 @@ class VariancePredictor(nn.Module):
         else:
             mask = torch.stack([mask] * 10, dim=-1)
         if mask is not None:
-            out = out.masked_fill(mask, 0)
+            out[mask] = 0
         if return_conv:
             return out, out_conv
         else:

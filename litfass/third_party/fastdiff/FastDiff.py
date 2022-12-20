@@ -143,7 +143,7 @@ class FastDiff(nn.Module):
             x = self.final_conv(x)
 
             if mask is not None:
-                x = x.masked_fill(mask, 0)
+                x[mask] = 0
 
             if not reverse:
                 if no_ts:
