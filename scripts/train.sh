@@ -1,5 +1,5 @@
 #!/usr/bin/bash
-export PT_XLA_DEBUG=1
+# export PT_XLA_DEBUG=1
 # export XLA_GET_TENSORS_OPBYOP=1
 # export XLA_SYNC_TENSORS_OPBYOP=1
 # export XLA_FLAGS="--xla_dump_to=xla.log"
@@ -9,11 +9,11 @@ export PT_XLA_DEBUG=1
 
 python3 litfass/train.py \
 --accelerator tpu \
---devices 1 \
---precision 32 \
+--devices 8 \
+--precision bf16 \
 --batch_size 16 \
 --val_check_interval 1.0 \
---log_every_n_steps 100 \
+--log_every_n_steps 250 \
 --layer_dropout 0.00 \
 --duration_dropout 0.1 \
 --variance_dropout 0.1 0.1 0.1 0.1 \
@@ -55,10 +55,8 @@ python3 litfass/train.py \
 --sort_data_by_length True \
 --train_pad_to_multiple_of 16 16 \
 --fastdiff_vocoder False \
---num_workers 1 \
---num_sanity_val_steps 0 \
---fastdiff_variances False \
---replace_sampler_ddp False
+--num_workers 8 \
+--fastdiff_variances True
 
 # --fastdiff_schedule 1 1 \
 # --fastdiff_variances True \

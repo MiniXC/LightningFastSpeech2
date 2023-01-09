@@ -65,8 +65,12 @@ class FastSpeech2Loss(nn.Module):
         if loss != "soft_dtw":
             #pred = pred[mask.squeeze(-1)]#pred.masked_select(mask)
             #truth = truth[mask.squeeze(-1)]#truth.masked_select(mask)
-            pred[~mask.squeeze(-1)] = 0
-            truth[~mask.squeeze(-1)] = 0
+            #pred[~mask.squeeze(-1)] = 0
+            #truth[~mask.squeeze(-1)] = 0
+            #print(pred.shape, truth.shape, mask.squeeze(-1).shape)
+            
+            pred = pred * mask
+            truth = truth * mask
         loss_func = self.losses[loss]
         if loss == "soft_dtw":
             pred[~mask] = 0
@@ -189,7 +193,7 @@ class FastSpeech2Loss(nn.Module):
             else:
                 losses["duration"] = torch.sum(result["duration_prediction"])
 
-            # FASTDIFF LOSS
+            # # FASTDIFF LOSS
             # if self.fastdiff_loss is not None:
             #     losses["fastdiff"] = self.get_loss(
             #         result["fastdiff"][0],
@@ -198,8 +202,8 @@ class FastSpeech2Loss(nn.Module):
             #         result["wav_mask"],
             #     )
 
-            if "speaker_z" in result:
-                losses["speakers"] = self.losses[self.fastdiff_loss](result["speaker_pred"], result["speaker_z"])
+            # if "speaker_z" in result:
+            #     losses["speakers"] = self.losses[self.fastdiff_loss](result["speaker_pred"], result["speaker_z"])
 
             # TOTAL LOSS
             total_loss = sum(

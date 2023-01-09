@@ -87,10 +87,9 @@ class FastDiffVarianceAdaptor(nn.Module):
         inference=False,
         N=4,
     ):
-
         with Timer("vars_duration") as t:
             if not inference:
-                duration = targets["duration"] + 1 + torch.rand(size=targets["duration"].shape, device=targets["duration"].device)*0.49
+                duration = targets["duration"].to(x.device) + 1 + torch.rand(size=targets["duration"].shape, device=x.device)*0.49
                 duration = (torch.log(duration) - 1.08) / 0.96
                 duration_pred, duration_z = self.duration_predictor(
                     duration.to(x.dtype),
@@ -111,11 +110,12 @@ class FastDiffVarianceAdaptor(nn.Module):
                 duration_pred = duration_pred * 0.96 + 1.08
                 duration_rounded = torch.round((torch.exp(duration_pred) - 1))
                 duration_rounded = torch.clamp(duration_rounded, min=0).int()
+                duration_rounded = duration_rounded * (~src_mask).int()
                 for i in range(len(duration_rounded)):
-                    if duration_rounded[i][~src_mask[i]].sum() <= (~src_mask[i]).sum() // 2:
-                        duration_rounded[i][~src_mask[i]] = 1
+                    if duration_rounded[i].sum() <= (~src_mask[i]).sum() // 2:
+                        duration_rounded[i] = (~src_mask[i]).int()
                         print("Zero duration, setting to 1")
-                    duration_rounded[i][src_mask[i]] = 0
+                duration_rounded = duration_rounded.cpu()
 
         if not inference:
             max_len = targets["mel"].shape[1]
@@ -123,9 +123,9 @@ class FastDiffVarianceAdaptor(nn.Module):
             max_len = duration_rounded.sum(axis=1).max()
 
         with Timer("vars_length_regulator") as t:
-            x, tgt_mask = self.length_regulator(x, duration_rounded, max_len)
+            x, tgt_mask = self.length_regulator(x, duration_rounded, max_len, targets["duration_mask"][0], targets["duration_mask"][1])
             if out_val is not None:
-                out_val, _ = self.length_regulator(out_val, duration_rounded, max_len)
+                out_val, _ = self.length_regulator(out_val, duration_rounded, max_len, targets["duration_mask"][0], targets["duration_mask"][1])
 
         with Timer("vars_encoders") as t:
             for i, var in enumerate(self.variances):
@@ -237,7 +237,8 @@ class FastDiffVariancePredictor(nn.Module):
         out = self.linear(out_conv)
         out = out.squeeze(-1)
         if mask is not None:
-            out[mask] = 0
+            #out[mask] = 0
+            out = out * ~mask
         
         if no_ts:
             return out, z
@@ -478,7 +479,8 @@ class FastDiffSpeakerPredictor(nn.Module):
         out = self.linear_out(out_conv)
         out = out.squeeze(-1)
         if mask is not None:
-            out[mask] = 0
+            #out[mask] = 0
+            out = out * ~mask
         
         if no_ts:
             return out, z

@@ -40,7 +40,6 @@ from litfass.fastspeech2.log_gmm import LogGMM
 from litfass.fastspeech2.loss import FastSpeech2Loss
 from litfass.fastspeech2.noam import NoamLR
 from litfass.fastspeech2.utils import Timer
-import torch_xla.debug.metrics as met
 
 num_cpus = multiprocessing.cpu_count()
 
@@ -638,11 +637,14 @@ class FastSpeech2(pl.LightningModule):
 
     def forward(self, targets, inference=False):
         # print(
-        #     targets["phones"].shape[1],
-        #     targets["mel"].shape[1],
-        #     targets["mel"].shape[1]/targets["phones"].shape[1],
-        #     "init shapes"
+        #     targets["phones"].shape,
+        #     targets["mel"].shape,
+        #     targets["variances_pitch"].shape,
+        #     targets["duration"].shape,
+        #     "forward shapes"
         # )
+        if not isinstance(targets["duration"], torch.Tensor):
+            targets["duration"] = torch.from_numpy(targets["duration"]).to(device="cpu")
 
         with Timer("phones_and_speaker_generator") as t:
             phones = targets["phones"].to(self.device)
@@ -702,17 +704,13 @@ class FastSpeech2(pl.LightningModule):
                     )
 
         with Timer("variances") as t:
-            # pylint: disable=not-callable
             variance_output = self.variance_adaptor(
                 output,
                 src_mask,
                 targets,
                 inference=inference,
             )
-            # pylint: enable=not-callable
-
             output = variance_output["x"]
-
             output = self.positional_encoding(output)
 
         with Timer("decoder") as t:
@@ -766,10 +764,6 @@ class FastSpeech2(pl.LightningModule):
                 mel_fastdiff = mel_fastdiff[:, :(mel_lengths.max()-2)]
                 wav_max_length = (mel_lengths.max()-2)*self.hparams.hop_length
                 wav_fastdiff = targets["wav"][:, :wav_max_length]
-                # print(torch.arange(wav_max_length).device)
-                # print(((mel_lengths-2)*self.hparams.hop_length).device)
-                # print(len(mel_lengths).device)
-                # print(wav_max_length.device)
                 result["wav_mask"] = (
                     torch.arange(wav_max_length).to(mel_lengths.device).expand(len(mel_lengths), wav_max_length)
                     < ((mel_lengths-2)*self.hparams.hop_length).unsqueeze(1)
@@ -799,15 +793,10 @@ class FastSpeech2(pl.LightningModule):
         return result
 
     def training_step(self, batch, batch_idx, optimizer_idx=0):
-        print("forward")
         result = self(batch, optimizer_idx)
         losses = self.loss(
             result, batch
         )  # frozen_components=self.variance_adaptor.frozen_components)
-
-        # if batch_idx == 2:
-        #     print(met.metrics_report())
-        #     raise
 
         with Timer("log dict") as t:
             if (batch_idx + 1) % 100 == 0:
@@ -817,38 +806,42 @@ class FastSpeech2(pl.LightningModule):
                     batch_size=self.batch_size,
                     sync_dist=True,
                 )
-            print("backward")
             return losses["total"]
 
     def validation_step(self, batch, batch_idx):
         result = self(batch)
         losses = self.loss(result, batch)
         log_dict = {f"eval/{k}_loss": v.detach() for k, v in losses.items()}
+
         self.log_dict(
             log_dict,
             batch_size=self.batch_size,
-            sync_dist=True,
         )
 
-        if batch_idx == 0 and self.trainer.is_global_zero:
-            self.eval_log_data = []
-            self.results_dict = {
-                "duration": {"pred": [], "true": []},
-                "mel": {"pred": [], "true": []},
-            }
-            for var in self.hparams.variances:
-                self.results_dict[var] = {"pred": [], "true": []}
+        if "xla" not in str(self.device):
+            if batch_idx == 0 and self.trainer.is_global_zero:
+                self.eval_log_data = []
+                self.results_dict = {
+                    "duration": {"pred": [], "true": []},
+                    "mel": {"pred": [], "true": []},
+                }
+                for var in self.hparams.variances:
+                    self.results_dict[var] = {"pred": [], "true": []}
 
-        inference_result = self(batch, inference=True)
+                inference_result = self(batch, inference=True)
 
-        if (
-            self.eval_log_data is not None
-            and len(self.eval_log_data) < self.valid_nexamples
-            and self.trainer.is_global_zero
-        ):
-            left_to_add = self.valid_nexamples - len(self.eval_log_data)
-            self._add_to_results_dict(inference_result, batch, result, left_to_add)
-            self._log_table_to_wandb(inference_result, batch, result)
+            if (
+                self.eval_log_data is not None
+                and len(self.eval_log_data) < self.valid_nexamples
+                and self.trainer.is_global_zero
+            ):
+                print(f"add to results start {self.device}")
+                left_to_add = self.valid_nexamples - len(self.eval_log_data)
+                inference_result = {k: (v[0:left_to_add] if v is not None else v) for k, v in list(inference_result.items())}
+                print("add to results start 2")
+                self._add_to_results_dict(inference_result, batch, result)
+                print("add to results end")
+                self._log_table_to_wandb(inference_result, batch, result)
 
     def _log_table_to_wandb(self, inference_result, batch, result):
         for i in range(len(batch["mel"])):
@@ -887,7 +880,7 @@ class FastSpeech2(pl.LightningModule):
                     ][~inference_result[mask][i]].cpu()
             true_dict = {
                 "mel": true_mel,
-                "duration": batch["duration"][i][~result["src_mask"][i]].cpu(),
+                "duration": batch["duration"][i][~result["src_mask"][i].cpu()],
                 "phones": batch["phones"][i],
                 "text": batch["text"][i],
                 "variances": {},
@@ -980,22 +973,20 @@ class FastSpeech2(pl.LightningModule):
                 #         "WARNING: failed to log example (common before training starts)"
                 #     )
 
-    def _add_to_results_dict(self, inference_result, batch, result, add_n):
+    def _add_to_results_dict(self, inference_result, batch, result):
         # duration
         self.results_dict["duration"]["pred"] += list(
             inference_result["duration_rounded"][~inference_result["src_mask"]]
-        )[:add_n]
+        )
         self.results_dict["duration"]["true"] += list(
-            batch["duration"][~result["src_mask"]]
-        )[:add_n]
+            batch["duration"][~result["src_mask"].to(batch["duration"].device)]
+        )
 
         # mel
         self.results_dict["mel"]["pred"] += list(
             inference_result["mel"][~inference_result["tgt_mask"]]
-        )[:add_n]
-        self.results_dict["mel"]["true"] += list(batch["mel"][~result["tgt_mask"]])[
-            :add_n
-        ]
+        )
+        self.results_dict["mel"]["true"] += list(batch["mel"][~result["tgt_mask"]])
 
         for i, var in enumerate(self.hparams.variances):
             if self.hparams.variance_levels[i] == "phone":
@@ -1007,40 +998,40 @@ class FastSpeech2(pl.LightningModule):
                     inference_result[f"variances_{var}"]["reconstructed_signal"][
                         ~inference_result[mask]
                     ]
-                )[:add_n]
+                )
                 self.results_dict[var]["true"] += list(
                     batch[f"variances_{var}_original_signal"][~result[mask]]
-                )[:add_n]
+                )
             else:
                 self.results_dict[var]["pred"] += list(
                     inference_result[f"variances_{var}"][~inference_result[mask]]
-                )[:add_n]
+                )
                 self.results_dict[var]["true"] += list(
                     batch[f"variances_{var}"][~result[mask]]
-                )[:add_n]
+                )
 
-    def on_validation_start(self):
-        for v in self.trainer.val_dataloaders:
-            v.sampler.shuffle = False
+    # def on_validation_start(self):
+    #     for v in self.trainer.val_dataloaders:
+    #         v.sampler.shuffle = False
     
-    def on_training_start(self):
-        for v in self.trainer.train_dataloaders:
-            v.sampler.shuffle = False
+    # def on_training_start(self):
+    #     for v in self.trainer.train_dataloaders:
+    #         v.sampler.shuffle = False
 
     def validation_epoch_end(self, validation_step_outputs):
-        if self.trainer.is_global_zero:
-            #wandb.init(project="FastSpeech2")
-            # table = wandb.Table(
-            #     data=self.eval_log_data,
-            #     columns=[
-            #         "text",
-            #         "predicted_mel",
-            #         "true_mel",
-            #         "predicted_audio",
-            #         "true_audio",
-            #     ],
-            # )
-            # wandb.log({"examples": table})
+        if self.trainer.is_global_zero and "xla" not in str(self.device):
+            wandb.init(project="FastSpeech2", settings=wandb.Settings(start_method='thread'))
+            table = wandb.Table(
+                data=self.eval_log_data,
+                columns=[
+                    "text",
+                    "predicted_mel",
+                    "true_mel",
+                    "predicted_audio",
+                    "true_audio",
+                ],
+            )
+            wandb.log({"examples": table})
             if (
                 not hasattr(self, "best_variances")
                 and self.hparams.variance_early_stopping
@@ -1339,7 +1330,7 @@ class FastSpeech2(pl.LightningModule):
 
     def train_dataloader(self):
         if self.hparams.sort_data_by_length:
-            self.train_ds.batch_by_duration(True, bins=10)
+            self.train_ds.batch_by_duration(True, bins=2)
         return DataLoader(
             self.train_ds,
             batch_size=self.batch_size,
@@ -1350,10 +1341,10 @@ class FastSpeech2(pl.LightningModule):
 
     def val_dataloader(self):
         if self.hparams.sort_data_by_length:
-            self.valid_ds.batch_by_duration(True, bins=10)
+            self.valid_ds.batch_by_duration(True, bins=1)
         return DataLoader(
             self.valid_ds,
-            batch_size=self.batch_size,
+            batch_size=10, # TODO: make this a parameter
             collate_fn=self.valid_ds._collate_fn,
             num_workers=self.num_workers,
             drop_last=True,

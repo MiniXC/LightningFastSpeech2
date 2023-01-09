@@ -93,13 +93,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
     var_args = vars(args)
 
-    # os.environ["WANDB_MODE"] = var_args["wandb_mode"]
-    # if var_args["wandb_name"] is None:
-    #     wandb_logger = WandbLogger(project=var_args["wandb_project"])
-    # else:
-    #     wandb_logger = WandbLogger(
-    #         project=var_args["wandb_project"], name=var_args["wandb_name"]
-    #     )
+    os.environ["WANDB_MODE"] = var_args["wandb_mode"]
+    os.environ["WANDB_WATCH"] = "false"
+    if var_args["wandb_name"] is None:
+        wandb_logger = WandbLogger(project=var_args["wandb_project"])
+    else:
+        wandb_logger = WandbLogger(
+            project=var_args["wandb_project"], name=var_args["wandb_name"]
+        )
 
     train_ds = []
 

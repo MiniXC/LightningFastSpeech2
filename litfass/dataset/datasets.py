@@ -37,9 +37,6 @@ from litfass.dataset.snr import SNR
 from litfass.third_party.dvectors.wav2mel import Wav2Mel
 from litfass.third_party.argutils import str2bool
 
-pandarallel.initialize(progress_bar=True)
-tqdm.pandas()
-
 warnings.filterwarnings("ignore")
 np.seterr(divide="raise", invalid="raise")
 
@@ -78,6 +75,9 @@ class TTSDataset(Dataset):
         pad_to_multiple_of=None,
     ):
         super().__init__()
+
+        pandarallel.initialize(progress_bar=True, nb_workers=num_workers)
+        tqdm.pandas()
 
         # HPARAMS
         self.min_length = min_length
@@ -373,27 +373,12 @@ class TTSDataset(Dataset):
         if not self._load_stats_only:
             mel = self.mel_spectrogram(audio.unsqueeze(0))
             mel = mel[0]
-            #mel = torch.sqrt(mel[0])
 
             mel = torch.matmul(self.mel_basis, mel)
 
             mel = dynamic_range_compression(mel).cpu()
             
-            # x_stft = librosa.stft(audio.numpy(), n_fft=self.n_fft, hop_length=self.hop_length,
-            #             win_length=self.win_length, window="hann", pad_mode="constant")
-            # spc = np.abs(x_stft)  # (n_bins, T)
-
-            # # get mel basis
-            # fmin = 0
-            # fmax = 8000
-            # mel_basis = librosa.filters.mel(self.sampling_rate, self.n_fft, self.n_mels, fmin, fmax)
-            # mel = mel_basis @ spc
-            # mel = np.log10(np.maximum(1e-6, mel))  # (n_mel_bins, T)
-            # mel = torch.from_numpy(mel)
-            # mel = mel.unsqueeze(0)
             mel = mel.T
-            #plt.imshow(mel)
-            #plt.show()
 
         # DURATIONS & SILENCE MASK
         duration = np.array(row["duration"])
@@ -452,7 +437,6 @@ class TTSDataset(Dataset):
 
         if not self._load_stats_only:
             result["mel"] = mel[:dur_sum].numpy()
-            #result["mel"] = np.array(mel.T)[:dur_sum]
 
         if self.load_wav:
             if len(audio) < dur_sum * self.hop_length:
@@ -893,7 +877,14 @@ class TTSDataset(Dataset):
                 data[key] = pad_sequence(
                     data[key], batch_first=True, padding_value=pad_val, 
                 )
+        durations = nn.ConstantPad1d((0, 1), 0)(data["duration"])
+        durations[:, -1] += data["mel"].shape[1] - durations.sum(axis=1)
+        val_ind = torch.arange(0, data["phones"].shape[1]+1).repeat(data["phones"].shape[0])
+        val_ind = val_ind.flatten().repeat_interleave(durations.flatten(), dim=0)
+        bat_ind = torch.arange(0, data["phones"].shape[0]).unsqueeze(-1).expand(-1, int(data["mel"].shape[1])).flatten()
+        add_keys["duration_mask"] = (bat_ind, val_ind)
         data.update(add_keys)
+        data["duration"] = data["duration"].numpy()
         return data
 
     def sort_by_duration(self, ascending=True):
@@ -986,6 +977,7 @@ class TTSDataset(Dataset):
             variance_x += list(
                 np.array(range(len(mel))) * self.hop_length / self.sampling_rate
             )
+            print(var_vals, var)
             variance_y += list(
                 (var_vals - var_vals.min())
                 / ((var_vals.max() - var_vals.min()) + 1e-7)

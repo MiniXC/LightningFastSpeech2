@@ -243,11 +243,11 @@ class VarianceAdaptor(nn.Module):
         else:
             if not inference:
                 duration_pred = self.duration_predictor(
-                    x.detach(), src_mask, targets["duration"]
+                    x, src_mask, targets["duration"].to(x.device)
                 )
             else:
                 duration_pred = self.duration_predictor(
-                    x.detach(), src_mask, inference=True
+                    x, src_mask, inference=True
                 )
 
         result = {}
@@ -287,19 +287,21 @@ class VarianceAdaptor(nn.Module):
                 )
                 duration_rounded[duration_pred == 0] = 0
             duration_rounded = torch.clamp(duration_rounded, min=0).int()
+            duration_rounded = duration_rounded * (~src_mask).int()
             for i in range(len(duration_rounded)):
-                if duration_rounded[i][~src_mask[i]].sum() <= (~src_mask[i]).sum() // 2:
-                    duration_rounded[i][~src_mask[i]] = 1
+                if duration_rounded[i].sum() <= (~src_mask[i]).sum() // 2:
+                    duration_rounded[i] = (~src_mask[i]).int()
                     print("Zero duration, setting to 1")
+            duration_rounded = duration_rounded.cpu()
 
         if not inference:
             max_len = targets["mel"].shape[1]
         else:
             max_len = duration_rounded.sum(axis=1).max()
 
-        x, tgt_mask = self.length_regulator(x, duration_rounded, max_len)#self.max_length)
+        x, tgt_mask = self.length_regulator(x, duration_rounded, max_len, targets["duration_mask"][0], targets["duration_mask"][1])#self.max_length)
         if out_val is not None:
-            out_val, _ = self.length_regulator(out_val, duration_rounded, max_len)#self.max_length)
+            out_val, _ = self.length_regulator(out_val, duration_rounded, max_len, targets["duration_mask"][0], targets["duration_mask"][1])#self.max_length)
 
         for i, var in enumerate(self.variances):
             if self.variance_levels[i] == "frame":
@@ -336,42 +338,26 @@ class LengthRegulator(nn.Module):
         self.pad_to_multiple_of = pad_to_multiple_of
 
     @staticmethod
-    def repeat_batched(x, durations, pad_to=16, padding_value=0):
+    def repeat_batched(x, durations, target_length, bat_ind, val_ind, padding_value=0):
         durations = nn.ConstantPad1d((0, 1), 0)(durations)
-        durations[:, -1] += pad_to - durations.sum(axis=1)
+        durations[:, -1] += target_length - durations.sum(axis=1)
         x = nn.ConstantPad1d((0, 0, 0, 1), padding_value)(x)
-        bat_ind = torch.arange(0, x.shape[0]).unsqueeze(-1).expand(-1, int(pad_to)).flatten()
-        val_ind = torch.arange(0, x.shape[1]).repeat(x.shape[0])
-        val_ind = val_ind.flatten().repeat_interleave(durations.to(device="cpu").flatten(), dim=0)
+        
+        # bat_ind = torch.arange(0, x.shape[0]).unsqueeze(-1).expand(-1, int(target_length)).flatten()
+        # val_ind = torch.arange(0, x.shape[1]).repeat(x.shape[0])
+        # flat_dur = durations.flatten()
+        # val_ind = val_ind.flatten().repeat_interleave(durations.flatten(), dim=0)
+        #print(~(val_ind.view(x.shape[0], -1)))
+
         tgt_mask = ~(val_ind.view(x.shape[0], -1) == durations.shape[1]-1)
         x = x[bat_ind, val_ind].view(x.shape[0], -1, x.shape[-1])
-        return x, tgt_mask
+        
+        return x, ~tgt_mask          
 
-    def forward(self, x, durations, target_length=None, max_length=None):
+    def forward(self, x, durations, target_length=None, bat_ind=None, val_ind=None, max_length=None):
         with Timer("repeat_batched") as t:
-            out, mask = LengthRegulator.repeat_batched(x, durations, target_length)
+            out, mask = LengthRegulator.repeat_batched(x, durations, target_length, bat_ind, val_ind)
             return out, mask.to(x.device)
-        # repeated_list = [
-        #     torch.repeat_interleave(x[i], durations[i], dim=0)
-        #     for i in range(x.shape[0])
-        # ]
-        # lengths = torch.tensor([t.shape[0] for t in repeated_list]).long()
-        # max_length = min(lengths.max(), int(max_length))
-        # if self.pad_to_multiple_of is not None:
-        #     max_length = int((np.ceil(max_length / self.pad_to_multiple_of) * self.pad_to_multiple_of).item())
-        # mask = ~(
-        #     torch.arange(max_length).expand(len(lengths), max_length)
-        #     < lengths.unsqueeze(1)
-        # ).to(x.device)
-        # if self.pad_to_multiple_of is not None:
-        #     if len(repeated_list[0].shape) == 1:
-        #         repeated_list[0] = nn.ConstantPad1d((0, max_length - repeated_list[0].shape[0]), 0)(repeated_list[0])
-        #     elif len(repeated_list[0].shape) == 2:
-        #         repeated_list[0] = nn.ConstantPad2d((0, 0, 0, max_length - repeated_list[0].shape[0]), 0)(repeated_list[0])
-        # out = pad_sequence(repeated_list, batch_first=True, padding_value=0)
-        # if max_length is not None:
-        #     out = out[:, :max_length]
-        # return out, mask
 
 
 class VarianceEncoder(nn.Module):
@@ -516,10 +502,12 @@ class VariancePredictor(nn.Module):
         out = self.linear(out_conv)
         if not self.cwt:
             out = out.squeeze(-1)
-        else:
-            mask = torch.stack([mask] * 10, dim=-1)
+        # else:
+        #     mask = torch.stack([mask] * 10, dim=-1)
+        # if mask is not None:
+        #     out[mask] = 0
         if mask is not None:
-            out[mask] = 0
+            out = out * ~mask
         if return_conv:
             return out, out_conv
         else:
