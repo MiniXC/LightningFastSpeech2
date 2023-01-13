@@ -94,7 +94,7 @@ if __name__ == "__main__":
     var_args = vars(args)
 
     os.environ["WANDB_MODE"] = var_args["wandb_mode"]
-    os.environ["WANDB_WATCH"] = "false"
+    os.environ["WANDB_WATCH"] = "true"
     if var_args["wandb_name"] is None:
         wandb_logger = WandbLogger(project=var_args["wandb_project"])
     else:
@@ -287,7 +287,7 @@ if __name__ == "__main__":
         args,
         callbacks=callbacks,
         default_root_dir="logs",
-        #logger=wandb_logger,
+        logger=wandb_logger,
     )
 
     trainer.fit(model)

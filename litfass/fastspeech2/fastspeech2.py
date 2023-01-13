@@ -1019,8 +1019,9 @@ class FastSpeech2(pl.LightningModule):
     #         v.sampler.shuffle = False
 
     def validation_epoch_end(self, validation_step_outputs):
+        if self.trainer.is_global_zero:
+            wandb.init(project="FastSpeech2")
         if self.trainer.is_global_zero and "xla" not in str(self.device):
-            wandb.init(project="FastSpeech2", settings=wandb.Settings(start_method='thread'))
             table = wandb.Table(
                 data=self.eval_log_data,
                 columns=[
@@ -1330,7 +1331,7 @@ class FastSpeech2(pl.LightningModule):
 
     def train_dataloader(self):
         if self.hparams.sort_data_by_length:
-            self.train_ds.batch_by_duration(True, bins=2)
+            self.train_ds.batch_by_duration(True, bins=1)
         return DataLoader(
             self.train_ds,
             batch_size=self.batch_size,

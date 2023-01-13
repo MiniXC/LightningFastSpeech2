@@ -337,18 +337,62 @@ class LengthRegulator(nn.Module):
         super().__init__()
         self.pad_to_multiple_of = pad_to_multiple_of
 
+    # def gather_nd(params, indices):
+    #     """ 
+    #     SOURCE: https://discuss.pytorch.org/t/how-to-do-the-tf-gather-nd-in-pytorch/6445/37
+    #     The same as tf.gather_nd but batched gather is not supported yet.
+    #     indices is an k-dimensional integer tensor, best thought of as a (k-1)-dimensional tensor of indices into params, where each element defines a slice of params:
+
+    #     output[\\(i_0, ..., i_{k-2}\\)] = params[indices[\\(i_0, ..., i_{k-2}\\)]]
+
+    #     Args:
+    #         params (Tensor): "n" dimensions. shape: [x_0, x_1, x_2, ..., x_{n-1}]
+    #         indices (Tensor): "k" dimensions. shape: [y_0,y_2,...,y_{k-2}, m]. m <= n.
+
+    #     Returns: gathered Tensor.
+    #         shape [y_0,y_2,...y_{k-2}] + params.shape[m:] 
+
+    #     """
+    #     orig_shape = list(indices.shape)
+    #     num_samples = np.prod(orig_shape[:-1])
+    #     m = orig_shape[-1]
+    #     n = len(params.shape)
+
+    #     if m <= n:
+    #         out_shape = orig_shape[:-1] + list(params.shape)[m:]
+    #     else:
+    #         raise ValueError(
+    #             f'the last dimension of indices must less or equal to the rank of params. Got indices:{indices.shape}, params:{params.shape}. {m} > {n}'
+    #         )
+
+    #     indices = indices.reshape((num_samples, m)).transpose(0, 1).tolist()
+    #     output = params[indices]    # (num_samples, ...)
+    #     return output.reshape(out_shape).contiguous()
+
     @staticmethod
     def repeat_batched(x, durations, target_length, bat_ind, val_ind, padding_value=0):
+        # MAX_FRAMES = 2592
+        # MAX_PHONES = 368
+        # BATCH_SIZE = 10
+        # EMB_DIM = 256
+        # MAX_FRAMES = target_length
+        # MAX_PHONES = x.shape[1]
+        # BATCH_SIZE = x.shape[0]
+        # EMB_DIM = x.shape[-1]
         durations = nn.ConstantPad1d((0, 1), 0)(durations)
         durations[:, -1] += target_length - durations.sum(axis=1)
         x = nn.ConstantPad1d((0, 0, 0, 1), padding_value)(x)
         
-        # bat_ind = torch.arange(0, x.shape[0]).unsqueeze(-1).expand(-1, int(target_length)).flatten()
-        # val_ind = torch.arange(0, x.shape[1]).repeat(x.shape[0])
-        # flat_dur = durations.flatten()
-        # val_ind = val_ind.flatten().repeat_interleave(durations.flatten(), dim=0)
-        #print(~(val_ind.view(x.shape[0], -1)))
-
+        # durations[durations!=0] = 1
+        # val_ind = (torch.zeros((MAX_FRAMES, BATCH_SIZE), dtype=torch.int64, device=x.device)
+        #     .scatter(
+        #         0,
+        #         durations.cumsum(-1).T,
+        #         torch.ones(MAX_FRAMES, BATCH_SIZE, dtype=torch.int64, device=x.device)
+        #     )
+        #     .T.cumsum(-1)
+        # )
+        # bat_ind = torch.tile(torch.arange(BATCH_SIZE, device=x.device).unsqueeze(-1), [1, MAX_FRAMES])
         tgt_mask = ~(val_ind.view(x.shape[0], -1) == durations.shape[1]-1)
         x = x[bat_ind, val_ind].view(x.shape[0], -1, x.shape[-1])
         

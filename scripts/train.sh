@@ -1,5 +1,6 @@
 #!/usr/bin/bash
-# export PT_XLA_DEBUG=1
+export PT_XLA_DEBUG=1
+export XLA_USE_32BIT_LONG=1
 # export XLA_GET_TENSORS_OPBYOP=1
 # export XLA_SYNC_TENSORS_OPBYOP=1
 # export XLA_FLAGS="--xla_dump_to=xla.log"
@@ -9,9 +10,9 @@
 
 python3 litfass/train.py \
 --accelerator tpu \
---devices 8 \
+--devices 1 \
 --precision bf16 \
---batch_size 16 \
+--batch_size 8 \
 --val_check_interval 1.0 \
 --log_every_n_steps 250 \
 --layer_dropout 0.00 \
@@ -41,7 +42,7 @@ python3 litfass/train.py \
 --decoder_kernel_sizes 9 9 9 9 9 9 \
 --speaker_embedding_every_layer False \
 --prior_embedding_every_layer False \
---wandb_name "fastdiff_nopretrain_variances_fixed" \
+--wandb_name "tpu" \
 --wandb_mode "offline" \
 --speaker_type "dvector" \
 --train_target_path "../data/train-clean-100-aligned" \
